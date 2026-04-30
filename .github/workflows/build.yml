@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore OpenIsland.sln
+
+      - name: Build (Release)
+        run: dotnet build OpenIsland.sln -c Release --no-restore
+
+      # Smoke test 不在 sln 里 + 依赖运行机的 ~/.claude 数据
+      # CI 上没有 transcript，跑只是验证它能编译通过 + 不崩
+      - name: Smoke test compiles & runs
+        run: dotnet run --project tests/OpenIsland.SmokeTest/OpenIsland.SmokeTest.csproj -c Release
+        continue-on-error: true

@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Determine version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Version: $version, Tag: $tag"
+
+      - name: Restore
+        run: dotnet restore OpenIsland.sln
+
+      - name: Publish OpenIsland.App (self-contained, win-x64)
+        run: |
+          dotnet publish src/OpenIsland.App/OpenIsland.App.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=false `
+            -p:Version=${{ steps.ver.outputs.version }} `
+            -o publish/app
+
+      - name: Publish OpenIsland.Hooks
+        # Hooks 必须带完整运行时（.deps.json / .runtimeconfig.json / System.CommandLine.dll 等）—— 见 deploy.ps1
+        run: |
+          dotnet publish src/OpenIsland.Hooks/OpenIsland.Hooks.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:Version=${{ steps.ver.outputs.version }} `
+            -o publish/hooks
+
+      - name: Publish OpenIsland.Setup
+        run: |
+          dotnet publish src/OpenIsland.Setup/OpenIsland.Setup.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:Version=${{ steps.ver.outputs.version }} `
+            -o publish/setup
+
+      - name: Stage final layout
+        shell: pwsh
+        run: |
+          $stage = "publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item publish/app/* $stage -Recurse -Force
+          Copy-Item publish/hooks/* $stage -Recurse -Force
+          Copy-Item publish/setup/* $stage -Recurse -Force
+          Copy-Item README.md $stage -Force
+          Copy-Item LICENSE $stage -Force
+          Copy-Item CHANGELOG.md $stage -Force
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          $stage = "publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64"
+          $zip = "publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64.zip"
+          Compress-Archive -Path $stage/* -DestinationPath $zip -Force
+          Get-ChildItem $zip
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64.zip
+          generate_release_notes: true
+          body: |
+            **Open Island ${{ steps.ver.outputs.tag }}**
+
+            下载 zip → 右键属性 → 解除锁定 → 解压 → 双击 `OpenIsland.exe`。
+            （未做代码签名，Windows SmartScreen 会拦截，是预期。）
+
+            首次启动会自动注册 Claude Code hooks。完整变更见 [CHANGELOG](https://github.com/ludiwangfpga/open-island-windows/blob/main/CHANGELOG.md)。

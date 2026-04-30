@@ -1,0 +1,31 @@
+# ─────────────────── Build artifacts ───────────────────
+**/bin/
+**/obj/
+**/publish_output/
+**/*.user
+**/*_wpftmp.AssemblyInfo.cs
+*.lock.json
+
+# Self-contained publish output by CI / local
+**/publish/
+**/release/
+
+# ─────────────────── IDE / Editor ───────────────────
+.vs/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─────────────────── Claude Code agent runtime ───────────────────
+.claude/
+.claude/worktrees/
+
+# ─────────────────── OS ───────────────────
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ─────────────────── Misc ───────────────────
+*.log
+*.tmp

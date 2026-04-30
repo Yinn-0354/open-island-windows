@@ -1,0 +1,33 @@
+<Application x:Class="OpenIsland.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:OpenIsland.App"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+
+            <!-- 转换器 -->
+            <local:StringToBrushConverter x:Key="StringToBrushConverter"/>
+            <local:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+            <local:BoolToBrushConverter x:Key="BoolToBrushConverter"/>
+            <local:HeatmapIntensityToBrushConverter x:Key="HeatmapBrush"/>
+            <local:PeakHourTextConverter x:Key="PeakHourText"/>
+            <local:HumanNumberConverter x:Key="HumanNum"/>
+            <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis"/>
+
+            <!-- 通用样式 -->
+            <SolidColorBrush x:Key="PrimaryBackground" Color="#1E1E1E"/>
+            <SolidColorBrush x:Key="SecondaryBackground" Color="#2D2D2D"/>
+            <SolidColorBrush x:Key="AccentColor" Color="#0078D4"/>
+            <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="TextSecondary" Color="#AAAAAA"/>
+            <SolidColorBrush x:Key="BorderColor" Color="#3E3E3E"/>
+
+            <!-- 会话状态颜色 -->
+            <SolidColorBrush x:Key="RunningColor" Color="#4CAF50"/>
+            <SolidColorBrush x:Key="WaitingColor" Color="#FF9800"/>
+            <SolidColorBrush x:Key="ErrorColor" Color="#F44336"/>
+            <SolidColorBrush x:Key="CompletedColor" Color="#9E9E9E"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
