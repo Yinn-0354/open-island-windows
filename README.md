@@ -40,9 +40,12 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 
 ## 📦 安装
 
-从 [Releases](../../releases) 下载最新 `OpenIsland-vX.Y.Z-win-x64.zip`，解压后双击 `OpenIsland.exe` 即可。
+从 [Releases](../../releases) 下载，二选一：
 
-> ⚠️ 当前版本未做代码签名，Windows SmartScreen 可能拦截。下载后右键 zip → 属性 → 解除锁定，再解压。
+- 🟢 **推荐** · `OpenIsland-Setup-X.Y.Z-win-x64.exe` —— 标准安装包，双击自动装到 `%LOCALAPPDATA%\OpenIsland`，无需管理员，可在 Add/Remove Programs 卸载，可选开机自启
+- 🟦 **绿色版** · `OpenIsland-vX.Y.Z-win-x64.zip` —— 解压即用，不写注册表
+
+> ⚠️ 未做代码签名，Windows SmartScreen 会拦截。点 **更多信息 → 仍要运行** 即可。zip 版需要先右键属性 → 解除锁定。
 
 首次启动会自动在 `%USERPROFILE%\.claude\settings.json` 注册 Claude Code 的 hook（`PreToolUse` / `PostToolUse` / `Stop` 三种），无需手动操作。
 

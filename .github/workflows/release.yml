@@ -82,15 +82,43 @@ jobs:
           Compress-Archive -Path $stage/* -DestinationPath $zip -Force
           Get-ChildItem $zip
 
+      - name: Compile Inno Setup installer
+        # ISCC.exe 在 windows-latest runner 默认预装在 C:\Program Files (x86)\Inno Setup 6\
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          STAGING_DIR: ${{ github.workspace }}\publish\OpenIsland-${{ steps.ver.outputs.tag }}-win-x64
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Inno Setup 没找到，安装中..."
+            choco install innosetup --no-progress -y
+          }
+          & $iscc /Qp "installer\openisland.iss"
+          Get-ChildItem installer-output
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64.zip
+          files: |
+            publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64.zip
+            installer-output/OpenIsland-Setup-${{ steps.ver.outputs.version }}-win-x64.exe
           generate_release_notes: true
           body: |
             **Open Island ${{ steps.ver.outputs.tag }}**
 
-            下载 zip → 右键属性 → 解除锁定 → 解压 → 双击 `OpenIsland.exe`。
-            （未做代码签名，Windows SmartScreen 会拦截，是预期。）
+            ## 下载方式
 
-            首次启动会自动注册 Claude Code hooks。完整变更见 [CHANGELOG](https://github.com/ludiwangfpga/open-island-windows/blob/main/CHANGELOG.md)。
+            🟢 **推荐 · 普通用户** — 下载 `OpenIsland-Setup-${{ steps.ver.outputs.version }}-win-x64.exe`，双击安装。
+            自动装到 `%LOCALAPPDATA%\OpenIsland`，无需管理员；可在 Add/Remove Programs 卸载。
+
+            🟦 **绿色版 · 老司机** — 下载 `OpenIsland-${{ steps.ver.outputs.tag }}-win-x64.zip`，
+            右键属性 → 解除锁定 → 解压 → 双击 `OpenIsland.exe`。
+
+            ## 注意
+
+            未做代码签名，Windows SmartScreen 会拦截。点 **更多信息 → 仍要运行**。
+
+            首次启动会自动注册 Claude Code hooks 到 `~/.claude/settings.json`。
+
+            完整变更：[CHANGELOG](https://github.com/ludiwangfpga/open-island-windows/blob/main/CHANGELOG.md)
