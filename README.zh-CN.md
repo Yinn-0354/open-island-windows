@@ -10,6 +10,10 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+<br/>
+
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island 灵动岛形态" width="640"/>
+
 </div>
 
 ---
@@ -21,17 +25,22 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 - 🪟 **Notch 模式** —— 拖到屏顶吸附成 macOS 刘海形态，不占主屏
 - 🚀 **一键跳回** —— 点卡片直接 `claude --resume {sessionId}` 恢复历史会话；桌面端会话则把客户端窗口拉前台
 
+不打扰你 —— 折叠态停在屏顶，打游戏 / 写代码 / 看直播都不挡视野：
+
+<img src="docs/screenshots/in-action.png" alt="打游戏时 Open Island 折叠态停在屏顶" width="900"/>
+
 ---
-
-## 截图
-
-> _截图位待补，TODO_
 
 ## ✨ Features
 
 - **Dynamic Island** —— 屏顶悬浮的活跃会话指示器，按工具图标 + 项目名 + 状态点显示
 - **Permission mirror** —— Claude Code 的 PreToolUse 权限询问会同时镜像到岛上，配合三按钮（Yes / Yes don't ask again / No），点击会通过 SendInput 注入对应数字到 Claude 终端
+
+  <img src="docs/screenshots/permission-mirror.png" alt="打 DOTA 时 Claude 弹的权限询问被镜像到灵动岛" width="800"/>
+
 - **Notch snap** —— 拖动岛体靠近屏顶 28px 内自动吸附成横条贴顶；下拉超过 48px 则恢复
+
+  <img src="docs/screenshots/notch-mode.png" alt="Notch / 胶囊形态" width="480"/>
 - **Control Center** —— 三 Tab：
   - **Sessions** 列出所有 Claude 会话（按 mtime 排序）
   - **Overview** Token 总量 / 活跃天数 / 连续天数 / 高峰小时 / 最常用模型 / 84 天活动热力图

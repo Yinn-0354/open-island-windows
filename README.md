@@ -10,6 +10,10 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+<br/>
+
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island floating dynamic island" width="640"/>
+
 </div>
 
 ---
@@ -21,17 +25,22 @@ Open Island is a Windows tray companion that surfaces the live state of AI codin
 - 🪟 **Notch mode** — drag near the top of the screen to snap into a macOS-notch-shaped capsule
 - 🚀 **One-click resume** — clicking a session card runs `claude --resume {sessionId}` for CLI sessions, or brings the Claude Desktop app window to the front for desktop sessions
 
+Stays out of the way — sits in collapsed mode at the top of the screen while you play DOTA, write code, or watch a stream:
+
+<img src="docs/screenshots/in-action.png" alt="Open Island in collapsed mode while playing a game" width="900"/>
+
 ---
-
-## Screenshots
-
-> _Screenshots coming soon._
 
 ## ✨ Features
 
 - **Dynamic Island** — floating top-screen indicator for active sessions, tagged by tool icon, project name, and a colored status dot
 - **Permission mirror** — Claude Code's `PreToolUse` permission prompts are mirrored to the island. The three buttons inject `1` / `2` / `3` keystrokes into the Claude terminal via `SendInput`, equivalent to typing them yourself
+
+  <img src="docs/screenshots/permission-mirror.png" alt="Permission Request mirrored to the island while DOTA 2 is running" width="800"/>
+
 - **Notch snap** — drag the island to within 28px of the top of the screen and release to snap into a macOS-notch-style capsule; drag back down past 48px to restore the floating form
+
+  <img src="docs/screenshots/notch-mode.png" alt="Notch / capsule mode" width="480"/>
 - **Control Center** — three tabs:
   - **Sessions** — all Claude conversations (sorted by transcript mtime)
   - **Overview** — Total tokens / Active days / Current/Longest streak / Peak hour / Favorite model + 84-day activity heatmap
