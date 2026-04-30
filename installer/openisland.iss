@@ -50,8 +50,9 @@ CloseApplications=force
 RestartApplications=no
 
 [Languages]
+; 仅英文 —— GitHub Actions 的 windows-latest 上 Inno Setup 默认安装不带 ChineseSimplified.isl。
+; 想要中文界面需要把 ChineseSimplified.isl vendored 到 installer/ 下并改 MessagesFile 路径。
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
