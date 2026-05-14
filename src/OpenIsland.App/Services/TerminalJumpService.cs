@@ -350,17 +350,45 @@ public class TerminalJumpService
     /// <summary>
     /// 激活 claude.exe 所在终端窗口后，往焦点窗口发一串按键 —— 用来让岛上"1/2/3"按钮
     /// 等价于在 Claude 终端键入 1/2/3，B 模式下两边任意一侧都能解析权限 prompt。
-    /// keys 例: "1\r" 表示按 '1' + Enter。每键之间 20ms 间隔，激活后 200ms 等焦点稳定。
+    /// keys 例: "1\r" 表示按 '1' + Enter。每键之间 20ms 间隔，激活后留 350ms 等焦点稳定。
+    ///
+    /// 关键不变量：SendInput 不指定目标窗口，注入到 *当前* 前台。所以必须在发键之前确认
+    /// 前台 HWND 等于我们刚激活的终端，否则键会被打到错误的应用 —— 典型场景：用户点岛上
+    /// "1" 时 Claude Desktop 正在前台，ActivateWindow 因 Windows 反窃焦机制没真正切焦点，
+    /// "1" 就被注入到 Claude Desktop 的聊天框里。校验失败就 abort（return false），
+    /// 用户看到"没生效"远比"被静默错打到错的窗口"好。
     /// </summary>
     public async Task<bool> SendKeysToTerminalAsync(int claudePid, string keys)
     {
-        if (!ActivateTerminalByPidChain(claudePid))
+        // 1) 找承载终端的窗口（沿父进程链）
+        var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+        if (targetHwnd == IntPtr.Zero)
         {
-            _logger?.LogWarning("SendKeysToTerminalAsync: failed to activate terminal for pid {Pid}", claudePid);
+            _logger?.LogWarning(
+                "SendKeysToTerminalAsync: no terminal window found for claude pid {Pid}; aborting", claudePid);
             return false;
         }
-        // 等焦点切到目标终端再发键，否则键可能落在 OpenIsland 自己的窗口上
-        await Task.Delay(200);
+
+        // 2) 激活到前台
+        ActivateWindow(targetHwnd);
+        // AttachThreadInput + topmost flicker 链通常 < 200ms 生效，留 350ms 给慢机也有机会
+        await Task.Delay(350);
+
+        // 3) 验前台。失败就 abort，绝不能让 SendInput 把 "1\r" 打到错误的前台应用。
+        //    See xmldoc above for full rationale.
+        var fg = GetForegroundWindow();
+        if (fg != targetHwnd)
+        {
+            GetWindowThreadProcessId(fg, out var fgPid);
+            var fgTitle = new StringBuilder(256);
+            GetWindowText(fg, fgTitle, 256);
+            _logger?.LogWarning(
+                "SendKeysToTerminalAsync: foreground switch failed. target hwnd=0x{Tgt:X} claudePid={Pid} | actual foreground hwnd=0x{Fg:X} pid={FgPid} title='{Title}'. Aborting SendInput to avoid typing into wrong window.",
+                targetHwnd.ToInt64(), claudePid, fg.ToInt64(), fgPid, fgTitle.ToString());
+            return false;
+        }
+
+        // 4) 焦点 OK，发键
         foreach (var c in keys)
         {
             SendVk(CharToVk(c));
@@ -401,20 +429,31 @@ public class TerminalJumpService
     /// </summary>
     public bool ActivateTerminalByPidChain(int claudePid)
     {
+        var hwnd = FindTerminalHwndByPidChain(claudePid);
+        if (hwnd == IntPtr.Zero) return false;
+        ActivateWindow(hwnd);
+        return true;
+    }
+
+    /// <summary>
+    /// 父链查找的 HWND 提取版（不激活），给 <see cref="SendKeysToTerminalAsync"/> 用 ——
+    /// 它需要先拿到 HWND 才能在 SendInput 之前做前台校验。返回 IntPtr.Zero 表示链上没找到。
+    /// </summary>
+    private IntPtr FindTerminalHwndByPidChain(int claudePid)
+    {
         var visited = new HashSet<int>();
         int? cur = claudePid;
         for (int hops = 0; hops < 8 && cur is int pid && pid > 0; hops++)
         {
             if (!visited.Add(pid)) break; // 防成环
 
-            // 这一层进程名是不是终端宿主 + 有没有可见顶层窗口
             string procName;
             try
             {
                 using var p = Process.GetProcessById(pid);
                 procName = p.ProcessName;
             }
-            catch { return false; }
+            catch { return IntPtr.Zero; }
 
             if (TerminalProcessNames.Contains(procName))
             {
@@ -422,16 +461,15 @@ public class TerminalJumpService
                 if (hwnd != IntPtr.Zero)
                 {
                     _logger?.LogInformation(
-                        "Activating terminal {Name}#{Pid} (hops={Hops}) for claude pid {ClaudePid}",
+                        "Resolved terminal {Name}#{Pid} (hops={Hops}) for claude pid {ClaudePid}",
                         procName, pid, hops, claudePid);
-                    ActivateWindow(hwnd);
-                    return true;
+                    return hwnd;
                 }
             }
 
             cur = GetParentProcessId(pid);
         }
-        return false;
+        return IntPtr.Zero;
     }
 
     /// <summary>
@@ -554,6 +592,9 @@ public class TerminalJumpService
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
