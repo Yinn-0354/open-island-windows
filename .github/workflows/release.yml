@@ -67,9 +67,17 @@ jobs:
         run: |
           $stage = "publish/OpenIsland-${{ steps.ver.outputs.tag }}-win-x64"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item publish/app/* $stage -Recurse -Force
+          # 拷贝顺序关键：先 hooks/setup（net8.0），最后 App（net8.0-windows）。
+          # 三个 self-contained 发布有同名 DLL 冲突，最后写入的赢。
+          # 关键冲突文件 WindowsBase.dll：
+          #   - net8.0 publish 产出 16 KB / AssemblyVersion=4.0.0.0 的 .NET Framework 兼容 facade
+          #   - net8.0-windows publish 产出 2.2 MB / AssemblyVersion=8.0.0.0 的 WPF 真实现
+          # OpenIsland.exe (WPF) 运行时绑定 8.0.0.0，必须让 App 的真实现胜出 —— 否则启动
+          # FileNotFoundException for WindowsBase 8.0.0.0，进程秒挂、屏幕没任何反应。
+          # 经在 release 0.1.0 复现：旧顺序（App 在最前）会让 facade 覆盖真实现。
           Copy-Item publish/hooks/* $stage -Recurse -Force
           Copy-Item publish/setup/* $stage -Recurse -Force
+          Copy-Item publish/app/* $stage -Recurse -Force
           Copy-Item README.md $stage -Force
           Copy-Item LICENSE $stage -Force
           Copy-Item CHANGELOG.md $stage -Force
