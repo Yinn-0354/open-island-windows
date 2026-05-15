@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.IO;
-using System.Management;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using OpenIsland.Core.Models;
 
@@ -282,31 +282,70 @@ public class ProcessMonitorService : IDisposable
     private string? GetCommandLine(Process process) => GetCommandLineAndParent(process).cmdLine;
 
     /// <summary>
-    /// 一次 WMI 查询同时拿命令行和父 PID。父 PID 用于"点会话卡片激活终端"的父链查找。
-    /// Single WMI query that returns both CommandLine and ParentProcessId so the parent-PID
-    /// chain (used by terminal activation) doesn't pay for a second round-trip.
+    /// 拿父进程 PID。命令行不再取（之前走 WMI Win32_Process，在某些环境下 WMI 服务对特定
+    /// PID 的查询会硬卡 30s+ —— observed 2026-05：Get-CimInstance Win32_Process -Filter
+    /// "ProcessId=27668" 直接超时。卡在这里会让整个 ScanProcesses 循环挂死，进而导致
+    /// _runningSessions 滞后或为空，SessionManager.ResolveClaudeProcessId 找不到匹配的活
+    /// claude，最终用户点会话卡片时只能 fallback 到"开新终端 resume"。
+    ///
+    /// 改用 CreateToolhelp32Snapshot 拿 parent PID（纯 Win32 内核 API，几 ms 完成）。
+    /// 命令行无法替代地拿到（NtQueryInformationProcess + PEB.ProcessParameters.CommandLine
+    /// 可以但代码量大），先不取 —— info.CommandLine 仅用于 (1) 识别 node-based claude，(2)
+    /// 从 cmdline 抽 --cwd=path；前者已极少（现在 claude.exe 是原生二进制），后者 PEB
+    /// 读 cwd 完全覆盖。所以丢命令行不影响实际功能。
     /// </summary>
     private (string? cmdLine, int? parentPid) GetCommandLineAndParent(Process process)
     {
+        return (null, GetParentViaToolhelp(process.Id));
+    }
+
+    private static int? GetParentViaToolhelp(int pid)
+    {
+        var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == IntPtr.Zero || snap.ToInt64() == -1) return null;
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT CommandLine, ParentProcessId FROM Win32_Process WHERE ProcessId = {process.Id}");
-            using var objects = searcher.Get();
-            var obj = objects.Cast<ManagementObject>().FirstOrDefault();
-            if (obj == null) return (null, null);
-            var cmd = obj["CommandLine"]?.ToString();
-            int? parent = null;
-            var rawParent = obj["ParentProcessId"];
-            if (rawParent != null && int.TryParse(rawParent.ToString(), out var p) && p > 0)
-                parent = p;
-            return (cmd, parent);
+            var entry = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+            if (Process32FirstW(snap, ref entry))
+            {
+                do
+                {
+                    if ((int)entry.th32ProcessID == pid && entry.th32ParentProcessID > 0)
+                        return (int)entry.th32ParentProcessID;
+                } while (Process32NextW(snap, ref entry));
+            }
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"GetCommandLineAndParent error: {ex.Message}");
-            return (null, null);
-        }
+        finally { CloseHandle(snap); }
+        return null;
+    }
+
+    private const uint TH32CS_SNAPPROCESS = 0x00000002;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct PROCESSENTRY32W
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
     }
 
     private string GenerateSessionId(string workingDirectory)

@@ -433,14 +433,19 @@ public partial class IslandSessionItem : ObservableObject
     [RelayCommand]
     private async Task JumpAsync()
     {
-        // 优先通过 AgentSession 跳转
-        if (_session?.JumpTarget != null && _sessionManager != null)
+        // 优先通过 AgentSession 跳转 —— 不再要求 JumpTarget 非空：
+        //   - desktop session 走 ActivateClaudeDesktopWindow（根本不需要 cwd）
+        //   - CLI session 在 JumpToSessionAsync 里有 ResolveFallbackWorkingDirectory 兜底
+        // 之前的 `_session?.JumpTarget != null` 把 JumpTarget 因任何原因为 null 的卡片
+        // 直接吞掉（点击无反应），尤其卡 desktop session 在 watcher 重新 emit JumpTarget
+        // 的瞬间。
+        if (_session != null && _sessionManager != null)
         {
             await _sessionManager.JumpToSessionAsync(_session.Id);
             return;
         }
 
-        // 通过 RunningSessionInfo 的工作目录跳转
+        // 仅有 RunningSessionInfo（transcript 还没扫到）—— 用 cwd 启动新终端
         if (_runningInfo?.WorkingDirectory != null && _sessionManager != null)
         {
             await _sessionManager.JumpToWorkingDirectoryAsync(_runningInfo.WorkingDirectory);

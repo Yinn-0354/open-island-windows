@@ -233,10 +233,16 @@ public class SessionManager : IDisposable
                     if (existingSession != null)
                     {
                         // 更新现有会话的元数据
+                        // 注意：ApplyClaudeMetadataUpdated 在 SessionState 里是整个 *替换*
+                        // ClaudeMetadata 而不是合并，所以这里 *必须* 把所有需要保留的字段
+                        // 都填齐 —— 漏一个就会被清成默认值，下游依赖该字段的逻辑全废。
+                        // 历史 bug：之前漏了 Entrypoint，扫描 tick（5s 一次）触发后桌面端 session
+                        // 的 "claude-desktop" 标记被清成 null，点会话卡片直接走错路径。
                         var metadata = new ClaudeMetadata
                         {
                             TranscriptPath = sessionInfo.SourcePath,
                             Model = sessionInfo.Model,
+                            Entrypoint = sessionInfo.Entrypoint,
                             InputTokens = sessionInfo.Usage.InputTokens,
                             OutputTokens = sessionInfo.Usage.OutputTokens,
                             CacheReadTokens = sessionInfo.Usage.CacheReadTokens,
@@ -283,11 +289,13 @@ public class SessionManager : IDisposable
                     }
                     else
                     {
-                        // 新建会话
+                        // 新建会话 —— Entrypoint 必填（cli / claude-desktop），
+                        // 否则 JumpToSessionAsync 的路由分流走不到桌面端激活。
                         var metadata = new ClaudeMetadata
                         {
                             TranscriptPath = sessionInfo.SourcePath,
                             Model = sessionInfo.Model,
+                            Entrypoint = sessionInfo.Entrypoint,
                             InputTokens = sessionInfo.Usage.InputTokens,
                             OutputTokens = sessionInfo.Usage.OutputTokens,
                             CacheReadTokens = sessionInfo.Usage.CacheReadTokens,
@@ -897,29 +905,42 @@ public class SessionManager : IDisposable
         var session = GetSession(sessionId);
         if (session == null) return;
 
-        // 1) 当前 claude.exe 还活着 → 沿父进程链找承载终端激活（CLI 模式）
-        var claudePid = ResolveClaudeProcessId(session);
-        if (claudePid is int pid && _terminalJumpService.ActivateTerminalByPidChain(pid))
-            return;
-
-        // 2) 历史会话（claude.exe 已退）按 entrypoint 分流：
-        //    - "claude-desktop" → 激活桌面端窗口（失败也不掉链子开 CLI 终端）
-        //    - 其它（"cli" / 缺失） → 起新终端 claude --resume
+        // 1) entrypoint 决定路径 —— Claude 有两种运行方式，宿主窗口完全不同：
+        //    - "claude-desktop": Anthropic 桌面端应用（C:\Program Files\WindowsApps\
+        //      Claude_X.X.X.X_x64__*\app\Claude.exe，UWP/MSIX），自己持窗，标题 "Claude"。
+        //      内部会派生 claude.exe 子进程做每个 session 的实际工作，但用户点卡片
+        //      想激活的是桌面应用本身。
+        //    - "cli" / 缺失: 用户终端里跑的 claude.exe，承载终端 = WT / conhost。
+        //
+        //    必须在尝试任何 CLI 路径之前先分流，否则桌面 session 派生的子 claude.exe
+        //    会被当成 CLI claude（它的 cwd 跟 session 一致），把用户带到错误的窗口。
         var entrypoint = session.ClaudeMetadata?.Entrypoint;
         if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
         {
-            _terminalJumpService.ActivateClaudeDesktopWindow();
-            return; // 不论激活成功与否都不再退化到终端 —— 桌面端 session 在 CLI 里 resume
-                    // 不到，避免用户被弹出无关的终端窗口。
+            // 传 session.Title 让 UIA 在 Claude Desktop 侧边栏点对应 session 按钮 ——
+            // 不传只是激活到桌面端 home 页面，用户得自己再点一次。
+            //
+            // 必须 Task.Run 到线程池 —— 否则在 WPF UI 线程上跑 1+ 秒的 UIA enumeration
+            // 会阻塞消息泵，导致 UIA 内部依赖的 COM 调用静默失败（standalone test 在
+            // console app 上 MTA 线程跑没问题，但 WPF STA UI 线程上 sleep 200ms 期间
+            // 不泵消息，AutomationElement.FindAll 经常拿不到完整树）。
+            await Task.Run(() => _terminalJumpService.ActivateClaudeDesktopWindow(session.Title));
+            return; // 桌面 session 永不退化到终端 —— 避免用户被弹出无关的 WT 窗口
         }
 
-        // CLI / entrypoint 缺失：起新终端 resume
+        // 2) CLI 路径：先试激活当前还活着的 claude 所在的终端窗口。
+        //    所有同步 Win32 调用（toolhelp 父链、EnumWindows、AttachConsole、窗口标题打分）
+        //    挪到线程池，避免阻塞 UI（toolhelp 已经很快但 EnumWindows 还可能慢一点）。
+        var activated = await Task.Run(() => TryActivateLiveTerminal(session));
+        if (activated) return;
+
+        // 3) CLI claude 已退 / 找不到：在用户现有 WT 里新开 tab 跑 `claude --resume`
         var resumeCwd = session.JumpTarget?.WorkingDirectory
                         ?? ResolveFallbackWorkingDirectory(session);
         if (await _terminalJumpService.LaunchClaudeResumeAsync(sessionId, resumeCwd))
             return;
 
-        // 最后的兜底：原"开终端到 cwd 不跑命令"路径
+        // 4) 最后兜底：原"开终端到 cwd 不跑命令"路径
         if (session.JumpTarget != null)
         {
             await _terminalJumpService.JumpToSessionAsync(session);
@@ -928,6 +949,26 @@ public class SessionManager : IDisposable
         {
             await _terminalJumpService.JumpToWorkingDirectoryAsync(resumeCwd);
         }
+    }
+
+    /// <summary>
+    /// 同步路径：尝试激活当前还活着的 claude 所在的终端窗口。三层兜底依次：
+    ///   1. 父链向上找承载终端（含 AttachConsole 拿 conhost 的子兜底）
+    ///   2. 启发式：根据窗口标题在所有可见终端宿主里找最像的（项目名命中 +100，
+    ///      "claude" 命中 +10，"✳" 活动标记 +5）—— 处理进程树断了但终端仍存在的
+    ///      场景（claude 通过 start/.lnk/Win+R 启动时父链断在 explorer）
+    /// 找不到 / claude 已退 → 返回 false，调用方走"开新终端 resume"路径。
+    /// </summary>
+    private bool TryActivateLiveTerminal(AgentSession session)
+    {
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid) return false;
+
+        if (_terminalJumpService.ActivateTerminalByPidChain(pid)) return true;
+
+        var cwd = session.JumpTarget?.WorkingDirectory ?? ResolveFallbackWorkingDirectory(session);
+        var projDir = !string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : null;
+        return _terminalJumpService.ActivateTerminalByWindowHeuristic(projDir);
     }
 
     /// <summary>

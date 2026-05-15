@@ -607,6 +607,7 @@ public class ClaudeSessionInfo
             {
                 TranscriptPath = SourcePath,
                 Model = Model,
+                Entrypoint = Entrypoint,
                 ActiveSubagents = 0,
                 ActiveTasks = 0
             }

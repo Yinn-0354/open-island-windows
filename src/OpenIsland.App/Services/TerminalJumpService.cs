@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.IO;
-using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Automation;
 using Microsoft.Extensions.Logging;
 using OpenIsland.Core.Models;
 
@@ -179,7 +179,11 @@ public class TerminalJumpService
         {
             if (IsWindowsTerminalAvailable())
             {
-                var args = $"-d \"{cwd}\" powershell.exe -NoProfile -NoExit -Command \"claude --resume {sessionId}\"";
+                // `-w 0 new-tab`: 在最近使用的 WT 窗口里开 *新 tab*，而不是 `-d` 那样开
+                // 一个新的 WT 窗口。这样用户已有的 WT 窗口被复用 / 拉前，避免桌面被
+                // 一堆独立 WT 窗口塞满。如果当前没有 WT 窗口存在，wt 会自动创建一个。
+                // 对应 issue：用户点会话卡片，希望复用现有终端而不是每次开新窗。
+                var args = $"-w 0 new-tab -d \"{cwd}\" powershell.exe -NoProfile -NoExit -Command \"claude --resume {sessionId}\"";
                 _logger?.LogInformation("Resuming Claude session via wt+powershell: {Args}", args);
                 Process.Start(new ProcessStartInfo
                 {
@@ -219,30 +223,52 @@ public class TerminalJumpService
     ///      ApplicationFrameHost.exe 持有，owning pid 不是 claude）
     /// 排除 "Open Island" 自己的标题以免误激活。
     /// </summary>
-    public bool ActivateClaudeDesktopWindow()
+    public bool ActivateClaudeDesktopWindow(string? sessionTitle = null)
     {
         var claudePids = new HashSet<int>(
             Process.GetProcessesByName("claude").Select(p => p.Id));
 
-        IntPtr foundHwnd = IntPtr.Zero;
+        IntPtr bestHwnd = IntPtr.Zero;
+        long bestArea = 0;
+        int bestOwnerPid = 0;
 
-        // 第一遍：claude 进程持窗
+        // Claude Desktop（Electron）同一进程下有多个 Chrome_WidgetWin_1 窗口：
+        //   - 真正的用户 UI 窗口：尺寸大（例如 608x472+），rect 在屏幕内
+        //   - 任务栏代理 helper：尺寸小（例如 158x26）放在 offscreen 远端（rect 像
+        //     (-21333,-21333)），即使最小化后 IsWindowVisible 仍返回 True
+        // 不能用 "visible=True" 来挑 —— 会选到 helper，激活后用户什么也看不到。
+        // 按窗口面积选最大的那个就是用户的真实 UI（即使当前 visible=False / iconic=True），
+        // 然后 SW_SHOWNORMAL 强制恢复显示 + 拉到前台。
         if (claudePids.Count > 0)
         {
             EnumWindows((hWnd, _) =>
             {
-                if (!IsWindowVisible(hWnd)) return true;
                 GetWindowThreadProcessId(hWnd, out var pid);
                 if (!claudePids.Contains((int)pid)) return true;
                 var sb = new StringBuilder(256);
                 if (GetWindowText(hWnd, sb, 256) <= 0) return true;
-                foundHwnd = hWnd;
-                return false;
+                var cls = new StringBuilder(64);
+                GetClassName(hWnd, cls, 64);
+                if (!cls.ToString().Equals("Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (!GetWindowRect(hWnd, out var rect)) return true;
+                long w = rect.Right - rect.Left;
+                long h = rect.Bottom - rect.Top;
+                if (w <= 0 || h <= 0) return true;
+                long area = w * h;
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    bestHwnd = hWnd;
+                    bestOwnerPid = (int)pid;
+                }
+                return true;
             }, IntPtr.Zero);
         }
 
-        // 第二遍：标题含 Claude 的可见窗口
-        if (foundHwnd == IntPtr.Zero)
+        // 兜底：claude 进程名没匹配上（例如 ApplicationFrameHost 持窗的旧 UWP 形态），
+        // 退回到"标题含 Claude 的可见窗口"。
+        if (bestHwnd == IntPtr.Zero)
         {
             EnumWindows((hWnd, _) =>
             {
@@ -251,15 +277,127 @@ public class TerminalJumpService
                 if (GetWindowText(hWnd, sb, 256) <= 0) return true;
                 var title = sb.ToString();
                 if (title.IndexOf("Claude", StringComparison.OrdinalIgnoreCase) < 0) return true;
-                if (title.IndexOf("Open Island", StringComparison.OrdinalIgnoreCase) >= 0) return true; // 排除自己
-                foundHwnd = hWnd;
+                if (title.IndexOf("Open Island", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                bestHwnd = hWnd;
                 return false;
             }, IntPtr.Zero);
         }
 
-        if (foundHwnd == IntPtr.Zero) return false;
-        ActivateWindow(foundHwnd);
+        if (bestHwnd == IntPtr.Zero) return false;
+        _logger?.LogInformation(
+            "Activating Claude Desktop hwnd=0x{Hwnd:X} area={Area}",
+            bestHwnd.ToInt64(), bestArea);
+        // SW_SHOWNORMAL 对最小化 / 隐藏 / 可见都能正确恢复到正常窗口状态
+        ShowWindow(bestHwnd, SW_SHOWNORMAL);
+        ActivateWindow(bestHwnd);
+
+        // 进一步：如果传了 sessionTitle，通过 UI Automation 在侧边栏点击对应 session 按钮 ——
+        // Claude Desktop 没有 URL scheme 深链到 session（只有 /new 和 cowork/shared-artifact），
+        // UIA 是唯一可行路径。侧边栏每个 session 在 UIA 树里是 Type=Button、Name="<Phase>
+        // <Title>"（例 "Awaiting input ppt"、"Idle 实践"）的元素，支持 InvokePattern。
+        if (!string.IsNullOrEmpty(sessionTitle) && bestOwnerPid > 0)
+        {
+            TryNavigateClaudeDesktopToSession(bestOwnerPid, sessionTitle);
+        }
         return true;
+    }
+
+    /// <summary>
+    /// 用 UI Automation 在 Claude Desktop（PID = claudeDesktopPid）的侧边栏找到 Name 包含
+    /// sessionTitle 的 session 按钮，滚动到可见并 Invoke（等价用户点击）。
+    /// 失败静默 —— 激活窗口已经成功，导航只是 best-effort。
+    /// </summary>
+    private void TryNavigateClaudeDesktopToSession(int claudeDesktopPid, string sessionTitle)
+    {
+        // 落地诊断到本地文件 —— 由于 _logger 在 OpenIsland 当前 DI 配置里是 null（没接
+        // logger provider），出问题没法看日志。临时写文件直到问题确诊。
+        var diagPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-uia.log");
+        void Diag(string msg) { try { System.IO.File.AppendAllText(diagPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { } }
+
+        try
+        {
+            Diag($"begin: pid={claudeDesktopPid} title='{sessionTitle}'");
+            // Claude Desktop 从隐藏 / iconic 恢复后，Electron 渲染 sidebar 需要时间。
+            // UIA 立刻查询常拿到不完整的树（button 还没挂载）。重试 + 退避，每次 250ms，
+            // 最多 ~2s。一旦找到目标 button 立刻 Invoke 返回。
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                System.Threading.Thread.Sleep(250);
+
+                AutomationElementCollection buttons;
+                try
+                {
+                    var root = AutomationElement.RootElement;
+                    var pidCond = new PropertyCondition(AutomationElement.ProcessIdProperty, claudeDesktopPid);
+                    var typeCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
+                    var query = new AndCondition(pidCond, typeCond);
+                    buttons = root.FindAll(TreeScope.Descendants, query);
+                }
+                catch (Exception findEx)
+                {
+                    Diag($"  attempt {attempt}: FindAll threw {findEx.GetType().Name}: {findEx.Message}");
+                    continue;
+                }
+
+                AutomationElement? target = null;
+                int scanned = 0;
+                foreach (AutomationElement btn in buttons)
+                {
+                    scanned++;
+                    string name;
+                    try { name = btn.Current.Name; } catch { continue; }
+                    if (string.IsNullOrEmpty(name)) continue;
+                    if (name.StartsWith("More options for", StringComparison.OrdinalIgnoreCase)) continue;
+                    // session 按钮的 Name = "<Phase> <Title>"（"Awaiting input ppt"、"Idle 实践" 等）
+                    if (name.EndsWith(" " + sessionTitle, StringComparison.Ordinal) ||
+                        name.Equals(sessionTitle, StringComparison.Ordinal))
+                    {
+                        target = btn;
+                        Diag($"  attempt {attempt}: matched button Name='{name}' (scanned {scanned})");
+                        break;
+                    }
+                }
+
+                if (target == null)
+                {
+                    Diag($"  attempt {attempt}: button count={buttons.Count}, no match");
+                    continue;
+                }
+
+                try
+                {
+                    var scrollPattern = target.GetCurrentPattern(ScrollItemPattern.Pattern) as ScrollItemPattern;
+                    scrollPattern?.ScrollIntoView();
+                }
+                catch (Exception scrollEx)
+                {
+                    Diag($"  scroll failed: {scrollEx.Message}");
+                }
+                // 关键：必须先 SetFocus，单纯 InvokePattern.Invoke 在 Claude Desktop 上无效。
+                // 侧边栏按钮的 CSS 是 `data-[selected=focused]:text-text-000` —— React 实现里
+                // 选中 / 导航是基于 *键盘焦点*，不是 onClick 事件。programmatic click 不带焦点
+                // 状态变化，React 不识别为"选中此 session"。SetFocus 后再 Invoke 两件事都触发。
+                try { target.SetFocus(); } catch (Exception focusEx) { Diag($"  SetFocus failed: {focusEx.Message}"); }
+                System.Threading.Thread.Sleep(80);
+                var invokePattern = target.GetCurrentPattern(InvokePattern.Pattern) as InvokePattern;
+                invokePattern?.Invoke();
+                Diag($"  SetFocus + Invoke called -> done");
+                _logger?.LogInformation(
+                    "Navigated Claude Desktop to session '{Title}' after {Attempts} attempt(s)",
+                    sessionTitle, attempt + 1);
+                return;
+            }
+
+            Diag($"all 8 attempts exhausted, target not found");
+            _logger?.LogInformation(
+                "Claude Desktop sidebar: session button for title '{Title}' not found after 8 retries",
+                sessionTitle);
+        }
+        catch (Exception ex)
+        {
+            Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
+            _logger?.LogWarning(ex, "Failed to navigate Claude Desktop to session '{Title}'", sessionTitle);
+        }
     }
 
     /// <summary>
@@ -436,13 +574,88 @@ public class TerminalJumpService
     }
 
     /// <summary>
+    /// 末位兜底：父链 / AttachConsole 都没拿到 claude 对应的终端时，根据可见窗口的
+    /// 标题给所有终端宿主窗口打分，挑分数最高的激活。
+    ///
+    /// 适用场景：claude 通过 .lnk / start /B / Win+R / 文件夹右键 "Open in Terminal" 等
+    /// 启动，原始 shell 已死或被 detach；OS 级 process tree 找不到承载终端，
+    /// 但用户确实能在某个 WT/conhost 窗口里看到这个 claude 的 TUI。
+    ///
+    /// 评分（仅在分数 &gt; 0 时激活）：
+    ///   - 项目目录名命中标题 +100（最强信号；只在 tab 标题被设成项目名时才有；少见但精准）
+    ///   - "claude" 字面命中 +10（标题里出现 claude 几乎必为 claude session）
+    ///   - Claude Code 活动标记 "✳" +5（正在跑工具的 tab 通常带这个）
+    ///
+    /// 当用户有多个 WT 窗口（每个独立 claude session）时无法精确区分，但选中带 ✳ 的
+    /// "正在工作"窗口仍然比开新终端可用得多。
+    ///
+    /// Fallback when both parent-chain walk and AttachConsole fail to identify the
+    /// terminal hosting claude — score visible terminal-process windows by title and
+    /// activate the highest-scoring one.
+    /// </summary>
+    public bool ActivateTerminalByWindowHeuristic(string? projectDirName)
+    {
+        IntPtr best = IntPtr.Zero;
+        int bestScore = 0;
+
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+            GetWindowThreadProcessId(hWnd, out var pid);
+            if (pid == 0) return true;
+            string procName;
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                procName = proc.ProcessName;
+            }
+            catch { return true; }
+            if (!TerminalProcessNames.Contains(procName)) return true;
+
+            var ttl = new StringBuilder(512);
+            if (GetWindowText(hWnd, ttl, 512) <= 0) return true;
+            var title = ttl.ToString();
+
+            int score = 0;
+            if (!string.IsNullOrEmpty(projectDirName) &&
+                title.IndexOf(projectDirName, StringComparison.OrdinalIgnoreCase) >= 0)
+                score += 100;
+            if (title.IndexOf("claude", StringComparison.OrdinalIgnoreCase) >= 0)
+                score += 10;
+            if (title.IndexOf('✳') >= 0)
+                score += 5;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = hWnd;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        if (best == IntPtr.Zero || bestScore == 0) return false;
+
+        _logger?.LogInformation(
+            "Activating terminal by window heuristic: hwnd=0x{Hwnd:X} score={Score} project={Project}",
+            best.ToInt64(), bestScore, projectDirName ?? "(none)");
+        ActivateWindow(best);
+        return true;
+    }
+
+    /// <summary>
     /// 父链查找的 HWND 提取版（不激活），给 <see cref="SendKeysToTerminalAsync"/> 用 ——
     /// 它需要先拿到 HWND 才能在 SendInput 之前做前台校验。返回 IntPtr.Zero 表示链上没找到。
     /// </summary>
     private IntPtr FindTerminalHwndByPidChain(int claudePid)
     {
+        // 一次 toolhelp 快照拿全机器进程的 parent map，后续父链查找全在内存里走 ——
+        // 替代原先逐 hop 走 WMI 的方案。某些 Windows 环境 WMI 服务会偶发卡死（用户机
+        // 上观测过 30s+ 不返回 / "远程过程调用失败"），导致点会话卡片时 UI 长期无响应。
+        // toolhelp32 是纯 Win32，几 ms 出结果。
+        var parentMap = BuildProcessParentMap();
         var visited = new HashSet<int>();
         int? cur = claudePid;
+        int? topLevelClaude = null; // 父链中最顶层的 claude.exe，给 AttachConsole 兜底用
         for (int hops = 0; hops < 8 && cur is int pid && pid > 0; hops++)
         {
             if (!visited.Add(pid)) break; // 防成环
@@ -453,7 +666,15 @@ public class TerminalJumpService
                 using var p = Process.GetProcessById(pid);
                 procName = p.ProcessName;
             }
-            catch { return IntPtr.Zero; }
+            catch { break; }
+
+            // 记录沿途的最顶层 claude.exe —— 防止 ResolveClaudeProcessId 选中子 claude
+            // 时，AttachConsole 兜底走到子 claude 自己 alloc 的 console，而非用户的主终端。
+            // 用 StartsWith 而不是 Equals："claude.exe.old.<ts>"（自更新重命名后的旧
+            // exe 仍在运行）也算 claude 进程。Claude Code 在 Windows 上不能直接替换运行中
+            // 的 claude.exe，所以会把旧的改名为 claude.exe.old.<timestamp> 放着继续跑。
+            if (procName.StartsWith("claude", StringComparison.OrdinalIgnoreCase))
+                topLevelClaude = pid;
 
             if (TerminalProcessNames.Contains(procName))
             {
@@ -467,28 +688,93 @@ public class TerminalJumpService
                 }
             }
 
-            cur = GetParentProcessId(pid);
+            cur = parentMap.TryGetValue(pid, out var parent) && parent > 0 ? (int?)parent : null;
         }
+
+        // 兜底：父链里没有终端进程（典型场景：claude.exe 通过 .lnk / start /B / 文件夹
+        // 右键 "Open in Terminal" 启动，父进程是 explorer.exe）。Windows 会给它分配一个
+        // conhost.exe —— conhost 是 claude 的 *子* / sibling 进程（由 csrss 创建），父链
+        // 向上找永远找不到。改用 OS 级 console 绑定直接拿 conhost 的可见 HWND。
+        //
+        // Fallback when parent chain doesn't contain a terminal process — e.g., claude.exe
+        // started via shortcut/`start` (parent = explorer). Its console host is created as a
+        // sibling, not an ancestor, so we use the OS-level console binding to find it.
+        if (topLevelClaude is int topPid)
+        {
+            var consoleHwnd = TryGetConsoleHostWindow(topPid);
+            if (consoleHwnd != IntPtr.Zero)
+            {
+                _logger?.LogInformation(
+                    "Resolved console host hwnd=0x{Hwnd:X} for claude pid {ClaudePid} via AttachConsole(top={TopPid})",
+                    consoleHwnd.ToInt64(), claudePid, topPid);
+                return consoleHwnd;
+            }
+        }
+
         return IntPtr.Zero;
     }
 
     /// <summary>
-    /// WMI 查父 PID。一次性的同步调用，相对廉价（&lt;5ms 内本机）。
+    /// 用 AttachConsole + GetConsoleWindow 拿目标进程 console host 的窗口句柄。
+    /// 处理 claude.exe 不是从已知终端启动（父进程 = explorer 等）的情况 ——
+    /// 父链向上找不到终端进程，但 OS 给 claude 分配的 conhost.exe 是 sibling 关系，
+    /// 通过 OS 级 console 绑定能直接拿到它的可见 HWND。
+    ///
+    /// 副作用：调用期间本进程短暂 attach 到目标 console，但不重定向 std handles，
+    /// 所以不干扰 claude 的 IO，也不污染本进程的 stdin/stdout（WPF 进程根本不用它们）。
+    ///
+    /// 限制：ConPTY（Windows Terminal / Alacritty / WezTerm）下 GetConsoleWindow 返回
+    /// 隐藏的伪窗口，用 IsWindowVisible 过滤掉。这些宿主走父链查找路径已经能命中，
+    /// 不需要本 fallback。
     /// </summary>
-    private static int? GetParentProcessId(int pid)
+    private IntPtr TryGetConsoleHostWindow(int pid)
     {
+        // 防御性 detach：如果本进程已挂在别的 console（极少见：dotnet run 从终端启动
+        // 会继承宿主 console），AttachConsole 会以 ERROR_ACCESS_DENIED 失败。
+        // WPF 应用通常没有 console，FreeConsole 是 no-op，无副作用。
+        FreeConsole();
+        if (!AttachConsole(pid)) return IntPtr.Zero;
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                $"SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = {pid}");
-            using var objects = searcher.Get();
-            var obj = objects.Cast<ManagementObject>().FirstOrDefault();
-            if (obj == null) return null;
-            var raw = obj["ParentProcessId"];
-            if (raw != null && int.TryParse(raw.ToString(), out var p) && p > 0) return p;
+            var hwnd = GetConsoleWindow();
+            if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+            if (!IsWindowVisible(hwnd)) return IntPtr.Zero;
+            return hwnd;
         }
-        catch { /* 父进程查询失败：返回 null 让调用方退出循环 */ }
-        return null;
+        finally
+        {
+            FreeConsole();
+        }
+    }
+
+    /// <summary>
+    /// 用 CreateToolhelp32Snapshot 一次拿全系统进程 → 父进程 PID 的映射表。
+    /// 替代原先逐 hop 走 WMI 的方案 —— WMI 在某些环境会偶发卡几十秒（observed:
+    /// "远程过程调用失败" / RPC 调用超时），导致 JumpToSessionAsync 整个挂死。
+    /// toolhelp32 是纯 Win32 内核 API，几 ms 完成，无 IPC 依赖。
+    /// </summary>
+    private static Dictionary<int, int> BuildProcessParentMap()
+    {
+        var map = new Dictionary<int, int>(256);
+        var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        // INVALID_HANDLE_VALUE = -1
+        if (snap == IntPtr.Zero || snap.ToInt64() == -1) return map;
+        try
+        {
+            var entry = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+            if (Process32FirstW(snap, ref entry))
+            {
+                do
+                {
+                    map[(int)entry.th32ProcessID] = (int)entry.th32ParentProcessID;
+                } while (Process32NextW(snap, ref entry));
+            }
+        }
+        finally
+        {
+            CloseHandle(snap);
+        }
+        return map;
     }
 
     /// <summary>
@@ -590,6 +876,22 @@ public class TerminalJumpService
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder strText, int maxCount);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
@@ -623,11 +925,60 @@ public class TerminalJumpService
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
+    // AttachConsole / FreeConsole / GetConsoleWindow：用于 TryGetConsoleHostWindow，
+    // 通过 OS 级 console 绑定查找 claude.exe 关联的 conhost 窗口（父链查不到时的兜底）。
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FreeConsole();
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetConsoleWindow();
+
+    // CreateToolhelp32Snapshot 系列：用于 BuildProcessParentMap 一次性拿全系统进程的
+    // ParentProcessId（替代易卡死的 WMI 查询）。纯 Win32 内核 API，无 IPC 依赖。
+    private const uint TH32CS_SNAPPROCESS = 0x00000002;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct PROCESSENTRY32W
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    private const int SW_SHOWNORMAL = 1;
     private const int SW_RESTORE = 9;
     private const int SW_SHOW = 5;
     private const uint SWP_NOMOVE = 0x0002;

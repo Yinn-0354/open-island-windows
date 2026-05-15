@@ -20,6 +20,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- UIAutomationClient + UIAutomationTypes: ActivateClaudeDesktopWindow 内部用 UIA
+         在 Claude Desktop 侧边栏点击对应的 session 按钮（桌面端没有 URL scheme 支持
+         深链到具体 session，UIA 是唯一可行路径）。WindowsBase / PresentationCore 都
+         在 .NET 8 Desktop Pack 里。 -->
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OpenIsland.Core\OpenIsland.Core.csproj" />
   </ItemGroup>
 
