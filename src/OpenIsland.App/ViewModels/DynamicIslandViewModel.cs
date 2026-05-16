@@ -25,8 +25,19 @@ public partial class DynamicIslandViewModel : ObservableObject
     private readonly SessionManager _sessionManager;
     private readonly PopupWindowService _popupService;
     private readonly SystemStatsService _systemStats;
+    private readonly PlanUsageService _planUsage;
+    private readonly WorkspaceSettings _settings;
     private readonly System.Timers.Timer _greenStatusTimer;
     private bool _justCompletedTask = false;
+
+    /// <summary>
+    /// 上一次 UpdateStatusColor 算出的聚合 phase —— 用于做"沿边触发"提示音：
+    ///   · Running → Idle/Completed  ⇒ 任务完成"叮"（#1）
+    ///   · → WaitingForApproval/WaitingForAnswer 且上次不是同一关注态 ⇒ 需关注"叮"（#2）
+    /// 只在 *转换发生的那一刻* 响一次，不是每次刷新都响。
+    /// Previous aggregate phase, for edge-triggered chimes (fire once on transition).
+    /// </summary>
+    private SessionPhase? _prevAggregatePhase;
 
     /// <summary>
     /// 用户用小叉号临时收起的 session。key=sessionId，value=sawQuiet（被收起后
@@ -45,6 +56,22 @@ public partial class DynamicIslandViewModel : ObservableObject
     [ObservableProperty] private string _memText = "RAM --";
     [ObservableProperty] private string _gpuText = "GPU --";
     [ObservableProperty] private string _netText = "↓-- ↑--";
+
+    // ── Plan usage 行：Claude 订阅 5h 滚动窗口用量（API 模式只显示 token 数） ──
+    /// <summary>true = 走 API（按量付费），只显示 token 数，无进度条/重置。</summary>
+    [ObservableProperty] private bool _planIsApi;
+    /// <summary>左侧标签：Plan / API。</summary>
+    [ObservableProperty] private string _planLabel = "Plan";
+    /// <summary>Plan 模式百分比文本，如 "62%"。</summary>
+    [ObservableProperty] private string _planPercentText = "";
+    /// <summary>重置倒计时文本，如 "重置 2h13m"（无活动时空串）。</summary>
+    [ObservableProperty] private string _planResetText = "";
+    /// <summary>进度条填充比例 0..1。</summary>
+    [ObservableProperty] private double _planBarFraction;
+    /// <summary>API 模式 token 文本，如 "1.24M tokens"。</summary>
+    [ObservableProperty] private string _planValueText = "";
+    /// <summary>进度条颜色（hex 字符串，经 StrToBrush 转 Brush）：&lt;70 蓝 / 70-89 橙 / ≥90 红。</summary>
+    [ObservableProperty] private string _planBarColor = "#0A84FF";
 
     // ── 媒体控制栏：上一首 / 播放暂停 / 下一首 / 音量 ──
     private readonly MediaControlService _media;
@@ -72,6 +99,21 @@ public partial class DynamicIslandViewModel : ObservableObject
     [RelayCommand] private void MediaPlayPause() => _media.PlayPause();
     [RelayCommand] private void MediaPrev() => _media.Previous();
     [RelayCommand] private void MediaNext() => _media.Next();
+
+    // ── 提示音开关（#3）：状态栏里的小喇叭按钮绑这里 ──
+    /// <summary>提示音是否开启。初值取自 WorkspaceSettings.SoundEnabled（构造时设）。
+    /// 改动经 OnSoundEnabledChanged 落盘 + 同步 SoundService.Enabled。</summary>
+    [ObservableProperty] private bool _soundEnabled = true;
+
+    partial void OnSoundEnabledChanged(bool value)
+    {
+        // 持久化到 settings.json（保留 workspaces / plan5hTokenBudget）+ 同步运行时总开关。
+        _settings.SetSoundEnabled(value);
+        SoundService.Enabled = value;
+    }
+
+    /// <summary>喇叭按钮命令：翻转开关（OnSoundEnabledChanged 负责落盘 + 同步）。</summary>
+    [RelayCommand] private void ToggleSound() => SoundEnabled = !SoundEnabled;
 
     [ObservableProperty] private bool _isExpanded;
     [ObservableProperty] private ObservableCollection<IslandSessionItem> _sessions = new();
@@ -107,15 +149,26 @@ public partial class DynamicIslandViewModel : ObservableObject
     /// 任一 Running→Running，否则 Idle。跟 StatusDotColor 同一处计算。</summary>
     [ObservableProperty] private SessionPhase _aggregatePhase = SessionPhase.Idle;
 
-    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media)
+    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings)
     {
         _sessionManager = sessionManager;
         _popupService = popupService;
         _systemStats = systemStats;
+        _planUsage = planUsage;
         _media = media;
+        _settings = settings;
+
+        // 启动时把提示音开关对齐持久化值，并同步到 SoundService —— 否则 SoundService.Enabled
+        // 默认 true，用户上次关了重启后仍会响一次才被纠正。
+        // 直接写 backing field（非 SoundEnabled 属性）避免触发 OnSoundEnabledChanged 在
+        // 构造期回写一遍 settings（值没变，没必要落盘）。
+        _soundEnabled = settings.SoundEnabled;
+        SoundService.Enabled = settings.SoundEnabled;
+
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
         _systemStats.StatsUpdated += OnSystemStatsUpdated;
+        _planUsage.UsageUpdated += OnPlanUsageUpdated;
         // 启动时把滑块对齐到当前系统音量；之后跟着 SystemStats 的 1s tick 顺带同步，
         // 这样在别处（系统音量条/媒体键）改了音量，岛上滑块也会跟上。
         SyncVolumeFromSystem();
@@ -152,6 +205,45 @@ public partial class DynamicIslandViewModel : ObservableObject
         return $"{bytesPerSec / (1024.0 * 1024.0):0.0}M";
     }
 
+    /// <summary>
+    /// Plan usage 快照 → UI 文本/进度条。marshal 到 UI 线程方式与 OnSystemStatsUpdated 一致。
+    /// API 模式只显示 token 数；Plan 模式显示百分比 + 进度条 + 重置倒计时，
+    /// 颜色阈值：&lt;70% 蓝 / 70-89% 橙 / ≥90% 红。
+    /// </summary>
+    private void OnPlanUsageUpdated(object? sender, PlanUsageSnapshot s)
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (s.IsApi)
+            {
+                PlanIsApi = true;
+                PlanLabel = "API";
+                PlanValueText = FormatTokens(s.UsedTokens) + " tokens";
+            }
+            else
+            {
+                PlanIsApi = false;
+                PlanLabel = "Plan";
+                PlanPercentText = s.Percent + "%";
+                PlanBarFraction = s.Fraction;
+                PlanResetText = s.ResetIn is { } r && r > TimeSpan.Zero
+                    ? $"重置 {(int)r.TotalHours}h{r.Minutes:00}m"
+                    : "";
+                PlanBarColor = s.Percent >= 90 ? "#E74C3C"
+                             : s.Percent >= 70 ? "#FF9F0A"
+                             : "#0A84FF";
+            }
+        });
+    }
+
+    /// <summary>token 数人类化：≥1e6 → "1.24M"，≥1e3 → "320K"，否则原值 "950"。</summary>
+    private static string FormatTokens(ulong t)
+    {
+        if (t >= 1_000_000UL) return $"{t / 1_000_000.0:0.##}M";
+        if (t >= 1_000UL) return $"{t / 1_000.0:0.#}K";
+        return t.ToString();
+    }
+
     private void OnTaskCompleted(object? sender, AgentSession session)
     {
         System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
@@ -175,25 +267,54 @@ public partial class DynamicIslandViewModel : ObservableObject
         {
             StatusDotColor = "#E74C3C"; // 红：需关注
             AggregatePhase = SessionPhase.WaitingForApproval;
-            return;
+            // 注意：这里不能 return —— 还要走下面统一的提示音沿边判断（#1/#2），
+            // 否则"需关注"分支永远触发不了 PlayAttention。
+        }
+        else
+        {
+            // 只看用户能在岛上看到的卡片（Sessions），不再扫 GetAllSessions 全部 75+ 条。
+            // 之前用 GetAllSessions 有个隐蔽 bug：watcher 启动时全量扫描会把所有 transcripts
+            // 灌进 SessionState，其中任意一条若被卡在 Running phase（比如 mtime 抖动判断、
+            // emit 顺序问题等），灯就被永久钉死蓝色。灯只反映"用户实际正在看的会话状态"
+            // 才是符合直觉的语义。
+            var anyThinking = false;
+            foreach (var s in Sessions)
+            {
+                if (s.Phase == SessionPhase.Running)
+                {
+                    anyThinking = true;
+                    break;
+                }
+            }
+            StatusDotColor = anyThinking ? "#2196F3" : "#4CAF50";
+            AggregatePhase = anyThinking ? SessionPhase.Running : SessionPhase.Idle;
         }
 
-        // 只看用户能在岛上看到的卡片（Sessions），不再扫 GetAllSessions 全部 75+ 条。
-        // 之前用 GetAllSessions 有个隐蔽 bug：watcher 启动时全量扫描会把所有 transcripts
-        // 灌进 SessionState，其中任意一条若被卡在 Running phase（比如 mtime 抖动判断、
-        // emit 顺序问题等），灯就被永久钉死蓝色。灯只反映"用户实际正在看的会话状态"
-        // 才是符合直觉的语义。
-        var anyThinking = false;
-        foreach (var s in Sessions)
+        // ── 提示音沿边触发（#1 / #2）—— AggregatePhase 已是最终值 ──
+        // SoundService 内部已做总开关 + 1.5s 去抖，这里只负责"判断是不是发生了
+        // 该响的状态转换"。聚合级判断（不是单会话级）：覆盖桌面端 session，因为
+        // watcher 在桌面端也驱动 Idle。
+        // Edge-triggered chimes; SoundService handles mute + debounce internally.
+        var newPhase = AggregatePhase;
+
+        // #1 任务完成：Running → Idle/Completed（上一轮在思考，这一轮停手等用户）
+        if (_prevAggregatePhase == SessionPhase.Running
+            && newPhase is SessionPhase.Idle or SessionPhase.Completed)
         {
-            if (s.Phase == SessionPhase.Running)
-            {
-                anyThinking = true;
-                break;
-            }
+            SoundService.PlayTaskComplete();
         }
-        StatusDotColor = anyThinking ? "#2196F3" : "#4CAF50";
-        AggregatePhase = anyThinking ? SessionPhase.Running : SessionPhase.Idle;
+
+        // #2 需关注：进入橙色权限(WaitingForApproval) / 红色待回答(WaitingForAnswer)。
+        // SessionPhase 枚举只有 Running / WaitingForApproval / WaitingForAnswer /
+        // Completed / Idle —— 没有单独的 Attention/红色成员，"需关注"就是这两个。
+        // 仅在"上一次还不是同一个关注态"时响 —— 否则每次刷新都会重复叮。
+        if (newPhase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer
+            && _prevAggregatePhase != newPhase)
+        {
+            SoundService.PlayAttention();
+        }
+
+        _prevAggregatePhase = newPhase;
     }
 
     [RelayCommand]
@@ -308,6 +429,55 @@ public partial class DynamicIslandViewModel : ObservableObject
         if (string.IsNullOrEmpty(id)) return;
         _dismissed[id] = false; // sawQuiet 初值 false，下一次 RefreshSessions 按 phase 推进
         RefreshSessions();
+    }
+
+    /// <summary>
+    /// 点 "Open Island" 头部触发的"一键清空当前列表"——把此刻列表里的每条 session
+    /// 都按"单卡叉号收起"的同一套语义记进 _dismissed（value=false，沿用 sawQuiet 状态机），
+    /// 然后刷新一次。效果：列表立刻清空，之后谁再活动谁再回来：
+    ///   · 阻塞性 prompt（WaitingForApproval/WaitingForAnswer）—— IsHiddenByDismiss 里
+    ///     "需关注 phase 压过收起"那条规则会在本次 RefreshSessions 立即把它移出 _dismissed
+    ///     并保留可见，未答的权限不会被清掉（用户仍要回应）。
+    ///   · 其余收起的 session —— 跑完转 Idle/Completed 继续藏；安静后再次 Running（新一轮）
+    ///     或进入需关注，由既有 IsHiddenByDismiss 自动放回。
+    /// 复用既有 dismiss/reappear 状态机，不另写过滤逻辑；运行数徽章仍由 RefreshSessions
+    /// 末尾按真实运行进程数算，与"视觉清空"解耦。
+    ///
+    /// Clears the visible session list on "Open Island" header click by marking every
+    /// currently-listed session as dismissed using the *same* _dismissed semantics as the
+    /// per-card ✕ button, then refreshing once. Blocking prompts are preserved because
+    /// IsHiddenByDismiss force-unhides WaitingForApproval/WaitingForAnswer; idle/completed
+    /// stay hidden and reappear organically when they go Running again or need attention.
+    /// The running-count badge stays accurate (recomputed from live processes in RefreshSessions).
+    /// </summary>
+    private void ClearAllSessions()
+    {
+        if (Sessions.Count == 0) return;
+
+        // 快照当前 id（直接遍历 Sessions 时 RefreshSessions 会改集合，先拷出来）
+        foreach (var s in Sessions.ToList())
+        {
+            if (string.IsNullOrEmpty(s.Id)) continue;
+            // 已在 _dismissed 里的不要覆盖其 sawQuiet（保持它在状态机里的既有进度）
+            if (!_dismissed.ContainsKey(s.Id))
+                _dismissed[s.Id] = false;
+        }
+
+        // 刷新：IsHiddenByDismiss 会把刚记下的统统隐藏，但阻塞性 prompt 那条会被
+        // 立即移出 _dismissed 并保留显示——未答权限不会被误清。
+        RefreshSessions();
+    }
+
+    /// <summary>
+    /// 头部点击命令（短点而非拖拽时由 code-behind 调用）：先清空列表，再 toggle 展开。
+    /// 见 ClearAllSessions 注释 / DynamicIslandWindow.Header_MouseUp。
+    /// Header tap command: clear the list, then toggle expand. Called from code-behind
+    /// only on a genuine click (not a drag); see Header_MouseUp.
+    /// </summary>
+    public void OnHeaderTapped()
+    {
+        ClearAllSessions();
+        IsExpanded = !IsExpanded;
     }
 
     /// <summary>
@@ -432,11 +602,16 @@ public partial class IslandSessionItem : ObservableObject
     public bool ShowAlwaysButton
         => _session?.Phase == SessionPhase.WaitingForApproval && !IsDesktopSession;
 
-    /// <summary>权限卡底部提示：桌面端不提"在终端按 1/2/3"。</summary>
+    /// <summary>
+    /// 权限/问题卡底部提示。AskUserQuestion 用"点击选项 —— 同步到 Claude / 终端"；
+    /// 普通权限按 entrypoint 分（桌面端不提"在终端按 1/2/3"）。
+    /// </summary>
     public string PermissionHintText
-        => IsDesktopSession
-            ? "点击 Allow once / Deny —— 直接同步到 Claude Desktop"
-            : "点击上方任一项，或在 Claude 终端按 1 / 2 / 3";
+        => IsQuestion
+            ? "点击选项 —— 同步到 Claude / 终端"
+            : IsDesktopSession
+                ? "点击 Allow once / Deny —— 直接同步到 Claude Desktop"
+                : "点击上方任一项，或在 Claude 终端按 1 / 2 / 3";
 
     /// <summary>
     /// 权限请求时显示的"工具名 + 主要参数"标题行，例如 "WebFetch · https://vibeisland.app/"。
@@ -483,11 +658,22 @@ public partial class IslandSessionItem : ObservableObject
     }
 
     /// <summary>
+    /// AskUserQuestion 的 tool_input 解析结果：第一条 question 的标题文本 +
+    /// 该 question 的结构化选项列表。XAML 的问题选项按钮和文本详情块都从这里取，
+    /// 解析逻辑只此一处（不再在 FormatAskUserQuestion 里重复走一遍 JSON）。
+    /// </summary>
+    private readonly record struct ParsedAskQuestion(
+        string Title,
+        System.Collections.Generic.IReadOnlyList<QuestionOption> Options);
+
+    /// <summary>
     /// AskUserQuestion 的 tool_input 通常长这样（Claude Code 实际格式）：
     /// {"questions":[{"question":"...","header":"...","options":[{"label":"...","description":"..."},...],"multiSelect":false}]}
     /// 走 JsonElement 解析比 Dictionary&lt;string,object&gt; 强壮（嵌套数组/对象）。
+    /// 解析 questions[0]：拿 question 文本 + options[] → QuestionOption{Number,Label,Description}。
+    /// 单一解析入口，FormatAskUserQuestion（文本块）与 VM 结构化属性共用，避免重复。
     /// </summary>
-    private static string FormatAskUserQuestion(System.Collections.Generic.IDictionary<string, object> toolInput)
+    private static ParsedAskQuestion? ParseAskUserQuestion(System.Collections.Generic.IDictionary<string, object> toolInput)
     {
         try
         {
@@ -496,33 +682,86 @@ public partial class IslandSessionItem : ObservableObject
             if (!doc.RootElement.TryGetProperty("questions", out var qs)
                 || qs.ValueKind != System.Text.Json.JsonValueKind.Array
                 || qs.GetArrayLength() == 0)
-                return "";
+                return null;
 
-            var sb = new System.Text.StringBuilder();
-            foreach (var q in qs.EnumerateArray())
+            // 只取第一条 question（Claude Code 的 AskUserQuestion 实际就发一条；
+            // 多条时岛上聚焦第一条，其余仍可在终端/桌面端原生 UI 处理）。
+            var q = qs[0];
+            var title = q.TryGetProperty("question", out var question)
+                ? (question.GetString() ?? "")
+                : "";
+
+            var options = new System.Collections.Generic.List<QuestionOption>();
+            if (q.TryGetProperty("options", out var opts)
+                && opts.ValueKind == System.Text.Json.JsonValueKind.Array)
             {
-                if (q.TryGetProperty("question", out var question))
+                int i = 1;
+                foreach (var opt in opts.EnumerateArray())
                 {
-                    sb.Append("Q: ").AppendLine(question.GetString() ?? "");
-                }
-                if (q.TryGetProperty("options", out var opts) && opts.ValueKind == System.Text.Json.JsonValueKind.Array)
-                {
-                    int i = 1;
-                    foreach (var opt in opts.EnumerateArray())
-                    {
-                        var label = opt.TryGetProperty("label", out var l) ? l.GetString() : "";
-                        var desc = opt.TryGetProperty("description", out var d) ? d.GetString() : "";
-                        sb.Append(i++).Append(". ").AppendLine(label ?? "");
-                        if (!string.IsNullOrEmpty(desc))
-                            sb.Append("   ").AppendLine(desc);
-                    }
+                    var label = (opt.TryGetProperty("label", out var l) ? l.GetString() : "") ?? "";
+                    var desc = (opt.TryGetProperty("description", out var d) ? d.GetString() : "") ?? "";
+                    options.Add(new QuestionOption { Number = i++, Label = label, Description = desc });
                 }
             }
-            return sb.ToString().TrimEnd();
+            return new ParsedAskQuestion(title, options);
         }
         catch
         {
-            return "";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// AskUserQuestion 文本详情块（PermissionFullDetail 用）："Q: …" + 编号选项 + 描述。
+    /// 复用 <see cref="ParseAskUserQuestion"/>，不再单独走一遍 JSON。
+    /// </summary>
+    private static string FormatAskUserQuestion(System.Collections.Generic.IDictionary<string, object> toolInput)
+    {
+        var parsed = ParseAskUserQuestion(toolInput);
+        if (parsed is not { } p) return "";
+
+        var sb = new System.Text.StringBuilder();
+        if (!string.IsNullOrEmpty(p.Title))
+            sb.Append("Q: ").AppendLine(p.Title);
+        foreach (var opt in p.Options)
+        {
+            sb.Append(opt.Number).Append(". ").AppendLine(opt.Label);
+            if (!string.IsNullOrEmpty(opt.Description))
+                sb.Append("   ").AppendLine(opt.Description);
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// 这条会话当前是不是 AskUserQuestion（而非普通工具权限）。
+    /// 为 true 时 XAML 显示"选项按钮组 + Skip"，为 false 时显示原 Allow once/Deny。
+    /// </summary>
+    public bool IsQuestion
+        => string.Equals(_session?.PermissionRequest?.ToolName, "AskUserQuestion",
+                          StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// AskUserQuestion 的结构化候选答案（questions[0].options[]）。
+    /// 每项渲染成一个可点按钮，CommandParameter = Number。无 ToolInput / 解析失败 → 空。
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<QuestionOption> QuestionOptions
+    {
+        get
+        {
+            var input = _session?.PermissionRequest?.ToolInput;
+            if (input == null || input.Count == 0) return System.Array.Empty<QuestionOption>();
+            return ParseAskUserQuestion(input)?.Options ?? System.Array.Empty<QuestionOption>();
+        }
+    }
+
+    /// <summary>questions[0].question 文本（问题标题，给问题模式的小标题用）。</summary>
+    public string QuestionTitle
+    {
+        get
+        {
+            var input = _session?.PermissionRequest?.ToolInput;
+            if (input == null || input.Count == 0) return "";
+            return ParseAskUserQuestion(input)?.Title ?? "";
         }
     }
 
@@ -586,6 +825,34 @@ public partial class IslandSessionItem : ObservableObject
     [RelayCommand]
     private void Dismiss() => _onDismiss?.Invoke(Id);
 
+    // ── 权限模式切换三按钮（#4）——均为 BEST-EFFORT ──
+    // Claude Code 切权限模式只能在终端按 Shift+Tab *循环*（accept edits / auto /
+    // plan / normal），没有"直接设为模式 X"的幂等手段，所以这三个命令都只是请
+    // SessionManager 发一次 Shift+Tab 循环一格，无法保证精确停在对应模式；Claude
+    // Desktop 端无可靠机制（仅记日志后 no-op）。详见 SessionManager.SendModeSwitchAsync。
+    // Best-effort: one Shift+Tab cycle per click; exact target mode not guaranteed.
+
+    [RelayCommand]
+    private async Task AcceptEditsAsync()
+    {
+        if (_sessionManager != null && _session != null)
+            await _sessionManager.SendModeSwitchAsync(_session.Id, ModeKind.AcceptEdits);
+    }
+
+    [RelayCommand]
+    private async Task AutoModeAsync()
+    {
+        if (_sessionManager != null && _session != null)
+            await _sessionManager.SendModeSwitchAsync(_session.Id, ModeKind.Auto);
+    }
+
+    [RelayCommand]
+    private async Task PlanModeAsync()
+    {
+        if (_sessionManager != null && _session != null)
+            await _sessionManager.SendModeSwitchAsync(_session.Id, ModeKind.Plan);
+    }
+
     [RelayCommand]
     private async Task JumpAsync()
     {
@@ -633,6 +900,34 @@ public partial class IslandSessionItem : ObservableObject
     {
         if (_sessionManager != null && _session != null)
             await _sessionManager.RespondToPermissionAsync(_session.Id, '3');
+    }
+
+    /// <summary>
+    /// AskUserQuestion 选项按钮：按 1-based 编号回答。CommandParameter 绑 QuestionOption.Number
+    /// （XAML 里是 int；防御性兼容 string）。按 entrypoint 分流（CLI 终端注入数字 / Claude
+    /// Desktop UIA 点选项行），成功后清岛卡 —— 全在 SessionManager.AnswerQuestionAsync 里。
+    /// </summary>
+    [RelayCommand]
+    private async Task AnswerQuestionAsync(object? optionNumber)
+    {
+        if (_sessionManager == null || _session == null) return;
+        int n;
+        switch (optionNumber)
+        {
+            case int i: n = i; break;
+            case string s when int.TryParse(s, out var parsed): n = parsed; break;
+            default: return;
+        }
+        if (n < 1) return;
+        await _sessionManager.AnswerQuestionAsync(_session.Id, n, skip: false);
+    }
+
+    /// <summary>AskUserQuestion 的 "Skip" 按钮：跳过该问题（best-effort，见 SessionManager）。</summary>
+    [RelayCommand]
+    private async Task SkipQuestionAsync()
+    {
+        if (_sessionManager == null || _session == null) return;
+        await _sessionManager.AnswerQuestionAsync(_session.Id, 0, skip: true);
     }
 
     // 旧 Approve/Deny/AlwaysAllow 命令保留作 IIslandSession 接口兼容兜底

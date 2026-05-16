@@ -401,6 +401,38 @@ public class TerminalJumpService
     }
 
     /// <summary>
+    /// Claude Desktop 主 UI 窗口的 hwnd —— 同 ActivateClaudeDesktopWindow 的"按面积选最大
+    /// Chrome_WidgetWin_1"启发式。给 UIA 把搜索范围收窄到这个窗口子树用（不扫全桌面，避免
+    /// RootElement.FindAll 在 Electron 长跑后 COM 超时 / 命中 500+ 无关按钮）。
+    /// </summary>
+    private IntPtr FindClaudeDesktopMainHwnd()
+    {
+        var claudePids = new HashSet<int>(
+            Process.GetProcessesByName("claude").Select(p => p.Id));
+        IntPtr best = IntPtr.Zero;
+        long bestArea = 0;
+        if (claudePids.Count > 0)
+        {
+            EnumWindows((hWnd, _) =>
+            {
+                GetWindowThreadProcessId(hWnd, out var pid);
+                if (!claudePids.Contains((int)pid)) return true;
+                var cls = new StringBuilder(64);
+                GetClassName(hWnd, cls, 64);
+                if (!cls.ToString().Equals("Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (!GetWindowRect(hWnd, out var rect)) return true;
+                long w = rect.Right - rect.Left, h = rect.Bottom - rect.Top;
+                if (w <= 0 || h <= 0) return true;
+                long area = w * h;
+                if (area > bestArea) { bestArea = area; best = hWnd; }
+                return true;
+            }, IntPtr.Zero);
+        }
+        return best;
+    }
+
+    /// <summary>
     /// 桌面端权限审批：Claude Desktop（Electron）派生的子 claude.exe 跑了 PreToolUse hook 把
     /// 请求镜像到岛上，但真正的按钮在 Electron 窗口里。Claude Desktop 实测就 2 个按钮：
     /// <c>Allow once</c> / <c>Deny</c>（部分工具多一个 <c>Allow always</c>）。
@@ -448,6 +480,9 @@ public class TerminalJumpService
             _ => new[] { "allowonce" },
         };
 
+        var winHwnd = FindClaudeDesktopMainHwnd();
+        Diag($"window hwnd=0x{winHwnd.ToInt64():X} (scoped UIA search)");
+
         try
         {
             for (int attempt = 0; attempt < 8; attempt++)
@@ -457,9 +492,14 @@ public class TerminalJumpService
                 AutomationElementCollection buttons;
                 try
                 {
-                    var root = AutomationElement.RootElement;
+                    // 收窄到 Claude Desktop 窗口子树（拿不到 hwnd 才退回全桌面）。
+                    // 全桌面 RootElement.FindAll 在 Electron 长跑后会 COM 超时 / 扫到 500+
+                    // 无关按钮（见 openisland-uia.log 的 COMException / no match 回归）。
+                    var searchRoot = winHwnd != IntPtr.Zero
+                        ? AutomationElement.FromHandle(winHwnd)
+                        : AutomationElement.RootElement;
                     var typeCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
-                    buttons = root.FindAll(TreeScope.Descendants, typeCond);
+                    buttons = searchRoot.FindAll(TreeScope.Descendants, typeCond);
                 }
                 catch (Exception findEx)
                 {
@@ -467,20 +507,22 @@ public class TerminalJumpService
                     continue;
                 }
 
-                // 前缀匹配；取优先级最高、可用、非离屏、DOM 里最靠后（=最新那张卡）。
-                AutomationElement? target = null;
-                int bestRank = int.MaxValue;
+                // 前缀匹配，两段择优：
+                //  ① strict：可用 + 非离屏，最高优先级、DOM 最靠后（最新那张卡）
+                //  ② loose ：忽略 offscreen/enabled 的命中 —— Claude Desktop 长跑后常把
+                //     真按钮误报 offscreen/disabled，硬跳过会漏点（回归根因之一）。
+                // 有 strict 用 strict，没有就软回退到 loose。
+                AutomationElement? strict = null; int strictRank = int.MaxValue;
+                AutomationElement? loose = null; int looseRank = int.MaxValue;
                 var allNames = new List<string>();
                 foreach (AutomationElement btn in buttons)
                 {
-                    string name;
-                    bool offscreen, enabled;
+                    string name; bool offscreen = false, enabled = true;
                     try
                     {
-                        if (!claudePids.Contains(btn.Current.ProcessId)) continue;
                         name = btn.Current.Name;
-                        offscreen = btn.Current.IsOffscreen;
-                        enabled = btn.Current.IsEnabled;
+                        try { offscreen = btn.Current.IsOffscreen; } catch { }
+                        try { enabled = btn.Current.IsEnabled; } catch { }
                     }
                     catch { continue; }
                     if (string.IsNullOrEmpty(name)) continue;
@@ -490,15 +532,13 @@ public class TerminalJumpService
                     int rank = -1;
                     for (int i = 0; i < want.Length; i++)
                         if (n.StartsWith(want[i], StringComparison.Ordinal)) { rank = i; break; }
-                    if (rank < 0 || offscreen || !enabled) continue;
-                    // rank 越小优先级越高；同 rank 取后出现的（最新卡）
-                    if (rank <= bestRank)
-                    {
-                        bestRank = rank;
-                        target = btn;
-                    }
+                    if (rank < 0) continue;
+
+                    if (rank <= looseRank) { looseRank = rank; loose = btn; }
+                    if (!offscreen && enabled && rank <= strictRank) { strictRank = rank; strict = btn; }
                 }
 
+                var target = strict ?? loose;
                 if (target == null)
                 {
                     Diag($"  attempt {attempt}: {buttons.Count} buttons, no match for digit {digit}");
@@ -506,6 +546,8 @@ public class TerminalJumpService
                         Diag("  all button names: " + string.Join(" | ", allNames));
                     continue;
                 }
+                if (strict == null)
+                    Diag($"  soft match (button reported offscreen/disabled) for digit {digit}");
 
                 var matchedName = "?";
                 try { matchedName = target.Current.Name; } catch { }
@@ -557,6 +599,281 @@ public class TerminalJumpService
         {
             Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
             _logger?.LogWarning(ex, "Failed to respond to Claude Desktop permission");
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 桌面端 AskUserQuestion 回答：Claude Desktop（Electron）里 AskUserQuestion 弹窗
+    /// 渲染为 —— 标题(问题) + 每个选项一行(label 粗体 + description + 右侧数字徽章
+    /// 1/2/3) + Other 行(4，自由文本) + Skip 按钮 + Submit 按钮(带 Enter 提示)。
+    /// 用户希望岛上点"香蕉/苹果/西瓜"等真实选项后，在 Claude Desktop 里选中并提交。
+    ///
+    /// 复用 <see cref="RespondInClaudeDesktop"/> 的 *已验证* 结构：
+    ///   ActivateClaudeDesktopWindow(null) → 收窄到主窗口子树的 UIA FindAll →
+    ///   归一化宽松匹配 → 跳过离屏作 SOFT 偏好(软回退) → SetFocus()+Invoke() →
+    ///   重试退避 → 全量诊断写 %TEMP%\openisland-uia.log（前缀 <c>askq:</c>）。
+    ///
+    /// ⚠ 匹配 *刻意宽松且重日志*：Claude Desktop 的 AskUserQuestion 选项行 / Submit
+    /// 按钮的 UIA accessible name 我们 *还没有* 实测确认（与当初权限按钮一样）。
+    /// 选项行匹配：归一化名字 *包含 label* 或 *以编号结尾* 或 *同时含 label 与编号*；
+    /// Submit 按钮：名字含 "submit"/"提交"；Skip：名字是/含 "skip"/"跳过"。
+    /// 每个候选元素名（按钮 + 列表项 + 任意可点）都写进日志 —— 跑一次真实测试即可
+    /// 暴露真实结构，再据此收紧匹配（与当初破解权限按钮完全一样的诊断打法）。
+    ///
+    /// optionNumber: 1-based 选项序号；skip=true 时点 Skip（忽略 optionNumber/label）。
+    /// 返回是否成功点到（选项行点到即算成功，Submit/Enter 为尽力补刀）。
+    /// </summary>
+    public bool AnswerQuestionInClaudeDesktop(
+        string sessionTitle, int optionNumber, string optionLabel, bool skip)
+    {
+        var diagPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-uia.log");
+        void Diag(string msg) { try { System.IO.File.AppendAllText(diagPath, $"[{DateTime.Now:HH:mm:ss.fff}] askq: {msg}\n"); } catch { } }
+
+        Diag($"begin: optionNumber={optionNumber} label='{optionLabel}' skip={skip} session='{sessionTitle}'");
+
+        // 不做侧边栏导航：AskUserQuestion 弹窗就在当前活动会话里（与权限路径同理）。
+        if (!ActivateClaudeDesktopWindow(null))
+        {
+            Diag("ActivateClaudeDesktopWindow failed");
+            return false;
+        }
+
+        var claudePids = new HashSet<int>(
+            System.Diagnostics.Process.GetProcessesByName("claude").Select(p => p.Id));
+        if (claudePids.Count == 0) { Diag("no claude.exe process"); return false; }
+
+        // 归一化：去空白 + 转小写。选项行匹配要"包含 label"或"以编号结尾"，
+        // 不能用精确等值（行文本含 label+description+编号，不会等于任何单值）。
+        static string Norm(string s) => new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+
+        var normLabel = Norm(optionLabel ?? "");
+        var numStr = optionNumber.ToString();
+
+        var winHwnd = FindClaudeDesktopMainHwnd();
+        Diag($"window hwnd=0x{winHwnd.ToInt64():X} (scoped UIA search)");
+
+        try
+        {
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                System.Threading.Thread.Sleep(250);
+
+                // 选项行不一定是 ControlType.Button —— Claude Desktop 用 React，
+                // 行可能是 ListItem / Text / Group / Hyperlink 等。所以 *不按 ControlType
+                // 过滤*，FindAll 拿子树所有元素（收窄到主窗口子树，避免全桌面 COM 超时），
+                // 在遍历时按 name 宽松匹配 + 记录全部候选名供日后收紧。
+                AutomationElementCollection all;
+                try
+                {
+                    var searchRoot = winHwnd != IntPtr.Zero
+                        ? AutomationElement.FromHandle(winHwnd)
+                        : AutomationElement.RootElement;
+                    all = searchRoot.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                }
+                catch (Exception findEx)
+                {
+                    Diag($"  attempt {attempt}: FindAll threw {findEx.GetType().Name}: {findEx.Message}");
+                    continue;
+                }
+
+                // 候选打分（越大越优先）。三段：
+                //  3 = 名字同时含 label 与编号（最强信号，几乎确定是目标行）
+                //  2 = 名字含非空 label
+                //  1 = 名字以编号结尾（label 为空 / 没对上时退而求其次）
+                // strict（可用 + 非离屏）优先于 loose（软回退，Claude Desktop 长跑
+                // 常把真元素误报 offscreen/disabled，硬跳过会漏点 —— 权限路径同款坑）。
+                AutomationElement? strict = null; int strictScore = 0;
+                AutomationElement? loose = null; int looseScore = 0;
+                AutomationElement? skipStrict = null, skipLoose = null;
+                AutomationElement? submitStrict = null, submitLoose = null;
+                var allCandidates = new List<string>();
+
+                foreach (AutomationElement el in all)
+                {
+                    string name; bool offscreen = false, enabled = true;
+                    try
+                    {
+                        name = el.Current.Name;
+                        try { offscreen = el.Current.IsOffscreen; } catch { }
+                        try { enabled = el.Current.IsEnabled; } catch { }
+                    }
+                    catch { continue; }
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    var n = Norm(name);
+
+                    // 诊断：把所有有名字的候选都 dump（含 ControlType），一次真实
+                    // 运行就能看清 Claude Desktop AskUserQuestion 的真实 UIA 结构。
+                    if (attempt == 0 || attempt == 7)
+                    {
+                        string ct = "?";
+                        try { ct = el.Current.ControlType.ProgrammaticName; } catch { }
+                        allCandidates.Add($"[{ct}] off={offscreen} en={enabled} '{name}'");
+                    }
+
+                    // Skip 按钮：名字是/含 skip / 跳过
+                    if (n == "skip" || n.Contains("skip") || n.Contains("跳过"))
+                    {
+                        skipLoose ??= el;
+                        if (!offscreen && enabled) skipStrict ??= el;
+                    }
+
+                    // Submit 按钮：名字含 submit / 提交（屏幕上是 "Submit" + Enter 提示）
+                    if (n.Contains("submit") || n.Contains("提交"))
+                    {
+                        submitLoose ??= el;
+                        if (!offscreen && enabled) submitStrict ??= el;
+                    }
+
+                    if (skip) continue; // skip 模式只找 Skip 按钮，不评选项行
+
+                    // 选项行评分
+                    int score = 0;
+                    bool hasLabel = normLabel.Length > 0 && n.Contains(normLabel);
+                    bool endsNum = n.EndsWith(numStr, StringComparison.Ordinal);
+                    if (hasLabel && (endsNum || n.Contains(numStr))) score = 3;
+                    else if (hasLabel) score = 2;
+                    else if (endsNum) score = 1;
+                    if (score == 0) continue;
+
+                    if (score > looseScore) { looseScore = score; loose = el; }
+                    if (!offscreen && enabled && score > strictScore) { strictScore = score; strict = el; }
+                }
+
+                if (attempt == 0 || attempt == 7)
+                    Diag($"  attempt {attempt}: {all.Count} elems; candidates: " +
+                         (allCandidates.Count > 0 ? string.Join(" | ", allCandidates.Take(120)) : "(none with name)"));
+
+                // ── Skip 分支 ──
+                if (skip)
+                {
+                    var skipTarget = skipStrict ?? skipLoose;
+                    if (skipTarget == null)
+                    {
+                        Diag($"  attempt {attempt}: no Skip element yet");
+                        continue;
+                    }
+                    if (InvokeElement(skipTarget, Diag, "Skip"))
+                    {
+                        Diag($"  clicked Skip after {attempt + 1} attempt(s)");
+                        return true;
+                    }
+                    continue;
+                }
+
+                // ── 选项行分支 ──
+                var target = strict ?? loose;
+                if (target == null)
+                {
+                    Diag($"  attempt {attempt}: {all.Count} elems, no option-row match " +
+                         $"(label='{normLabel}' num={numStr})");
+                    continue;
+                }
+                if (strict == null)
+                    Diag($"  soft match (option row reported offscreen/disabled)");
+
+                var matchedName = "?";
+                try { matchedName = target.Current.Name; } catch { }
+
+                if (!InvokeElement(target, Diag, $"option#{optionNumber}"))
+                {
+                    // Invoke 没成 —— 继续重试（React handler 可能还没挂）
+                    continue;
+                }
+                Diag($"  clicked option row '{matchedName}' (num={numStr}) after {attempt + 1} attempt(s)");
+
+                // 选项点中后通常仍需显式 Submit。先找 Submit 按钮点；找不到就给
+                // 当前焦点窗口补一个 Enter（屏幕上 Submit 带 "Enter" 提示，回车等价提交）。
+                System.Threading.Thread.Sleep(150);
+                var submit = submitStrict ?? submitLoose;
+                if (submit == null)
+                {
+                    // 重新扫一遍找 Submit（点选项后 DOM 可能才挂出/启用 Submit）
+                    try
+                    {
+                        var searchRoot = winHwnd != IntPtr.Zero
+                            ? AutomationElement.FromHandle(winHwnd)
+                            : AutomationElement.RootElement;
+                        var rescan = searchRoot.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                        foreach (AutomationElement el in rescan)
+                        {
+                            string nm; try { nm = el.Current.Name; } catch { continue; }
+                            if (string.IsNullOrEmpty(nm)) continue;
+                            var nn = Norm(nm);
+                            if (nn.Contains("submit") || nn.Contains("提交")) { submit = el; break; }
+                        }
+                    }
+                    catch (Exception reEx) { Diag($"  submit rescan threw: {reEx.Message}"); }
+                }
+
+                if (submit != null && InvokeElement(submit, Diag, "Submit"))
+                {
+                    Diag("  clicked Submit");
+                }
+                else
+                {
+                    Diag("  no Submit element clickable -> sending Enter to foreground as fallback");
+                    SendVk(0x0D); // VK_RETURN —— Claude Desktop 已在前台（ActivateClaudeDesktopWindow）
+                }
+                return true;
+            }
+
+            Diag($"all 8 attempts exhausted (skip={skip} num={numStr} label='{normLabel}')");
+            _logger?.LogInformation(
+                "Claude Desktop AskUserQuestion: no match (skip={Skip} num={Num})", skip, optionNumber);
+        }
+        catch (Exception ex)
+        {
+            Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
+            _logger?.LogWarning(ex, "Failed to answer Claude Desktop AskUserQuestion");
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// AnswerQuestionInClaudeDesktop 用：对一个 UIA 元素 ScrollIntoView → SetFocus →
+    /// Invoke（Claude Desktop React UI 单纯 Invoke 无效，必须先 SetFocus —— 与
+    /// RespondInClaudeDesktop 同款必要步骤）。选项行常不是标准 button（没有
+    /// InvokePattern），退回 SelectionItemPattern.Select（单选选项行的常见实现）。
+    /// 都没有时给焦点元素补 Enter（已 SetFocus，回车等价激活当前项）。
+    /// 返回是否真的触发了某个动作。诊断走传入的 Diag。
+    /// （注：WPF 引用的托管 UIAutomation 程序集没有 LegacyIAccessiblePattern，
+    ///   故不走它；Invoke + SelectionItem + Enter 兜底已覆盖 React 行/按钮两类。）
+    /// </summary>
+    private static bool InvokeElement(AutomationElement el, Action<string> Diag, string tag)
+    {
+        try
+        {
+            var scroll = el.GetCurrentPattern(ScrollItemPattern.Pattern) as ScrollItemPattern;
+            scroll?.ScrollIntoView();
+        }
+        catch (Exception scrollEx) { Diag($"  [{tag}] scroll failed: {scrollEx.Message}"); }
+
+        try { el.SetFocus(); } catch (Exception fe) { Diag($"  [{tag}] SetFocus failed: {fe.Message}"); }
+        System.Threading.Thread.Sleep(80);
+
+        try
+        {
+            if (el.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
+            {
+                ((InvokePattern)ip).Invoke();
+                return true;
+            }
+            // 单选选项行常用 SelectionItemPattern 而非 InvokePattern
+            if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var sp))
+            {
+                ((SelectionItemPattern)sp).Select();
+                return true;
+            }
+            // 既不能 Invoke 也不能 Select，但已 SetFocus —— 补一个 Enter 激活当前焦点项。
+            Diag($"  [{tag}] no Invoke/SelectionItem pattern; sending Enter to focused element");
+            SendVk(0x0D); // VK_RETURN
+            return true;
+        }
+        catch (Exception invEx)
+        {
+            Diag($"  [{tag}] invoke failed: {invEx.GetType().Name}: {invEx.Message}");
         }
         return false;
     }
@@ -696,12 +1013,76 @@ public class TerminalJumpService
         return true;
     }
 
+    /// <summary>
+    /// 激活 claude.exe 所在终端窗口后发一次 <b>Shift+Tab</b> —— 用来让岛上"模式切换"
+    /// 按钮等价于用户在 Claude 终端按 Shift+Tab 循环权限模式（accept edits / auto /
+    /// plan / normal）。Claude Code 没有"直接设为模式 X"的幂等按键，只能循环，所以
+    /// 每次点只发一格，精确落点不保证（best-effort，调用方已注释说明）。
+    ///
+    /// 复用 <see cref="SendKeysToTerminalAsync"/> 同一套不变量：SendInput 注入到 *当前
+    /// 前台*，所以必须先把目标终端激活并校验前台 HWND 一致，否则 abort —— 绝不能把
+    /// Shift+Tab 打到错误的应用（典型：用户点击时 Claude Desktop 在前台）。
+    /// </summary>
+    public async Task<bool> SendShiftTabToTerminalAsync(int claudePid)
+    {
+        var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+        if (targetHwnd == IntPtr.Zero)
+        {
+            _logger?.LogWarning(
+                "SendShiftTabToTerminalAsync: no terminal window for claude pid {Pid}; aborting", claudePid);
+            return false;
+        }
+
+        ActivateWindow(targetHwnd);
+        await Task.Delay(350);
+
+        var fg = GetForegroundWindow();
+        if (fg != targetHwnd)
+        {
+            _logger?.LogWarning(
+                "SendShiftTabToTerminalAsync: foreground switch failed for claude pid {Pid}; aborting to avoid wrong-window input.",
+                claudePid);
+            return false;
+        }
+
+        SendShiftTab();
+        return true;
+    }
+
     private static ushort CharToVk(char c) => c switch
     {
         '\r' or '\n' => 0x0D,                  // VK_RETURN
         >= '0' and <= '9' => (ushort)(0x30 + (c - '0')),
         _ => 0
     };
+
+    private const ushort VK_SHIFT = 0x10;
+    private const ushort VK_TAB = 0x09;
+
+    /// <summary>
+    /// 发一次 Shift+Tab 组合键：SHIFT 按下 → TAB 按下 → TAB 抬起 → SHIFT 抬起。
+    /// 一次 SendInput 投递全部 4 个事件，保证修饰键包住 TAB（分多次投递偶尔会被
+    /// 终端在中间插入处理，导致 Shift 没被识别成按住）。
+    /// </summary>
+    private static void SendShiftTab()
+    {
+        var inputs = new INPUT[4];
+        // SHIFT down
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].u.ki.wVk = VK_SHIFT;
+        // TAB down
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].u.ki.wVk = VK_TAB;
+        // TAB up
+        inputs[2].type = INPUT_KEYBOARD;
+        inputs[2].u.ki.wVk = VK_TAB;
+        inputs[2].u.ki.dwFlags = KEYEVENTF_KEYUP;
+        // SHIFT up
+        inputs[3].type = INPUT_KEYBOARD;
+        inputs[3].u.ki.wVk = VK_SHIFT;
+        inputs[3].u.ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
 
     private static void SendVk(ushort vk)
     {

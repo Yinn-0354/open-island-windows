@@ -116,8 +116,14 @@ public partial class DynamicIslandWindow : Window
     {
         if (_isDragging)
         {
-            // Notch 与默认形态一样：短点 toggle 展开/收起。
-            _viewModel.IsExpanded = !_viewModel.IsExpanded;
+            // 短点（非拖拽）= 用户意图"点 Open Island"：一键清空下面所有栏目，谁活动谁再回来，
+            // 然后照旧 toggle 展开/收起（不破坏看列表的能力）。Notch 与默认形态行为一致。
+            // 清空逻辑见 DynamicIslandViewModel.ClearAllSessions（复用单卡叉号的 dismiss
+            // 状态机，未答的权限 prompt 不会被清掉）。
+            // A genuine tap (not a drag) on the "Open Island" header clears the session
+            // list (active ones reappear on their own) and then toggles expand/collapse as
+            // before — see DynamicIslandViewModel.OnHeaderTapped / ClearAllSessions.
+            _viewModel.OnHeaderTapped();
         }
         _isDragging = false;
         (sender as UIElement)?.ReleaseMouseCapture();

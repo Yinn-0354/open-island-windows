@@ -10,6 +10,19 @@ using OpenIsland.Core.Registry;
 namespace OpenIsland.App.Services;
 
 /// <summary>
+/// 权限模式切换的目标种类（岛上卡片三个图标按钮各对应一个）。
+/// 注意：Claude Code 实际只支持 Shift+Tab *循环*，没有"直接设为某模式"的按键，
+/// 所以这个枚举目前仅用于日志/语义标注，三种都触发同一个"发一次 Shift+Tab"动作。
+/// Best-effort：精确落到指定模式不保证（见 SendModeSwitchAsync 注释）。
+/// </summary>
+public enum ModeKind
+{
+    AcceptEdits,
+    Auto,
+    Plan
+}
+
+/// <summary>
 /// 会话管理服务 - 桥接核心库与UI
 /// </summary>
 public class SessionManager : IDisposable
@@ -929,6 +942,155 @@ public class SessionManager : IDisposable
         var approved = digit != '3';
         ResolvePermission(sessionId, approved, alwaysAllowRule: null);
         return true;
+    }
+
+    /// <summary>
+    /// 岛上 AskUserQuestion 选项按钮（或 Skip）→ 真实回答总入口。按 entrypoint 分流，
+    /// 镜像 <see cref="RespondToPermissionAsync"/> 的结构：
+    ///   - claude-desktop → UIA 点 Claude Desktop AskUserQuestion 弹窗里对应的选项行
+    ///     （+ 必要时点 Submit）；Skip → 点 Skip 按钮。
+    ///   - cli / 缺失     → 复用终端注入：聚焦该会话终端发 "{optionNumber}\r"
+    ///     （Claude Code 的 AskUserQuestion 是编号列表，输入数字 + Enter 即选中）；
+    ///     Skip → best-effort 发 Esc（Claude Code 无专门"跳过键"，Esc 取消当前 prompt）。
+    /// 成功后 ResolvePermission(approved:true) 清岛上卡片，与权限路径一致。
+    /// </summary>
+    public async Task<bool> AnswerQuestionAsync(string sessionId, int optionNumber, bool skip = false)
+    {
+        if (!skip && optionNumber < 1) return false;
+        var session = GetSession(sessionId);
+        if (session == null) return false;
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            // 取选项 label 让 UIA 能按"名字含 label 或 末尾是编号"匹配选项行。
+            var label = "";
+            if (!skip)
+            {
+                var input = session.PermissionRequest?.ToolInput;
+                if (input != null && input.Count > 0)
+                {
+                    label = ExtractQuestionOptionLabel(input, optionNumber);
+                }
+            }
+
+            // UIA 必须挪线程池（与 RespondToPermissionAsync 桌面分支同一个坑：
+            // WPF STA UI 线程上跑会阻塞消息泵导致 COM 静默失败）。
+            var clicked = await Task.Run(() =>
+                _terminalJumpService.AnswerQuestionInClaudeDesktop(
+                    session.Title, optionNumber, label, skip));
+            if (clicked)
+            {
+                // 点到了就清岛卡（视作已回答；Skip 也算"已处理"，卡片该消失）。
+                ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+            }
+            return clicked;
+        }
+
+        // CLI / 缺失 entrypoint：终端注入路径。
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid) return false;
+
+        // Skip：Claude Code 没有专门的"跳过 AskUserQuestion"按键。Esc 取消当前
+        // 交互 prompt 是最接近的 best-effort（SendKeysToTerminalAsync 目前只认
+        // 数字 / 回车，所以 Skip 这里发回车兜底——等价于"不选直接确认"，实测
+        // Claude Code 多会落到第一个选项；真正的 Esc 注入是已知后续项，
+        // 与桌面端 Skip 一样标注 best-effort）。
+        var keys = skip ? "\r" : $"{optionNumber}\r";
+        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, keys);
+        if (!sent) return false;
+
+        // 立刻清岛上卡片（已回答）。不持久化任何规则 —— AskUserQuestion 不是权限。
+        ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+        return true;
+    }
+
+    /// <summary>
+    /// 从 AskUserQuestion 的 tool_input 取第 optionNumber（1-based）个选项的 label。
+    /// 给 Claude Desktop UIA 做选项行匹配用。解析失败 / 越界 → 空串（调用方退化为
+    /// 仅按编号匹配）。结构同 IslandSessionItem.ParseAskUserQuestion，但这里在
+    /// Core 类型边界外、且只需要一个 label，单独走一遍轻量解析不引入耦合。
+    /// </summary>
+    private static string ExtractQuestionOptionLabel(
+        IDictionary<string, object> toolInput, int optionNumber)
+    {
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(toolInput);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("questions", out var qs)
+                || qs.ValueKind != System.Text.Json.JsonValueKind.Array
+                || qs.GetArrayLength() == 0)
+                return "";
+            var q = qs[0];
+            if (!q.TryGetProperty("options", out var opts)
+                || opts.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return "";
+            int idx = optionNumber - 1;
+            if (idx < 0 || idx >= opts.GetArrayLength()) return "";
+            var opt = opts[idx];
+            return (opt.TryGetProperty("label", out var l) ? l.GetString() : "") ?? "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// 岛上卡片"权限模式切换"三按钮（accept edits / auto / plan）的统一入口。
+    ///
+    /// ⚠ 尽力而为 (BEST-EFFORT)，刻意如此 ——
+    /// Claude Code 切换权限模式的唯一交互是<b>在它的终端里按 Shift+Tab 循环</b>
+    /// （accept edits → auto → plan → normal → …）。<b>不存在</b>"把模式设成 X"的
+    /// 幂等按键 / CLI flag / IPC。所以这里对三种 ModeKind 都只做同一件事：聚焦该
+    /// 会话的终端并发<b>一次</b> Shift+Tab（循环一格）。无法保证盲发就精确停在用户
+    /// 想要的那个模式 —— 用户可能需要点多次直到终端 TUI 上显示目标模式。
+    /// "精确按模式定位" + "Claude Desktop 端投递" 是已知后续项，与岛上权限审批
+    /// (RespondToPermissionAsync) 同样的桌面端 caveat。
+    ///
+    /// 分流（与 RespondToPermissionAsync 一致）：
+    ///   - claude-desktop entrypoint：没有终端可注入、UIA 也没有可靠的模式切换控件
+    ///     → 仅写一行 %TEMP%\openisland-uia.log 诊断，优雅 no-op（绝不抛/崩）。
+    ///   - cli / 缺失：解析 claude.exe PID → 终端发一次 Shift+Tab。
+    ///
+    /// Best-effort by design: Claude Code only cycles modes via Shift+Tab in its
+    /// terminal (no idempotent set-mode). One Shift+Tab per click; exact target mode
+    /// not guaranteed. Desktop delivery is a known follow-up (logged + no-op).
+    /// </summary>
+    public async Task<bool> SendModeSwitchAsync(string sessionId, ModeKind kind)
+    {
+        var session = GetSession(sessionId);
+        if (session == null) return false;
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            // 桌面端：没有可靠机制（既无终端注入，UIA 也没有稳定的模式切换入口）。
+            // 落一行诊断到与权限功能同一个日志文件，然后优雅 no-op —— 不抛异常、不崩。
+            try
+            {
+                var diagPath = Path.Combine(Path.GetTempPath(), "openisland-uia.log");
+                File.AppendAllText(diagPath,
+                    $"[{DateTime.Now:HH:mm:ss.fff}] mode switch requested: {kind} " +
+                    $"(desktop best-effort: not implemented)\n");
+            }
+            catch { /* 日志失败也不能影响 UI */ }
+            return false;
+        }
+
+        // CLI / 缺失 entrypoint：解析活动 claude.exe PID，聚焦其终端并发一次 Shift+Tab。
+        // 所有同步 Win32（父链 / EnumWindows / AttachConsole）挪线程池，避免阻塞 UI。
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"SendModeSwitchAsync: no live claude.exe for session {sessionId} (kind={kind}); no-op");
+            return false;
+        }
+
+        // 注意：发的是 Shift+Tab *循环*，不是"设为 {kind}"——精确落点不保证（见上方注释）。
+        return await _terminalJumpService.SendShiftTabToTerminalAsync(pid);
     }
 
     public async Task JumpToSessionAsync(string sessionId)

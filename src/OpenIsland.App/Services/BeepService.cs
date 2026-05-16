@@ -30,8 +30,21 @@ public class BeepService
     /// <param name="session">刚完成的会话</param>
     public void OnTaskCompleted(object? sender, AgentSession session)
     {
-        // 任务完成提示 — 当会话切换到 Idle 时立即触发
-        PlayBeep();
+        // 总开关：用户在岛上关了提示音就彻底静音（SoundService.Enabled 是唯一真相源）。
+        if (!SoundService.Enabled) return;
+        // 统一走 SoundService.PlayTaskComplete —— 它自带 1.5s 去抖 + 总开关判断，
+        // 这样 Stop-hook 路径与 watcher 聚合 Idle 路径对同一次完成只响一声，且开关一处生效。
+        // 仅当 SoundService 整条链都失败时才退回本类更全的降级链（Console.Beep 兜底）。
+        // Route through SoundService so the 1.5s debounce + master mute apply uniformly;
+        // only fall back to the richer local chain if SoundService itself can't make a sound.
+        try
+        {
+            SoundService.PlayTaskComplete();
+        }
+        catch
+        {
+            PlayBeep();
+        }
     }
 
     /// <summary>

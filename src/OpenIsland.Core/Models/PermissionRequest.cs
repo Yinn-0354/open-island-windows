@@ -60,6 +60,20 @@ public record QuestionPrompt
 }
 
 /// <summary>
+/// AskUserQuestion 工具的单个候选答案 —— 从 tool_input 的
+/// questions[0].options[] 解析。Number 是 1-based 序号（对应 Claude Code
+/// 终端的编号列表 / Claude Desktop 选项行右侧的数字徽章 1/2/3…）。
+/// 灵动岛把每个选项渲染成一个可点按钮，点击后按 entrypoint 分流：
+/// CLI 注入 "{Number}\r" 到终端；Claude Desktop 用 UIA 点对应选项行。
+/// </summary>
+public record QuestionOption
+{
+    public required int Number { get; init; }
+    public required string Label { get; init; }
+    public string Description { get; init; } = "";
+}
+
+/// <summary>
 /// 跳转目标（用于一键跳回终端）
 /// </summary>
 public record JumpTarget

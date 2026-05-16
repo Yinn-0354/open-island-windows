@@ -267,7 +267,15 @@
                                 Margin="8,6,8,2"
                                 Padding="12,8">
                             <Grid>
+                                <!-- 四等分固定列（原第 4 列是 Auto，网速文本变宽会把 CPU/RAM/GPU
+                                     往左推产生抖动）。改成全部 * 等宽四分之一，CPU/RAM/GPU 位置
+                                     固定不再随网速变化；网速列用 CharacterEllipsis 防溢出。
+                                     Fixed equal quarters: the old Auto net column resized with the
+                                     net text and shifted CPU/RAM/GPU. All * now → fixed positions;
+                                     net gets CharacterEllipsis so it can't overflow its quarter.
+                                     第 5 列 Auto 给提示音开关按钮（#3）。 -->
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="*"/>
@@ -297,7 +305,49 @@
                                            FontSize="11"
                                            FontFamily="Consolas, Cascadia Code, Segoe UI"
                                            VerticalAlignment="Center"
-                                           HorizontalAlignment="Right"/>
+                                           HorizontalAlignment="Right"
+                                           TextTrimming="CharacterEllipsis"/>
+
+                                <!-- 提示音开关（#3）：图标-only 小按钮。绑 SoundEnabled，
+                                     DataTrigger 切扬声器/静音字形（Segoe MDL2 Assets，跟媒体栏一致）。
+                                     Sound mute toggle: icon-only, MDL2 speaker / muted glyph. -->
+                                <Button Grid.Column="4"
+                                        Command="{Binding ToggleSoundCommand}"
+                                        Margin="8,0,0,0"
+                                        VerticalAlignment="Center"
+                                        Cursor="Hand"
+                                        FocusVisualStyle="{x:Null}"
+                                        ToolTip="提示音开 / 关">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="SndBd"
+                                                    Width="20" Height="20"
+                                                    CornerRadius="10"
+                                                    Background="Transparent">
+                                                <TextBlock x:Name="SndGlyph"
+                                                           FontFamily="Segoe MDL2 Assets"
+                                                           FontSize="12"
+                                                           Foreground="#9AA0A6"
+                                                           Text="&#xE767;"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <!-- 关闭时换静音字形（喇叭带斜杠 E74F） -->
+                                                <DataTrigger Binding="{Binding SoundEnabled}" Value="False">
+                                                    <Setter TargetName="SndGlyph" Property="Text" Value="&#xE74F;"/>
+                                                    <Setter TargetName="SndGlyph" Property="Foreground" Value="#6A6A6A"/>
+                                                </DataTrigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="SndBd" Property="Background" Value="#2A2A2A"/>
+                                                </Trigger>
+                                                <Trigger Property="IsPressed" Value="True">
+                                                    <Setter TargetName="SndBd" Property="Background" Value="#3A3A3A"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
                             </Grid>
                         </Border>
 
@@ -406,6 +456,105 @@
                             </Grid>
                         </Border>
 
+                        <!-- ── Plan usage 行：Claude 订阅 5h 滚动窗口用量 ──
+                             Plan 模式：Plan + 进度条 + 62% + 重置 2h13m
+                             API  模式：API · 1.24M tokens（无进度条/重置）
+                             配色/间距对齐上方媒体行（#111111 / CornerRadius 10 / Margin 8,0,8,2）。
+                             暂时取消：整行折叠（删掉 Visibility="Collapsed" 即恢复）。 -->
+                        <Border Background="#111111"
+                                CornerRadius="10"
+                                Margin="8,0,8,2"
+                                Padding="10,8"
+                                Visibility="Collapsed">
+                            <Border.Resources>
+                                <!-- 扁平进度条：无边框、圆角细条，Foreground 绑 PlanBarColor，
+                                     轨道 #26FFFFFF，高度 6。无 code-behind，纯模板实现 -->
+                                <Style x:Key="PlanBar" TargetType="ProgressBar">
+                                    <Setter Property="Minimum" Value="0"/>
+                                    <Setter Property="Maximum" Value="1"/>
+                                    <Setter Property="Height" Value="6"/>
+                                    <Setter Property="Foreground"
+                                            Value="{Binding PlanBarColor, Converter={StaticResource StrToBrush}}"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ProgressBar">
+                                                <Border CornerRadius="3"
+                                                        Background="#26FFFFFF"
+                                                        ClipToBounds="True">
+                                                    <Grid>
+                                                        <Border x:Name="PART_Track"/>
+                                                        <Border x:Name="PART_Indicator"
+                                                                HorizontalAlignment="Left"
+                                                                CornerRadius="3"
+                                                                Background="{TemplateBinding Foreground}"/>
+                                                    </Grid>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </Border.Resources>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- 左：Plan / API 标签（灰，跟 CPU/RAM 同字号同色） -->
+                                <TextBlock Grid.Column="0"
+                                           Text="{Binding PlanLabel}"
+                                           Foreground="#9AA0A6"
+                                           FontSize="11"
+                                           FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,10,0"/>
+
+                                <!-- Plan 模式组：进度条 + 百分比 + 重置 -->
+                                <Grid Grid.Column="1"
+                                      Visibility="{Binding PlanIsApi, Converter={StaticResource InvBoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <ProgressBar Grid.Column="0"
+                                                 Style="{StaticResource PlanBar}"
+                                                 Value="{Binding PlanBarFraction}"
+                                                 VerticalAlignment="Center"
+                                                 Margin="0,0,10,0"/>
+
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding PlanPercentText}"
+                                               Foreground="#E0E0E0"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                               VerticalAlignment="Center"/>
+
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding PlanResetText}"
+                                               Foreground="#7C8A9A"
+                                               FontSize="10"
+                                               FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                               VerticalAlignment="Center"
+                                               Margin="8,0,0,0"/>
+                                </Grid>
+
+                                <!-- API 模式组：· 1.24M tokens（替代进度条组） -->
+                                <TextBlock Grid.Column="1"
+                                           Visibility="{Binding PlanIsApi, Converter={StaticResource BoolToVis}}"
+                                           Foreground="#E0E0E0"
+                                           FontSize="11"
+                                           FontWeight="SemiBold"
+                                           FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                           VerticalAlignment="Center">
+                                    <Run Text="·" Foreground="#7C8A9A"/>
+                                    <Run Text="{Binding PlanValueText}"/>
+                                </TextBlock>
+                            </Grid>
+                        </Border>
+
                         <ScrollViewer VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled"
                                       MaxHeight="350">
@@ -448,38 +597,112 @@
                                                                VerticalAlignment="Center"/>
                                                 </StackPanel>
 
-                                                <!-- 小叉号：临时把这条 session 从灵动岛收起，
-                                                     再次活动时自动放回。Button 自己吃掉点击，
-                                                     不会触发卡片的 JumpCommand。 -->
-                                                <Button Grid.Column="2"
-                                                        Command="{Binding DismissCommand}"
-                                                        VerticalAlignment="Center"
-                                                        Margin="6,0,0,0"
-                                                        Cursor="Hand"
-                                                        ToolTip="暂时收起（再次活动时自动出现）">
-                                                    <Button.Template>
-                                                        <ControlTemplate TargetType="Button">
-                                                            <Border x:Name="XBd"
-                                                                    Width="20" Height="20"
-                                                                    CornerRadius="10"
-                                                                    Background="Transparent">
-                                                                <TextBlock Text="✕"
-                                                                           FontSize="11"
-                                                                           Foreground="#5A5A5A"
-                                                                           HorizontalAlignment="Center"
-                                                                           VerticalAlignment="Center"/>
-                                                            </Border>
-                                                            <ControlTemplate.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter TargetName="XBd" Property="Background" Value="#2A2A2A"/>
-                                                                </Trigger>
-                                                                <Trigger Property="IsPressed" Value="True">
-                                                                    <Setter TargetName="XBd" Property="Background" Value="#3A3A3A"/>
-                                                                </Trigger>
-                                                            </ControlTemplate.Triggers>
-                                                        </ControlTemplate>
-                                                    </Button.Template>
-                                                </Button>
+                                                <!-- 卡片右侧操作区：3 个权限模式切换图标按钮 + 原小叉号。
+                                                     模式按钮均为 icon-only（无文字标签），hover 提示英文；
+                                                     视觉与叉号一致（20x20 / CornerRadius 10 / hover #2A2A2A）。
+                                                     全是 Button —— 跟叉号一样自己吃掉点击，不触发卡片 JumpCommand。
+                                                     注意：Claude Code 切权限模式靠终端 Shift+Tab 轮询，没有
+                                                     幂等的"设为模式 X"按键，所以这三个按钮是尽力而为
+                                                     (best-effort)：每次点发一次 Shift+Tab 循环一格，不保证
+                                                     精确落到目标模式（详见 SessionManager.SendModeSwitchAsync）。
+                                                     Row of 3 permission-mode toggles + the original ✕. Mode
+                                                     buttons are icon-only; English tooltip on hover. Delivery is
+                                                     best-effort (Claude Code cycles modes via Shift+Tab; no
+                                                     idempotent set-mode key) — see SendModeSwitchAsync. -->
+                                                <StackPanel Grid.Column="2"
+                                                            Orientation="Horizontal"
+                                                            VerticalAlignment="Center">
+                                                    <StackPanel.Resources>
+                                                        <!-- 共用：20x20 圆角图标按钮模板（叉号同款 hover） -->
+                                                        <Style x:Key="CardIconBtn" TargetType="Button">
+                                                            <Setter Property="Cursor" Value="Hand"/>
+                                                            <Setter Property="VerticalAlignment" Value="Center"/>
+                                                            <Setter Property="Margin" Value="2,0,0,0"/>
+                                                            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                                            <Setter Property="Template">
+                                                                <Setter.Value>
+                                                                    <ControlTemplate TargetType="Button">
+                                                                        <Border x:Name="IBd"
+                                                                                Width="20" Height="20"
+                                                                                CornerRadius="10"
+                                                                                Background="Transparent">
+                                                                            <ContentPresenter HorizontalAlignment="Center"
+                                                                                              VerticalAlignment="Center"/>
+                                                                        </Border>
+                                                                        <ControlTemplate.Triggers>
+                                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                                <Setter TargetName="IBd" Property="Background" Value="#2A2A2A"/>
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsPressed" Value="True">
+                                                                                <Setter TargetName="IBd" Property="Background" Value="#3A3A3A"/>
+                                                                            </Trigger>
+                                                                        </ControlTemplate.Triggers>
+                                                                    </ControlTemplate>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </StackPanel.Resources>
+
+                                                    <!-- accept edits（接受编辑模式）E73E = 勾选框字形 -->
+                                                    <Button Style="{StaticResource CardIconBtn}"
+                                                            Command="{Binding AcceptEditsCommand}"
+                                                            ToolTip="accept edits">
+                                                        <TextBlock Text="&#xE73E;"
+                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="11"
+                                                                   Foreground="#5A5A5A"/>
+                                                    </Button>
+                                                    <!-- auto mode（自动模式）E945 = 闪电字形 -->
+                                                    <Button Style="{StaticResource CardIconBtn}"
+                                                            Command="{Binding AutoModeCommand}"
+                                                            ToolTip="auto mode">
+                                                        <TextBlock Text="&#xE945;"
+                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="11"
+                                                                   Foreground="#5A5A5A"/>
+                                                    </Button>
+                                                    <!-- plan mode（计划模式）E70F = 编辑/铅笔字形 -->
+                                                    <Button Style="{StaticResource CardIconBtn}"
+                                                            Command="{Binding PlanModeCommand}"
+                                                            ToolTip="plan mode">
+                                                        <TextBlock Text="&#xE70F;"
+                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="11"
+                                                                   Foreground="#5A5A5A"/>
+                                                    </Button>
+
+                                                    <!-- 小叉号：临时把这条 session 从灵动岛收起，
+                                                         再次活动时自动放回。Button 自己吃掉点击，
+                                                         不会触发卡片的 JumpCommand。（保持原样，放最后） -->
+                                                    <Button Command="{Binding DismissCommand}"
+                                                            VerticalAlignment="Center"
+                                                            Margin="6,0,0,0"
+                                                            Cursor="Hand"
+                                                            ToolTip="暂时收起（再次活动时自动出现）">
+                                                        <Button.Template>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border x:Name="XBd"
+                                                                        Width="20" Height="20"
+                                                                        CornerRadius="10"
+                                                                        Background="Transparent">
+                                                                    <TextBlock Text="✕"
+                                                                               FontSize="11"
+                                                                               Foreground="#5A5A5A"
+                                                                               HorizontalAlignment="Center"
+                                                                               VerticalAlignment="Center"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="XBd" Property="Background" Value="#2A2A2A"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsPressed" Value="True">
+                                                                        <Setter TargetName="XBd" Property="Background" Value="#3A3A3A"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Button.Template>
+                                                    </Button>
+                                                </StackPanel>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
@@ -545,20 +768,89 @@
                                            MaxHeight="160"/>
                             </Border>
 
-                            <!-- 选项区：文案按 entrypoint 走（桌面端严格镜像 Claude
-                                 Desktop 的 Allow once / Deny；CLI 保留终端 1/2/3） -->
-                            <Button Content="{Binding YesButtonLabel}"
-                                    Command="{Binding RespondYesCommand}"
-                                    Style="{StaticResource AppleButtonPrimary}"
-                                    Margin="0,0,0,7"/>
-                            <Button Content="{Binding AlwaysButtonLabel}"
-                                    Command="{Binding RespondAlwaysCommand}"
-                                    Visibility="{Binding ShowAlwaysButton, Converter={StaticResource BoolToVis}}"
-                                    Style="{StaticResource AppleButtonPrimary}"
-                                    Margin="0,0,0,7"/>
-                            <Button Content="{Binding NoButtonLabel}"
-                                    Command="{Binding RespondNoCommand}"
-                                    Style="{StaticResource AppleButtonSecondary}"/>
+                            <!-- ===========================================================
+                                 选项区两套互斥（IsQuestion 切换，绑在 PermissionSession
+                                 这个 DataContext 上 —— 与 YesButtonLabel 等同级，可达）：
+                                  · IsQuestion=false → 普通工具权限：Allow once / (Always) /
+                                    Deny，文案按 entrypoint 走（行为 100% 不变）。
+                                  · IsQuestion=true  → AskUserQuestion：每个候选答案一个
+                                    按钮（"{Number}. {Label}"，description 作副文案 + ToolTip），
+                                    竖排可滚，末尾一个 Skip。点击 → AnswerQuestionCommand
+                                    (CommandParameter=Number) / SkipQuestionCommand。
+                                 =========================================================== -->
+
+                            <!-- 普通权限按钮组（IsQuestion=false 时显示） -->
+                            <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource InvBoolToVis}}">
+                                <Button Content="{Binding YesButtonLabel}"
+                                        Command="{Binding RespondYesCommand}"
+                                        Style="{StaticResource AppleButtonPrimary}"
+                                        Margin="0,0,0,7"/>
+                                <Button Content="{Binding AlwaysButtonLabel}"
+                                        Command="{Binding RespondAlwaysCommand}"
+                                        Visibility="{Binding ShowAlwaysButton, Converter={StaticResource BoolToVis}}"
+                                        Style="{StaticResource AppleButtonPrimary}"
+                                        Margin="0,0,0,7"/>
+                                <Button Content="{Binding NoButtonLabel}"
+                                        Command="{Binding RespondNoCommand}"
+                                        Style="{StaticResource AppleButtonSecondary}"/>
+                            </StackPanel>
+
+                            <!-- AskUserQuestion 选项按钮组（IsQuestion=true 时显示） -->
+                            <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
+                                <!-- 选项可能较多 —— 限高滚动（复用全局扁平 ScrollBar 样式） -->
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              MaxHeight="260">
+                                    <ItemsControl ItemsSource="{Binding QuestionOptions}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <!-- 整行一个按钮：主行 "{Number}. {Label}" +
+                                                     description 小字副行；description 同时挂
+                                                     ToolTip（长描述行内省略后仍可悬停看全文）。
+                                                     复用 Apple 主按钮观感（白底深字 + 圆角 9）。 -->
+                                                <Button Command="{Binding DataContext.AnswerQuestionCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding Number}"
+                                                        Style="{StaticResource AppleButtonPrimary}"
+                                                        HorizontalContentAlignment="Left"
+                                                        Margin="0,0,0,7"
+                                                        ToolTip="{Binding Description}">
+                                                    <StackPanel>
+                                                        <TextBlock FontSize="13"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="#1C1C1E"
+                                                                   TextWrapping="Wrap">
+                                                            <Run Text="{Binding Number, Mode=OneWay}"/><Run Text=". "/><Run Text="{Binding Label, Mode=OneWay}"/>
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding Description}"
+                                                                   FontSize="11"
+                                                                   Foreground="#6C6C70"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,3,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Style.Triggers>
+                                                                        <!-- 没 description 就整行折叠，不留空白 -->
+                                                                        <DataTrigger Binding="{Binding Description}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+
+                                <!-- Skip：跳过该问题（深底浅字次按钮，与 Deny 同观感） -->
+                                <Button Content="Skip"
+                                        Command="{Binding SkipQuestionCommand}"
+                                        Style="{StaticResource AppleButtonSecondary}"
+                                        Margin="0,3,0,0"/>
+                            </StackPanel>
 
                             <TextBlock Text="{Binding PermissionHintText}"
                                        Foreground="#48484A"

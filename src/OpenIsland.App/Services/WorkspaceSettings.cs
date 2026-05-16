@@ -14,6 +14,18 @@ public class WorkspaceSettings
 
     public List<string> Workspaces { get; private set; } = new();
 
+    /// <summary>
+    /// Plan usage 行的 5 小时窗口 token 预算。0 = 未配置（PlanUsageService 走自适应历史峰值）。
+    /// </summary>
+    public ulong Plan5hTokenBudget { get; private set; }
+
+    /// <summary>
+    /// 灵动岛提示音总开关（任务完成 / 需关注的"叮"）。默认 true（开）。
+    /// false = 全局静音，SoundService 据此 no-op。json key = "soundEnabled"。
+    /// Master mute for the island's completion / attention chimes. Default true.
+    /// </summary>
+    public bool SoundEnabled { get; private set; } = true;
+
     public event EventHandler? Changed;
 
     public WorkspaceSettings()
@@ -31,6 +43,22 @@ public class WorkspaceSettings
             .Select(p => p.TrimEnd('\\', '/'))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置 Plan usage 5h token 预算 + 持久化 + 通知监听者。</summary>
+    public void SetPlan5hTokenBudget(ulong v)
+    {
+        Plan5hTokenBudget = v;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置提示音总开关 + 持久化 + 通知监听者。</summary>
+    public void SetSoundEnabled(bool v)
+    {
+        SoundEnabled = v;
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -68,6 +96,20 @@ public class WorkspaceSettings
                     .Select(s => s!.TrimEnd('\\', '/'))
                     .ToList();
             }
+            // plan5hTokenBudget 缺失 / 解析失败 → 保持默认 0
+            if (doc.RootElement.TryGetProperty("plan5hTokenBudget", out var budget)
+                && budget.ValueKind == JsonValueKind.Number
+                && budget.TryGetUInt64(out var b))
+            {
+                Plan5hTokenBudget = b;
+            }
+            // soundEnabled 缺失 / 解析失败 → 保持默认 true（旧 settings.json 没这个 key
+            // 时不静音，符合"默认开"语义）
+            if (doc.RootElement.TryGetProperty("soundEnabled", out var snd)
+                && (snd.ValueKind == JsonValueKind.True || snd.ValueKind == JsonValueKind.False))
+            {
+                SoundEnabled = snd.GetBoolean();
+            }
         }
         catch (Exception ex)
         {
@@ -81,8 +123,15 @@ public class WorkspaceSettings
         {
             var dir = Path.GetDirectoryName(_path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            // 三个 key 一起序列化 —— 写任一项都不丢另外两项
+            // (workspaces / plan5hTokenBudget / soundEnabled 互不覆盖)
             var payload = JsonSerializer.Serialize(
-                new { workspaces = Workspaces },
+                new
+                {
+                    workspaces = Workspaces,
+                    plan5hTokenBudget = Plan5hTokenBudget,
+                    soundEnabled = SoundEnabled
+                },
                 new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_path, payload);
         }

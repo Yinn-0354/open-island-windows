@@ -6,6 +6,24 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-17
+
+### Added
+
+- **提示音** —— 会话从 Running → Idle/Completed（任务完成）以及进入需关注状态（橙色权限 / 红色待答）时各响一声，沿状态边缘触发；系统状态栏新增喇叭开关，静音状态持久化
+- **每会话快捷模式按钮** —— 每张会话卡新增小图标按钮（accept edits / auto / plan，hover 显示英文），一键切该 Claude 会话的权限模式
+- **点头部一键清空会话列表** —— 点击 "Open Island" 头部清空当前会话列表；会话下次活动时自动重现
+
+### Fixed
+
+- **GPU 利用率在非英文 Windows 不显示（"GPU --"）** —— 改用 PDH 英文计数器 API（`PdhAddEnglishCounterW`）读取 GPU Engine "Utilization Percentage"，与系统语言无关，非英文 Windows 也显示真实 %
+- **状态栏数值抖位** —— CPU / RAM / GPU 不再随网速文本宽度变化而左右抖动（状态栏列宽固定）
+
+### Changed
+
+- **系统状态栏增加提示音开关列** —— 状态栏布局新增喇叭静音/取消静音按钮
+- **会话卡操作区在 × 前新增三个模式按钮** —— accept edits / auto / plan，紧挨临时收起的 × 之前
+
 ## [0.2.1] - 2026-05-16
 
 ### Fixed
@@ -77,7 +95,8 @@ All notable changes to Open Island will be documented here.
 - Permission 面板按钮配色从 3 色改为 Apple 风 2 色（白底深字 = 主，深底浅字 = 次）
 - Token 百分比统一口径（分子分母都含 cache token，加和恒等于 100%）
 
-[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.1.0

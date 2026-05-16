@@ -24,14 +24,15 @@
 
 ---
 
-Open Island is a Windows tray companion that surfaces the live state of AI coding agents (primarily Claude Code) on a macOS-inspired Dynamic Island floating at the top of your screen — including permission prompts, token usage, active sessions, and notch-style snap mode.
+Open Island is a Windows tray companion that surfaces the live state of AI coding agents (primarily Claude Code) on a macOS-inspired Dynamic Island floating at the top of your screen — including permission prompts, token usage, and active sessions.
 
 - 🎮 **Pixel status sprite** — the header status indicator is an animated pixel-art sprite bound to session phase: bouncing while Claude works, resting (with a short idle animation every 30s) when done
-- 📈 **System stats bar** — live CPU / RAM / GPU / network throughput, refreshed every second
+- 📈 **System stats bar** — live CPU / RAM / GPU / network throughput, refreshed every second (GPU works on any Windows locale)
+- 🔔 **Sound notifications** — a chime when a task finishes and when a session needs your attention; mute toggle in the stats bar
 - 🎵 **Media controls** — prev / play-pause / next + a system volume slider, works with any player (Spotify, browser, music apps…)
 - 📡 **Permission mirror** — Claude Code's `PreToolUse` prompts mirror to the island so you can decide `1/2/3` without alt-tabbing back to the terminal
+- ⚡ **Per-session mode buttons** — quick icon buttons on each session card to switch that session's permission mode (accept edits / auto / plan)
 - 📊 **Stats dashboard** — sessions / tokens / model breakdown / activity heatmap, with All / 30d / 7d filters
-- 🪟 **Notch mode** — drag near the top of the screen to snap into a macOS-notch-shaped capsule
 - 🚀 **One-click resume** — clicking a session card runs `claude --resume {sessionId}` for CLI sessions, or brings the Claude Desktop app window to the front for desktop sessions
 
 Stays out of the way — sits in collapsed mode at the top of the screen while you play DOTA, write code, or watch a stream:
@@ -48,17 +49,16 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 
   <img src="docs/screenshots/dynamic-island.png" alt="running sprite" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="idle sprite" width="380"/>
 
-- **System stats bar** — a row of CPU / RAM / GPU / network speed between the header and the session list, refreshed every second (`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine counters / `NetworkInterface`)
+- **System stats bar** — a row of CPU / RAM / GPU / network speed between the header and the session list, refreshed every second (`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine counters / `NetworkInterface`). GPU utilization is read via the PDH **English-counter** API (`PdhAddEnglishCounterW`), so it reports a real % even on non-English Windows. Column widths are fixed so CPU/RAM/GPU don't jitter as the network text changes width
+- **Sound notifications** — the island plays a chime when a session goes Running → Idle/Completed (task done) and when it enters a needs-attention state (orange permission / red awaiting answer). A speaker toggle in the system stats bar mutes/unmutes (persisted)
 - **Media controls** — prev / play-pause / next (system media keys, works with Spotify, browsers, any player) plus a system volume slider (CoreAudio `IAudioEndpointVolume`, two-way synced)
-- **Session card dismiss** — a small × on each card to temporarily hide a session; it reappears on its next activity (a new Running round or an attention phase)
+- **Per-session quick-mode buttons** — each session card has small icon buttons (hover shows "accept edits" / "auto mode" / "plan mode") to quickly switch that Claude session's permission mode, plus a × to temporarily hide the card; a hidden card reappears on its next activity (a new Running round or an attention phase)
+- **Click the header to clear** — clicking the "Open Island" header clears the session list; sessions reappear automatically when they next become active
 - **Dynamic Island** — floating top-screen indicator for active sessions, tagged by tool icon, project name, and a colored status dot
 - **Permission mirror** — Claude Code's `PreToolUse` permission prompts are mirrored to the island. The three buttons inject `1` / `2` / `3` keystrokes into the Claude terminal via `SendInput`, equivalent to typing them yourself
 
   <img src="docs/screenshots/permission-mirror.png" alt="Permission Request mirrored to the island while DOTA 2 is running" width="800"/>
 
-- **Notch snap** — drag the island to within 28px of the top of the screen and release to snap into a macOS-notch-style capsule; drag back down past 48px to restore the floating form
-
-  <img src="docs/screenshots/notch-mode.png" alt="Notch / capsule mode" width="480"/>
 - **Control Center** — three tabs:
   - **Sessions** — all Claude conversations (sorted by transcript mtime)
   - **Overview** — Total tokens / Active days / Current/Longest streak / Peak hour / Favorite model + 84-day activity heatmap
