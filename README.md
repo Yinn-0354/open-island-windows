@@ -12,7 +12,11 @@
 
 <br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island — running state" width="400"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island — idle state" width="400"/>
+<img src="docs/screenshots/open-island.gif" alt="Open Island demo" width="760"/>
+
+<br/><br/>
+
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island — running state" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island — idle state" width="380"/>
 
 <sub>The header sprite is a pixel-art animation bound to session phase — blue &amp; bouncing while Claude works, red &amp; resting when idle/done. Live CPU·RAM·GPU·net bar and media controls sit right below.</sub>
 

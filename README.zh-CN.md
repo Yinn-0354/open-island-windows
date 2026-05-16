@@ -12,7 +12,11 @@
 
 <br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island 运行态" width="400"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island 空闲态" width="400"/>
+<img src="docs/screenshots/open-island.gif" alt="Open Island 演示" width="760"/>
+
+<br/><br/>
+
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island 运行态" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island 空闲态" width="380"/>
 
 <sub>头部状态点是绑定会话阶段的像素动画 —— Claude 工作时蓝色上下跳动，空闲/完成时红色休息。下方是实时 CPU·内存·GPU·网速栏和媒体控制。</sub>
 

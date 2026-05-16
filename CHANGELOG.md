@@ -6,6 +6,16 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-16
+
+### Fixed
+
+- **Claude Desktop 桌面端权限按钮无反应** —— 桌面端会话点灵动岛权限按钮无反应（之前只对终端有效）：按 entrypoint 分流，claude-desktop 经 UI Automation 点 Claude Desktop 弹窗里的真实按钮（实测真名 `Allow once Ctrl+Enter` / `Deny`，前缀匹配；SetFocus 后 Invoke）
+
+### Changed
+
+- **桌面端权限卡按钮文案镜像 Claude Desktop** —— 桌面端会话灵动岛权限卡按钮文案严格镜像 Claude Desktop（`Allow once` / `Deny`，2 键），不再套终端的 1/2/3 模板；底部提示相应调整
+
 ## [0.2.0] - 2026-05-16
 
 ### Added
@@ -67,5 +77,7 @@ All notable changes to Open Island will be documented here.
 - Permission 面板按钮配色从 3 色改为 Apple 风 2 色（白底深字 = 主，深底浅字 = 次）
 - Token 百分比统一口径（分子分母都含 cache token，加和恒等于 100%）
 
-[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.1
+[0.2.0]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.1.0
