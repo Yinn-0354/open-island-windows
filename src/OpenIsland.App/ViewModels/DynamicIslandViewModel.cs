@@ -398,6 +398,25 @@ public partial class IslandSessionItem : ObservableObject
     public bool ShowApproveButton => _session?.Phase == SessionPhase.WaitingForApproval;
 
     /// <summary>
+    /// 桌面端会话（Claude Desktop）—— 权限按钮要严格镜像 Electron 弹窗的真实文案
+    /// （Allow once / Deny），不能套终端那套 1/2/3 模板。
+    /// </summary>
+    private bool IsDesktopSession
+        => string.Equals(_session?.ClaudeMetadata?.Entrypoint, "claude-desktop",
+                          StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 主按钮文案：桌面端 = Claude Desktop 真实的 "Allow once"；CLI = 终端的 "1. Yes"。
+    /// </summary>
+    public string YesButtonLabel => IsDesktopSession ? "Allow once" : "1. Yes";
+
+    /// <summary>
+    /// 拒绝按钮文案：桌面端 = "Deny"；CLI = 终端那条长文案。
+    /// </summary>
+    public string NoButtonLabel
+        => IsDesktopSession ? "Deny" : "3. No, and tell Claude what to do differently";
+
+    /// <summary>
     /// 第二按钮文案。SuggestedAlwaysAllow 推到时用 "Yes, don't ask again for {scope}"，
     /// 推不到（hook payload 缺 tool_name 等极端情况）兜底成纯 "2. Yes, don't ask again"，
     /// 不让按钮因为没规则就消失 —— 用户体验上 1/2/3 三键应该恒定可见。
@@ -407,12 +426,17 @@ public partial class IslandSessionItem : ObservableObject
            ?? "2. Yes, don't ask again";
 
     /// <summary>
-    /// 第二按钮的显隐：只跟 phase 走。原来还查 SuggestedAlwaysAllow != null，
-    /// 但那条规则可空（见 BuildAllowRule 的 toolName 为空分支），结果 ToolSearch 这种
-    /// hook 偶尔没拿到 tool_name 就少一个按钮。
+    /// 第二按钮的显隐：CLI 跟 phase 走；桌面端隐藏 —— Claude Desktop 基础权限弹窗
+    /// 就 Allow once / Deny 两个，没有"总是允许"，岛上多一个会对不上（用户反馈的核心）。
     /// </summary>
     public bool ShowAlwaysButton
-        => _session?.Phase == SessionPhase.WaitingForApproval;
+        => _session?.Phase == SessionPhase.WaitingForApproval && !IsDesktopSession;
+
+    /// <summary>权限卡底部提示：桌面端不提"在终端按 1/2/3"。</summary>
+    public string PermissionHintText
+        => IsDesktopSession
+            ? "点击 Allow once / Deny —— 直接同步到 Claude Desktop"
+            : "点击上方任一项，或在 Claude 终端按 1 / 2 / 3";
 
     /// <summary>
     /// 权限请求时显示的"工具名 + 主要参数"标题行，例如 "WebFetch · https://vibeisland.app/"。
@@ -586,28 +610,29 @@ public partial class IslandSessionItem : ObservableObject
     }
 
     /// <summary>
-    /// 1./2./3. 按钮：把数字 + Enter 物理注入进 claude.exe 所在终端窗口。等同于用户
-    /// 直接在 Claude 终端键入数字 —— 终端 prompt 解析、tool 跑（或拒），同时本地清岛卡。
+    /// 1./2./3. 按钮：按 entrypoint 分流响应权限 —— CLI 注入终端按键，Claude Desktop
+    /// 用 UIA 点 Electron 窗口里的允许/拒绝按钮（桌面端没有终端可注入）。两条路径都在
+    /// 成功后本地清岛卡。
     /// </summary>
     [RelayCommand]
     private async Task RespondYesAsync()
     {
         if (_sessionManager != null && _session != null)
-            await _sessionManager.RespondInTerminalAsync(_session.Id, '1');
+            await _sessionManager.RespondToPermissionAsync(_session.Id, '1');
     }
 
     [RelayCommand]
     private async Task RespondAlwaysAsync()
     {
         if (_sessionManager != null && _session != null)
-            await _sessionManager.RespondInTerminalAsync(_session.Id, '2');
+            await _sessionManager.RespondToPermissionAsync(_session.Id, '2');
     }
 
     [RelayCommand]
     private async Task RespondNoAsync()
     {
         if (_sessionManager != null && _session != null)
-            await _sessionManager.RespondInTerminalAsync(_session.Id, '3');
+            await _sessionManager.RespondToPermissionAsync(_session.Id, '3');
     }
 
     // 旧 Approve/Deny/AlwaysAllow 命令保留作 IIslandSession 接口兼容兜底

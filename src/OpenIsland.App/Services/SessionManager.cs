@@ -881,6 +881,37 @@ public class SessionManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// 岛上 1/2/3 → 权限响应总入口。按 entrypoint 分流：
+    ///   - cli / 缺失   → 注入终端按键（<see cref="RespondInTerminalAsync"/>）
+    ///   - claude-desktop → UIA 点 Claude Desktop 权限弹窗按钮（Electron 没有终端可注入，
+    ///     子 claude.exe 跑了 hook 把请求镜像到岛，但"允许/拒绝"在桌面端窗口里）
+    /// </summary>
+    public async Task<bool> RespondToPermissionAsync(string sessionId, char digit)
+    {
+        if (digit is not ('1' or '2' or '3')) return false;
+        var session = GetSession(sessionId);
+        if (session == null) return false;
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            // UIA enumeration 必须挪线程池 —— WPF STA UI 线程上跑会阻塞消息泵导致 COM
+            // 调用静默失败（与 JumpToSessionAsync 桌面分支同一个坑）。
+            var clicked = await Task.Run(
+                () => _terminalJumpService.RespondInClaudeDesktop(session.Title, digit));
+            if (clicked)
+            {
+                // 点到按钮才清岛上橙卡；没点到就保留 —— 用户可重试或直接去 Claude Desktop 点。
+                ResolvePermission(sessionId, approved: digit != '3', alwaysAllowRule: null);
+            }
+            return clicked;
+        }
+
+        // CLI / 缺失 entrypoint：原终端按键注入路径（保持不变）
+        return await RespondInTerminalAsync(sessionId, digit);
+    }
+
     public async Task<bool> RespondInTerminalAsync(string sessionId, char digit)
     {
         if (digit is not ('1' or '2' or '3')) return false;

@@ -401,6 +401,167 @@ public class TerminalJumpService
     }
 
     /// <summary>
+    /// 桌面端权限审批：Claude Desktop（Electron）派生的子 claude.exe 跑了 PreToolUse hook 把
+    /// 请求镜像到岛上，但真正的按钮在 Electron 窗口里。Claude Desktop 实测就 2 个按钮：
+    /// <c>Allow once</c> / <c>Deny</c>（部分工具多一个 <c>Allow always</c>）。
+    ///
+    /// 关键修正（旧实现踩的坑，见 openisland-uia.log）：
+    ///   1. 不再用会话标题做侧边栏导航 —— 权限弹窗就在当前活动会话里，标题还常是超长 URL
+    ///      匹配不上；只把窗口拉前台。
+    ///   2. <b>精确等值</b>匹配归一化按钮名，不再 contains —— 否则 "Look…" 命中 "ok"、
+    ///      弹窗标题 "Allow Claude to use PowerShell?" 命中 "allow"（且它不是真正的按钮，
+    ///      Invoke 抛 "不支持的模式"）。
+    ///   3. 取**最后一个非离屏**的精确匹配 —— 历史已答的权限卡可能还残留在消息流里。
+    ///   4. Invoke 不支持时回退 LegacyIAccessible.DoDefaultAction。
+    ///
+    /// digit: '1'=Allow once / '2'=Allow always（无则退回 once）/ '3'=Deny。返回是否点到。
+    /// </summary>
+    public bool RespondInClaudeDesktop(string sessionTitle, char digit)
+    {
+        if (digit is not ('1' or '2' or '3')) return false;
+
+        var diagPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-uia.log");
+        void Diag(string msg) { try { System.IO.File.AppendAllText(diagPath, $"[{DateTime.Now:HH:mm:ss.fff}] perm: {msg}\n"); } catch { } }
+
+        // 不做侧边栏导航：权限弹窗在当前会话里，传 null 让 ActivateClaudeDesktopWindow
+        // 只把 Electron 主窗口拉前台（按面积选真 UI + SW_SHOWNORMAL）。
+        if (!ActivateClaudeDesktopWindow(null))
+        {
+            Diag($"ActivateClaudeDesktopWindow failed (digit {digit}, session '{sessionTitle}')");
+            return false;
+        }
+
+        var claudePids = new HashSet<int>(
+            System.Diagnostics.Process.GetProcessesByName("claude").Select(p => p.Id));
+        if (claudePids.Count == 0) { Diag("no claude.exe process"); return false; }
+
+        // 归一化：去空白 + 转小写，做**精确等值**比较。
+        static string Norm(string s) => new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+
+        // 真实按钮名（实测）：Deny / "Allow once Ctrl+Enter"（带快捷键后缀！）。
+        // 所以用**前缀**匹配而非精确等值。digit '1' 只认 "allowonce" 开头 —— 不要加
+        // 裸 "allow"，否则会命中弹窗标题 "Allow Claude to use X?"。
+        string[] want = digit switch
+        {
+            '2' => new[] { "allowalways", "alwaysallow", "allowforthis", "allowonce" }, // 无 always 退回 once
+            '3' => new[] { "deny", "reject", "decline", "don'tallow", "dontallow" },
+            _ => new[] { "allowonce" },
+        };
+
+        try
+        {
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                System.Threading.Thread.Sleep(250);
+
+                AutomationElementCollection buttons;
+                try
+                {
+                    var root = AutomationElement.RootElement;
+                    var typeCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
+                    buttons = root.FindAll(TreeScope.Descendants, typeCond);
+                }
+                catch (Exception findEx)
+                {
+                    Diag($"  attempt {attempt}: FindAll threw {findEx.GetType().Name}: {findEx.Message}");
+                    continue;
+                }
+
+                // 前缀匹配；取优先级最高、可用、非离屏、DOM 里最靠后（=最新那张卡）。
+                AutomationElement? target = null;
+                int bestRank = int.MaxValue;
+                var allNames = new List<string>();
+                foreach (AutomationElement btn in buttons)
+                {
+                    string name;
+                    bool offscreen, enabled;
+                    try
+                    {
+                        if (!claudePids.Contains(btn.Current.ProcessId)) continue;
+                        name = btn.Current.Name;
+                        offscreen = btn.Current.IsOffscreen;
+                        enabled = btn.Current.IsEnabled;
+                    }
+                    catch { continue; }
+                    if (string.IsNullOrEmpty(name)) continue;
+                    if (attempt == 7) allNames.Add(name); // 没命中时最后一轮才 dump，省日志
+
+                    var n = Norm(name);
+                    int rank = -1;
+                    for (int i = 0; i < want.Length; i++)
+                        if (n.StartsWith(want[i], StringComparison.Ordinal)) { rank = i; break; }
+                    if (rank < 0 || offscreen || !enabled) continue;
+                    // rank 越小优先级越高；同 rank 取后出现的（最新卡）
+                    if (rank <= bestRank)
+                    {
+                        bestRank = rank;
+                        target = btn;
+                    }
+                }
+
+                if (target == null)
+                {
+                    Diag($"  attempt {attempt}: {buttons.Count} buttons, no match for digit {digit}");
+                    if (attempt == 7 && allNames.Count > 0)
+                        Diag("  all button names: " + string.Join(" | ", allNames));
+                    continue;
+                }
+
+                var matchedName = "?";
+                try { matchedName = target.Current.Name; } catch { }
+
+                try
+                {
+                    var scrollPattern = target.GetCurrentPattern(ScrollItemPattern.Pattern) as ScrollItemPattern;
+                    scrollPattern?.ScrollIntoView();
+                }
+                catch (Exception scrollEx) { Diag($"  scroll failed: {scrollEx.Message}"); }
+
+                // 先 SetFocus 再 Invoke（单纯 Invoke 在 Claude Desktop React 上无效）。
+                try { target.SetFocus(); } catch (Exception fe) { Diag($"  SetFocus failed: {fe.Message}"); }
+                System.Threading.Thread.Sleep(80);
+
+                bool acted = false;
+                try
+                {
+                    if (target.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
+                    {
+                        ((InvokePattern)ip).Invoke();
+                        acted = true;
+                    }
+                    else
+                    {
+                        Diag($"  '{matchedName}' has no InvokePattern; retrying");
+                    }
+                }
+                catch (Exception invEx)
+                {
+                    Diag($"  invoke failed on '{matchedName}': {invEx.GetType().Name}: {invEx.Message}");
+                }
+
+                if (acted)
+                {
+                    Diag($"  clicked '{matchedName}' for digit {digit} after {attempt + 1} attempt(s)");
+                    _logger?.LogInformation(
+                        "Claude Desktop permission: clicked '{Btn}' for digit {Digit}", matchedName, digit);
+                    return true;
+                }
+                // Invoke 没成 —— 继续重试（可能 React 还没挂好 handler）
+            }
+
+            Diag($"all 8 attempts exhausted, no clickable button for digit {digit}");
+            _logger?.LogInformation(
+                "Claude Desktop permission button for digit {Digit} not found/clickable", digit);
+        }
+        catch (Exception ex)
+        {
+            Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
+            _logger?.LogWarning(ex, "Failed to respond to Claude Desktop permission");
+        }
+        return false;
+    }
+
+    /// <summary>
     /// 跳转到Windows Terminal
     /// </summary>
     private async Task<bool> JumpToWindowsTerminalAsync(JumpTarget target)
