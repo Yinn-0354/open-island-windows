@@ -12,7 +12,9 @@
 
 <br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island floating dynamic island" width="640"/>
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island — running state" width="400"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island — idle state" width="400"/>
+
+<sub>The header sprite is a pixel-art animation bound to session phase — blue &amp; bouncing while Claude works, red &amp; resting when idle/done. Live CPU·RAM·GPU·net bar and media controls sit right below.</sub>
 
 </div>
 
@@ -20,6 +22,9 @@
 
 Open Island is a Windows tray companion that surfaces the live state of AI coding agents (primarily Claude Code) on a macOS-inspired Dynamic Island floating at the top of your screen — including permission prompts, token usage, active sessions, and notch-style snap mode.
 
+- 🎮 **Pixel status sprite** — the header status indicator is an animated pixel-art sprite bound to session phase: bouncing while Claude works, resting (with a short idle animation every 30s) when done
+- 📈 **System stats bar** — live CPU / RAM / GPU / network throughput, refreshed every second
+- 🎵 **Media controls** — prev / play-pause / next + a system volume slider, works with any player (Spotify, browser, music apps…)
 - 📡 **Permission mirror** — Claude Code's `PreToolUse` prompts mirror to the island so you can decide `1/2/3` without alt-tabbing back to the terminal
 - 📊 **Stats dashboard** — sessions / tokens / model breakdown / activity heatmap, with All / 30d / 7d filters
 - 🪟 **Notch mode** — drag near the top of the screen to snap into a macOS-notch-shaped capsule
@@ -33,6 +38,15 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 
 ## ✨ Features
 
+- **Pixel status sprite** — the header indicator is a pixel-art sprite (Aseprite sheet, nearest-neighbor + integer scaling so it stays crisp at 125% / 150% DPI) bound to `SessionPhase`:
+  - **Running** → continuous loop + a gentle up-and-down bounce
+  - **Idle / Completed** → holds the last frame, then every 30s randomly picks one of several idle variants (`idle.png` / `idle2.png` / `idle3.png` … auto-discovered, drop a file in to add one) and plays it once
+
+  <img src="docs/screenshots/dynamic-island.png" alt="running sprite" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="idle sprite" width="380"/>
+
+- **System stats bar** — a row of CPU / RAM / GPU / network speed between the header and the session list, refreshed every second (`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine counters / `NetworkInterface`)
+- **Media controls** — prev / play-pause / next (system media keys, works with Spotify, browsers, any player) plus a system volume slider (CoreAudio `IAudioEndpointVolume`, two-way synced)
+- **Session card dismiss** — a small × on each card to temporarily hide a session; it reappears on its next activity (a new Running round or an attention phase)
 - **Dynamic Island** — floating top-screen indicator for active sessions, tagged by tool icon, project name, and a colored status dot
 - **Permission mirror** — Claude Code's `PreToolUse` permission prompts are mirrored to the island. The three buttons inject `1` / `2` / `3` keystrokes into the Claude terminal via `SendInput`, equivalent to typing them yourself
 

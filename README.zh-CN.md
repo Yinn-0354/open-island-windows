@@ -12,7 +12,9 @@
 
 <br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island 灵动岛形态" width="640"/>
+<img src="docs/screenshots/dynamic-island.png" alt="Open Island 运行态" width="400"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island 空闲态" width="400"/>
+
+<sub>头部状态点是绑定会话阶段的像素动画 —— Claude 工作时蓝色上下跳动，空闲/完成时红色休息。下方是实时 CPU·内存·GPU·网速栏和媒体控制。</sub>
 
 </div>
 
@@ -20,6 +22,9 @@
 
 Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码代理的运行状态、Token 用量、权限请求都汇聚到屏幕顶部一个 macOS 风格的"灵动岛"上。
 
+- 🎮 **像素状态精灵** —— 头部状态指示器是绑定会话阶段的像素动画：Claude 工作时跳动，完成后休息（每 30s 随机播一遍空闲小动作）
+- 📈 **系统状态栏** —— 实时 CPU / 内存 / GPU / 网速，1 秒刷新一次
+- 🎵 **媒体控制** —— 上一首 / 播放暂停 / 下一首 + 系统音量滑块，网易云 / Spotify / 浏览器 / 任意播放器通用
 - 📡 **实时镜像** Claude Code 的权限询问，让你不用切回终端就能 `1/2/3` 决策
 - 📊 **统计面板** —— sessions / token / 模型占比 / 活跃热力图，全部 / 30 天 / 7 天三档可切
 - 🪟 **Notch 模式** —— 拖到屏顶吸附成 macOS 刘海形态，不占主屏
@@ -33,6 +38,15 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 
 ## ✨ Features
 
+- **像素状态精灵** —— 头部指示器是像素动画（Aseprite sprite sheet，NearestNeighbor + 整数倍缩放，125% / 150% DPI 不糊），绑 `SessionPhase`：
+  - **Running** → 连续循环 + 整体上下跳动
+  - **Idle / Completed** → 停在最后一帧，每 30s 从多个空闲变体（`idle.png` / `idle2.png` / `idle3.png` … 自动发现，加图不改代码）里随机挑一个完整播一遍
+  
+  <img src="docs/screenshots/dynamic-island.png" alt="运行态精灵" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="空闲态精灵" width="380"/>
+
+- **系统状态栏** —— 头部与会话列表之间一行 CPU / 内存 / GPU / 网速，1 秒刷新（`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine 计数器 / `NetworkInterface`）
+- **媒体控制栏** —— 上一首 / 播放暂停 / 下一首（系统媒体键，网易云 / Spotify / 任意播放器通用）+ 系统音量滑块（CoreAudio `IAudioEndpointVolume`，双向同步）
+- **会话卡片小叉号** —— 每张卡片右侧一个 ×，临时收起某条会话；再次活动（新一轮 Running 或需关注阶段）自动重现
 - **Dynamic Island** —— 屏顶悬浮的活跃会话指示器，按工具图标 + 项目名 + 状态点显示
 - **Permission mirror** —— Claude Code 的 PreToolUse 权限询问会同时镜像到岛上，配合三按钮（Yes / Yes don't ask again / No），点击会通过 SendInput 注入对应数字到 Claude 终端
 
