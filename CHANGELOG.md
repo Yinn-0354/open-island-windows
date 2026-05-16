@@ -6,6 +6,28 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-16
+
+### Added
+
+- **像素状态精灵** — 灵动岛 header 的状态点换成绑 SessionPhase 的像素动画（Aseprite sprite sheet，NearestNeighbor + 整数倍缩放，125%/150% DPI 不糊）：
+  - Running → 连续循环 + 整体上下跳动
+  - Idle / Completed → 平时停最后一帧，每 30s 从多个变体里随机挑一个完整播一遍（小动作 + 24/7 省电，定时器只在那 ~1.5s 跑）
+  - 变体机制：`idle.png` / `idle2.png` / `idle3.png`… 自动发现，加图不改代码
+- **系统状态栏** — 头部与会话列表之间一行 CPU / 内存 / GPU / 网速，1s 刷新（GetSystemTimes / GlobalMemoryStatusEx / GPU Engine 计数器 / NetworkInterface）
+- **媒体控制栏** — 上一首 / 播放暂停 / 下一首（系统媒体键，网易云/Spotify/任意播放器通用）+ 系统音量滑块（CoreAudio IAudioEndpointVolume，双向同步）
+- **会话卡片小叉号** — 临时收起某条 session；再次活动（新一轮 Running 或需关注 phase）自动重现，纯内存临时态
+- **品牌图标** — face.ico 用作 exe / 任务栏 / 系统托盘 / 窗口图标（多尺寸，最近邻保持像素清晰）
+- **DESIGN.md** — 引入 Apple 设计语言文档（来自 awesome-design-md）供后续 UI 参考
+
+### Fixed
+
+- **终端激活鲁棒性** — WMI 父链查询换成 CreateToolhelp32Snapshot（某些环境 WMI 卡死 30s+ 导致点会话卡片无响应/开新终端）；三层兜底：父链 → AttachConsole conhost → 窗口标题打分；处理 `claude.exe.old.<ts>` 自更新改名
+- **复用现有 WT** — `claude --resume` 用 `wt -w 0 new-tab` 在现有窗口开新 tab，不再每次弹独立窗口
+- **桌面端 session 状态** — Claude Desktop 不跑用户 hook，Stop hook 永不触发导致一轮结束后永远卡蓝灯；watcher 改为对 desktop session 用末条 assistant 的 `stop_reason ∈ {end_turn, stop_sequence}` 转 Idle（绿）
+- **桌面 session 跳转** — entrypoint 优先分流；ActivateClaudeDesktopWindow 按窗口面积选真 UI（避开 offscreen Electron 任务栏代理 helper）、SW_SHOWNORMAL 恢复隐藏窗口、UIA SetFocus+Invoke 在侧边栏精确切到对应会话
+- **ClaudeMetadata.Entrypoint 丢失** — 扫描 tick 重建 metadata 时漏填 Entrypoint，被 ApplyClaudeMetadataUpdated 整体替换清空，导致桌面 session 路由失效
+
 ## [0.1.0] - 2025-04-30
 
 第一个公开版本。

@@ -89,6 +89,8 @@ public partial class App : Application
         services.AddSingleton<SetupService>();
         services.AddSingleton<BeepService>();
         services.AddSingleton<WorkspaceSettings>();
+        services.AddSingleton<SystemStatsService>();
+        services.AddSingleton<MediaControlService>();
 
         // UI服务
         services.AddSingleton<TrayIconService>();

@@ -15,6 +15,7 @@ public class TrayIconService : IDisposable
     private readonly SessionManager _sessionManager;
     private TaskbarIcon? _trayIcon;
     private System.Windows.Controls.MenuItem? _countMenuItem;
+    private Icon? _faceIcon; // face.ico 加载一次缓存，三种状态共用
 
     public TrayIconService(PopupWindowService popupService, SessionManager sessionManager)
     {
@@ -198,20 +199,33 @@ public class TrayIconService : IDisposable
         return menu;
     }
 
-    private Icon CreateIcon()
+    /// <summary>
+    /// 托盘图标 = face.ico（嵌入的 Resource）。加载一次缓存复用 ——
+    /// 不要每次 UpdateIcon 都 new（System.Drawing.Icon 持非托管句柄，频繁建会泄漏）。
+    /// 失败兜底 SystemIcons.Application，绝不让托盘建不出来。
+    /// </summary>
+    private Icon FaceIcon()
     {
-        return SystemIcons.Application;
+        if (_faceIcon != null) return _faceIcon;
+        try
+        {
+            var uri = new Uri("pack://application:,,,/OpenIsland;component/Assets/face.ico", UriKind.Absolute);
+            var stream = System.Windows.Application.GetResourceStream(uri)?.Stream;
+            if (stream != null)
+            {
+                using (stream)
+                    _faceIcon = new Icon(stream); // 多尺寸 ico，Windows 自动按 DPI 选合适大小
+            }
+        }
+        catch { /* 落到兜底 */ }
+        return _faceIcon ??= SystemIcons.Application;
     }
 
-    private Icon CreateRunningIcon(int count)
-    {
-        return SystemIcons.Application;
-    }
+    private Icon CreateIcon() => FaceIcon();
 
-    private Icon CreateAttentionIcon(int count)
-    {
-        return SystemIcons.Exclamation;
-    }
+    private Icon CreateRunningIcon(int count) => FaceIcon();
+
+    private Icon CreateAttentionIcon(int count) => FaceIcon();
 
     public void Dispose()
     {
@@ -219,6 +233,8 @@ public class TrayIconService : IDisposable
         {
             _trayIcon?.Dispose();
             _sessionManager.SessionsChanged -= OnSessionsChanged;
+            if (_faceIcon != null && _faceIcon != SystemIcons.Application)
+                _faceIcon.Dispose();
         }
         catch { }
     }

@@ -344,11 +344,23 @@ public class ClaudeTranscriptWatcher : IDisposable
         //   末尾 = assistant + end_turn/stop_sequence → Idle（明确"我说完了"信号）
         //   末尾 = assistant + tool_use           → Running，允许兜底（end_turn 没刷盘的常见形态）
         var lastMain = session.Messages.LastOrDefault(m => m.Role == "user" || m.Role == "assistant");
-        // Watcher 默认只 emit Running —— 任务完成靠 Claude Code 的 Stop hook 判定，避免
-        // 之前 stop_reason 推断在 multi-step 中段误判 Idle、绿灯/响铃乱闪。
-        // 但仍保留一个**确定性**信号：Ctrl+C 中断标记 [Request interrupted]，Claude Code
-        // 这种情况通常不发 Stop hook，必须由 watcher 兜底。
-        bool isIdle = lastMain != null && lastMain.Role == "user" && lastMain.IsInterruptMarker;
+        // CLI session：任务完成靠 Claude Code 的 Stop hook（SessionManager eventName=="stop"
+        // 分支翻 Idle），watcher 默认只 emit Running，仅 [Request interrupted] 中断标记兜底
+        // —— 避免之前 stop_reason 推断在 multi-step 中段误判 Idle、绿灯/响铃乱闪。
+        //
+        // Claude Desktop session：内置 claude.exe 不跑用户安装的 hook，Stop hook 永远不来，
+        // 否则桌面 session 一轮结束后永远卡在蓝灯（Running）回不到绿灯（Idle）。这种情况
+        // 必须由 watcher 用「末条主消息 = assistant 且 stop_reason ∈ {end_turn,
+        // stop_sequence}」作为权威的"我这轮说完了"信号转 Idle。
+        // 安全性：带 tool_use 的中间 assistant 消息 stop_reason 是 "tool_use"，不是
+        // end_turn/stop_sequence，所以这个判断不会在 multi-step 中段误判完成。
+        bool isDesktop = string.Equals(session.Entrypoint, "claude-desktop",
+            StringComparison.OrdinalIgnoreCase);
+        bool isIdle =
+            (lastMain != null && lastMain.Role == "user" && lastMain.IsInterruptMarker) ||
+            (isDesktop && lastMain != null && lastMain.Role == "assistant" &&
+             (string.Equals(lastMain.StopReason, "end_turn", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(lastMain.StopReason, "stop_sequence", StringComparison.OrdinalIgnoreCase)));
         var newPhase = isIdle ? SessionPhase.Idle : SessionPhase.Running;
         bool eligibleForIdleFallback = false;
         _eligibleForIdleFallback.TryRemove(path, out _);

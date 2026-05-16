@@ -24,8 +24,54 @@ public partial class DynamicIslandViewModel : ObservableObject
 {
     private readonly SessionManager _sessionManager;
     private readonly PopupWindowService _popupService;
+    private readonly SystemStatsService _systemStats;
     private readonly System.Timers.Timer _greenStatusTimer;
     private bool _justCompletedTask = false;
+
+    /// <summary>
+    /// 用户用小叉号临时收起的 session。key=sessionId，value=sawQuiet（被收起后
+    /// 是否已经走到过 Idle/Completed 安静态）。语义：
+    ///   · 被收起后仍 Running（本轮没结束）→ 继续隐藏
+    ///   · 走到 Idle/Completed → sawQuiet=true，仍隐藏（本轮活动收尾）
+    ///   · 安静后再次 Running（新一轮）→ 移出、重新显示
+    ///   · 任意时刻进入 WaitingForApproval/WaitingForAnswer（需关注）→ 立即移出、
+    ///     重新显示（阻塞性 prompt 不允许被永久藏掉）
+    /// 进程退出 / 重启应用后自然清空（仅内存，符合"临时"语义）。
+    /// </summary>
+    private readonly Dictionary<string, bool> _dismissed = new();
+
+    // ── 系统状态栏：CPU / 内存 / GPU / 网速 ──
+    [ObservableProperty] private string _cpuText = "CPU --";
+    [ObservableProperty] private string _memText = "RAM --";
+    [ObservableProperty] private string _gpuText = "GPU --";
+    [ObservableProperty] private string _netText = "↓-- ↑--";
+
+    // ── 媒体控制栏：上一首 / 播放暂停 / 下一首 / 音量 ──
+    private readonly MediaControlService _media;
+    private bool _suppressVolumeWriteback;
+    /// <summary>系统主音量 0~100，绑滑块。setter 直接写 CoreAudio。</summary>
+    [ObservableProperty] private double _volume = 50;
+
+    partial void OnVolumeChanged(double value)
+    {
+        // 程序化从系统同步过来的不回写（防自激）；只有 UI 拖动才写 CoreAudio
+        if (_suppressVolumeWriteback) return;
+        _media.SetVolume((float)(value / 100.0));
+    }
+
+    /// <summary>从系统主音量拉一次填到滑块（启动 + 定时同步），不触发回写。</summary>
+    private void SyncVolumeFromSystem()
+    {
+        var v = _media.GetVolume();
+        if (v < 0) return;
+        _suppressVolumeWriteback = true;
+        Volume = Math.Round(v * 100.0);
+        _suppressVolumeWriteback = false;
+    }
+
+    [RelayCommand] private void MediaPlayPause() => _media.PlayPause();
+    [RelayCommand] private void MediaPrev() => _media.Previous();
+    [RelayCommand] private void MediaNext() => _media.Next();
 
     [ObservableProperty] private bool _isExpanded;
     [ObservableProperty] private ObservableCollection<IslandSessionItem> _sessions = new();
@@ -57,12 +103,22 @@ public partial class DynamicIslandViewModel : ObservableObject
     // 灯颜色：红=需关注，蓝=运行中，绿=就绪/刚完成
     [ObservableProperty] private string _statusDotColor = "#4CAF50";
 
-    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService)
+    /// <summary>聚合会话状态（给像素状态精灵绑）：需关注→WaitingForApproval，
+    /// 任一 Running→Running，否则 Idle。跟 StatusDotColor 同一处计算。</summary>
+    [ObservableProperty] private SessionPhase _aggregatePhase = SessionPhase.Idle;
+
+    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media)
     {
         _sessionManager = sessionManager;
         _popupService = popupService;
+        _systemStats = systemStats;
+        _media = media;
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
+        _systemStats.StatsUpdated += OnSystemStatsUpdated;
+        // 启动时把滑块对齐到当前系统音量；之后跟着 SystemStats 的 1s tick 顺带同步，
+        // 这样在别处（系统音量条/媒体键）改了音量，岛上滑块也会跟上。
+        SyncVolumeFromSystem();
 
         // 绿色状态计时器：3秒后恢复
         _greenStatusTimer = new System.Timers.Timer(3000);
@@ -74,6 +130,26 @@ public partial class DynamicIslandViewModel : ObservableObject
         _greenStatusTimer.AutoReset = false;
 
         RefreshSessions();
+    }
+
+    private void OnSystemStatsUpdated(object? sender, SystemStatsSnapshot s)
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            CpuText = $"CPU {s.CpuPercent:0}%";
+            MemText = $"RAM {s.MemPercent:0}%";
+            GpuText = s.GpuPercent < 0 ? "GPU --" : $"GPU {s.GpuPercent:0}%";
+            NetText = $"↓{FormatRate(s.NetDownBytesPerSec)} ↑{FormatRate(s.NetUpBytesPerSec)}";
+            SyncVolumeFromSystem(); // 顺带把滑块对齐系统音量（别处改了也跟上）
+        });
+    }
+
+    /// <summary>字节/秒 → 紧凑字符串：&lt;1KB 显示 B/s，&lt;1MB 显示 KB/s，否则 MB/s。</summary>
+    private static string FormatRate(double bytesPerSec)
+    {
+        if (bytesPerSec < 1024) return $"{bytesPerSec:0}B";
+        if (bytesPerSec < 1024 * 1024) return $"{bytesPerSec / 1024.0:0}K";
+        return $"{bytesPerSec / (1024.0 * 1024.0):0.0}M";
     }
 
     private void OnTaskCompleted(object? sender, AgentSession session)
@@ -98,6 +174,7 @@ public partial class DynamicIslandViewModel : ObservableObject
         if (AttentionCount > 0)
         {
             StatusDotColor = "#E74C3C"; // 红：需关注
+            AggregatePhase = SessionPhase.WaitingForApproval;
             return;
         }
 
@@ -116,6 +193,7 @@ public partial class DynamicIslandViewModel : ObservableObject
             }
         }
         StatusDotColor = anyThinking ? "#2196F3" : "#4CAF50";
+        AggregatePhase = anyThinking ? SessionPhase.Running : SessionPhase.Idle;
     }
 
     [RelayCommand]
@@ -176,12 +254,14 @@ public partial class DynamicIslandViewModel : ObservableObject
             if (session != null)
             {
                 assignedIds.Add(session.Id);
-                active.Add(new IslandSessionItem(session, _sessionManager));
+                if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
+                active.Add(new IslandSessionItem(session, _sessionManager, DismissSession));
             }
             else
             {
                 // 进程刚起来、scan 还没扫到 ——退到 RunningSessionInfo 显示
-                active.Add(new IslandSessionItem(r, _sessionManager));
+                if (IsHiddenByDismiss(r.SessionId, null)) continue;
+                active.Add(new IslandSessionItem(r, _sessionManager, DismissSession));
             }
         }
 
@@ -221,6 +301,48 @@ public partial class DynamicIslandViewModel : ObservableObject
         try { return System.IO.File.GetLastWriteTimeUtc(path); }
         catch { return null; }
     }
+
+    /// <summary>用户点小叉号：记录收起，立刻刷新列表把卡片移出。</summary>
+    private void DismissSession(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        _dismissed[id] = false; // sawQuiet 初值 false，下一次 RefreshSessions 按 phase 推进
+        RefreshSessions();
+    }
+
+    /// <summary>
+    /// 返回 true = 这条 session 当前应保持隐藏（被收起且还没"再次活动"）。
+    /// 会按 phase 推进 _dismissed 的状态机（见 _dismissed 字段注释）。
+    /// </summary>
+    private bool IsHiddenByDismiss(string id, SessionPhase? phase)
+    {
+        if (string.IsNullOrEmpty(id) || !_dismissed.TryGetValue(id, out var sawQuiet))
+            return false;
+
+        // 需关注 phase 压过收起 —— 阻塞性 prompt 必须冒出来
+        if (phase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer)
+        {
+            _dismissed.Remove(id);
+            return false;
+        }
+
+        // 走到安静态：本轮活动收尾，标记 sawQuiet，仍隐藏
+        if (phase is SessionPhase.Idle or SessionPhase.Completed)
+        {
+            _dismissed[id] = true;
+            return true;
+        }
+
+        // 安静之后又 Running = 新一轮活动 → 重新显示
+        if (phase is SessionPhase.Running && sawQuiet)
+        {
+            _dismissed.Remove(id);
+            return false;
+        }
+
+        // 其它（收起时还在 Running，本轮没结束；或没有 phase 信息的兜底项）→ 继续隐藏
+        return true;
+    }
 }
 
 public partial class IslandSessionItem : ObservableObject
@@ -228,6 +350,7 @@ public partial class IslandSessionItem : ObservableObject
     private readonly AgentSession? _session;
     private readonly RunningSessionInfo? _runningInfo;
     private readonly SessionManager? _sessionManager;
+    private readonly Action<string>? _onDismiss;
 
     public string Id => _session?.Id ?? _runningInfo?.SessionId ?? "";
     public string Title => _session?.Title ?? GetRunningInfoTitle() ?? "Claude";
@@ -418,17 +541,26 @@ public partial class IslandSessionItem : ObservableObject
         }
     }
 
-    public IslandSessionItem(AgentSession session, SessionManager sessionManager)
+    public IslandSessionItem(AgentSession session, SessionManager sessionManager, Action<string>? onDismiss = null)
     {
         _session = session;
         _sessionManager = sessionManager;
+        _onDismiss = onDismiss;
     }
 
-    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager)
+    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null)
     {
         _runningInfo = runningInfo;
         _sessionManager = sessionManager;
+        _onDismiss = onDismiss;
     }
+
+    /// <summary>
+    /// 小叉号：临时把这条 session 从灵动岛收起。再次活动（新一轮 Running，或
+    /// 进入需关注 phase）时由 DynamicIslandViewModel 自动放回。
+    /// </summary>
+    [RelayCommand]
+    private void Dismiss() => _onDismiss?.Invoke(Id);
 
     [RelayCommand]
     private async Task JumpAsync()

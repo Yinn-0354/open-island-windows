@@ -8,7 +8,8 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>OpenIsland</AssemblyName>
     <RootNamespace>OpenIsland.App</RootNamespace>
-    <!-- <ApplicationIcon>Resources\icon.ico</ApplicationIcon> -->
+    <!-- exe / 任务栏 / Alt+Tab 图标 -->
+    <ApplicationIcon>Assets\face.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,6 +35,14 @@
 
   <ItemGroup>
     <Folder Include="Resources\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 像素状态精灵 sprite sheet（Aseprite 导出的水平条带 PNG）。
+         嵌成 WPF Resource，pack URI 加载：pack://application:,,,/Assets/<state>.png -->
+    <Resource Include="Assets\*.png" />
+    <!-- 托盘 / 窗口图标：face.ico 也嵌成 Resource，TrayIconService 走 pack URI 读 -->
+    <Resource Include="Assets\face.ico" />
   </ItemGroup>
 
 </Project>

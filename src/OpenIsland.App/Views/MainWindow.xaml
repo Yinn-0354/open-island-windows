@@ -6,6 +6,7 @@
         xmlns:local="clr-namespace:OpenIsland.App"
         mc:Ignorable="d"
         Title="Open Island - Control Center"
+        Icon="pack://application:,,,/OpenIsland;component/Assets/face.png"
         Height="640"
         Width="940"
         MinHeight="420"
@@ -169,35 +170,23 @@
                     Margin="0,4">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
-                    <!-- Tool 图标 + 微小状态点 -->
-                    <Grid Grid.Column="0" Margin="0,0,14,0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding ToolIcon}"
-                                   FontSize="22"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"/>
-                        <Ellipse Width="8" Height="8"
-                                 Fill="{Binding StatusColor, Converter={StaticResource StringToBrushConverter}}"
-                                 HorizontalAlignment="Right"
-                                 VerticalAlignment="Bottom"
-                                 Margin="0,0,-2,-2">
-                            <Ellipse.Effect>
-                                <DropShadowEffect Color="#000000" BlurRadius="3" ShadowDepth="0" Opacity="0.6"/>
-                            </Ellipse.Effect>
-                        </Ellipse>
-                    </Grid>
-
-                    <!-- 会话信息 -->
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding Title}"
-                                   FontSize="14"
-                                   FontWeight="SemiBold"
-                                   Foreground="#F2F2F7"
-                                   TextTrimming="CharacterEllipsis"/>
+                    <!-- 会话信息（原圆形工具图标已移除，仅保留标题前一个小状态点） -->
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="7" Height="7"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,10,0"
+                                     Fill="{Binding StatusColor, Converter={StaticResource StringToBrushConverter}}"/>
+                            <TextBlock Text="{Binding Title}"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Foreground="#F2F2F7"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
                         <TextBlock Text="{Binding Summary}"
                                    FontSize="12"
                                    Foreground="#98989D"
@@ -221,7 +210,7 @@
                     </StackPanel>
 
                     <!-- 操作按钮（权限按钮 ghost-style，跳转用 tinted）-->
-                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal">
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                         <Button Content="1. Yes"
                                 Visibility="{Binding ShowApproveButton, Converter={StaticResource BoolToVisibilityConverter}}"
                                 Command="{Binding ApprovePermissionCommand}"
