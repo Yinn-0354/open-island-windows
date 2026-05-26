@@ -571,6 +571,10 @@
                                                               Command="{Binding JumpCommand}"/>
                                             </Border.InputBindings>
                                             <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>
                                                     <ColumnDefinition Width="*"/>
@@ -671,6 +675,16 @@
                                                                    Foreground="#5A5A5A"/>
                                                     </Button>
 
+                                                    <!-- 快捷回复：点开/收起输入框（E8BD = 评论字形） -->
+                                                    <Button Style="{StaticResource CardIconBtn}"
+                                                            Command="{Binding ToggleQuickReplyCommand}"
+                                                            ToolTip="快捷回复（敲字回车发送）">
+                                                        <TextBlock Text="&#xE8BD;"
+                                                                   FontFamily="Segoe MDL2 Assets"
+                                                                   FontSize="11"
+                                                                   Foreground="#5A5A5A"/>
+                                                    </Button>
+
                                                     <!-- 小叉号：临时把这条 session 从灵动岛收起，
                                                          再次活动时自动放回。Button 自己吃掉点击，
                                                          不会触发卡片的 JumpCommand。（保持原样，放最后） -->
@@ -703,6 +717,64 @@
                                                         </Button.Template>
                                                     </Button>
                                                 </StackPanel>
+
+                                                <!-- 快捷回复输入行（F1）：点回复图标展开；敲字回车发送（发送前校验目标终端在前台，否则中止） -->
+                                                <Border Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0"
+                                                        Visibility="{Binding ShowQuickReply, Converter={StaticResource BoolToVis}}">
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <Grid Grid.Column="0">
+                                                                <TextBox Text="{Binding QuickReplyInput, UpdateSourceTrigger=PropertyChanged}"
+                                                                         Background="#0D0D0D" Foreground="#DDDDDD"
+                                                                         BorderBrush="#2A2A2A" BorderThickness="1"
+                                                                         CaretBrush="#DDDDDD" FontSize="11"
+                                                                         Padding="6,3" VerticalContentAlignment="Center"
+                                                                         MaxLines="3" TextWrapping="Wrap" AcceptsReturn="False">
+                                                                    <TextBox.InputBindings>
+                                                                        <KeyBinding Key="Enter" Command="{Binding SendQuickReplyCommand}"/>
+                                                                    </TextBox.InputBindings>
+                                                                </TextBox>
+                                                                <TextBlock Text="回复… 回车发送" Foreground="#555555" FontSize="11"
+                                                                           Margin="8,0,0,0" IsHitTestVisible="False" VerticalAlignment="Center">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding QuickReplyInput}" Value="">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                            </Grid>
+                                                            <Button Grid.Column="1" Command="{Binding SendQuickReplyCommand}"
+                                                                    Style="{StaticResource CardIconBtn}" Margin="6,0,0,0" ToolTip="发送（回车）">
+                                                                <TextBlock Text="&#xE724;" FontFamily="Segoe MDL2 Assets"
+                                                                           FontSize="12" Foreground="#0A84FF"/>
+                                                            </Button>
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding QuickReplyStatus}" Foreground="#777777" FontSize="10" Margin="2,3,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding QuickReplyStatus}" Value="{x:Null}">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding QuickReplyStatus}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Border>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>

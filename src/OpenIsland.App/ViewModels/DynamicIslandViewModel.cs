@@ -853,6 +853,54 @@ public partial class IslandSessionItem : ObservableObject
             await _sessionManager.SendModeSwitchAsync(_session.Id, ModeKind.Plan);
     }
 
+    // ── 快捷回复（F1）：在卡片上敲一句直接发进该会话（粘贴 + 回车），不用切回终端 ──
+    // 默认收起，点卡片上的回复图标才展开输入框（避免每张卡常驻输入框撑大灵动岛）。
+    [ObservableProperty] private bool _showQuickReply;
+    [ObservableProperty] private string _quickReplyInput = "";
+    [ObservableProperty] private string? _quickReplyStatus;
+
+    [RelayCommand]
+    private void ToggleQuickReply() => ShowQuickReply = !ShowQuickReply;
+
+    // 用户继续输入时清掉上次的状态提示。
+    partial void OnQuickReplyInputChanged(string value)
+    {
+        if (!string.IsNullOrEmpty(QuickReplyStatus))
+            QuickReplyStatus = null;
+    }
+
+    [RelayCommand]
+    private async Task SendQuickReplyAsync()
+    {
+        if (_sessionManager == null || _session == null) return;
+        var text = QuickReplyInput;
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        QuickReplyStatus = "发送中…";
+        var result = await _sessionManager.SendQuickReplyAsync(_session.Id, text);
+        if (result.Ok)
+        {
+            QuickReplyInput = "";
+            QuickReplyStatus = "已发送";
+        }
+        else
+        {
+            QuickReplyStatus = QuickReplyReasonText(result.Reason);
+        }
+    }
+
+    private static string QuickReplyReasonText(string? reason) => reason switch
+    {
+        "empty" => "请输入内容",
+        "too long" => "内容过长",
+        "no-session" => "会话不存在",
+        "no-terminal" or "no-terminal-match" => "没找到该会话的终端",
+        "foreground-mismatch" => "没能切到目标窗口，已取消",
+        "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop",
+        "clipboard-failed" => "剪贴板被占用，请重试",
+        _ => "发送失败"
+    };
+
     [RelayCommand]
     private async Task JumpAsync()
     {

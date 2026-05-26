@@ -12,7 +12,7 @@ namespace OpenIsland.App.Services;
 /// <summary>
 /// 终端跳转服务 - 实现一键跳转到各种终端
 /// </summary>
-public class TerminalJumpService
+public partial class TerminalJumpService
 {
     private readonly ILogger<TerminalJumpService>? _logger;
 

@@ -1093,6 +1093,47 @@ public class SessionManager : IDisposable
         return await _terminalJumpService.SendShiftTabToTerminalAsync(pid);
     }
 
+    /// <summary>
+    /// 岛上卡片"快捷回复"入口：把一段文字发进该会话（粘贴 + 回车），不用切回终端。
+    /// 按 entrypoint 分流：
+    ///   - claude-desktop → 粘贴进 Claude Desktop 聊天输入框
+    ///   - cli / 缺失 → 解析该会话终端 PID（仅正向匹配 cwd/sessionId，绝不"唯一 claude"兜底，
+    ///     避免把整段 prompt 注入到错误会话），粘贴进该终端
+    /// 注入前 TerminalJumpService 会校验目标窗口在前台，否则中止。
+    /// </summary>
+    public async Task<InjectResult> SendQuickReplyAsync(string sessionId, string text)
+    {
+        var prepared = QuickReplyText.Prepare(text);
+        if (!prepared.Ok)
+            return new InjectResult(false, prepared.Reason);
+
+        var session = GetSession(sessionId);
+        if (session == null)
+            return new InjectResult(false, "no-session");
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+            return await _terminalJumpService.SendTextToClaudeDesktopAsync(prepared.Text, submit: true);
+
+        var pid = ResolveTerminalPidForInjection(session);
+        if (pid is not int p)
+            return new InjectResult(false, "no-terminal-match");
+
+        return await _terminalJumpService.SendTextToTerminalAsync(p, prepared.Text, submit: true);
+    }
+
+    /// <summary>
+    /// 给注入类操作（快捷回复 / 后续 /model 切换）解析终端 PID：仅 cwd / sessionId 正向匹配，
+    /// 刻意不用 ResolveClaudeProcessId 的"唯一 claude 兜底"——盲发到错误会话危害更大（review #7）。
+    /// </summary>
+    private int? ResolveTerminalPidForInjection(AgentSession session)
+    {
+        var candidates = _processMonitor.GetRunningSessions()
+            .Select(r => new TerminalCandidate(r.ProcessId, r.WorkingDirectory, r.SessionId))
+            .ToList();
+        return TerminalTargeting.ResolvePid(session.JumpTarget?.WorkingDirectory, session.Id, candidates);
+    }
+
     public async Task JumpToSessionAsync(string sessionId)
     {
         var session = GetSession(sessionId);
