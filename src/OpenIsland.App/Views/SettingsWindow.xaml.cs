@@ -1,7 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 using OpenIsland.App.Services;
+using OpenIsland.Core;
 
 namespace OpenIsland.App.Views;
 
@@ -9,13 +11,20 @@ public partial class SettingsWindow : Window
 {
     private readonly WorkspaceSettings _settings;
     private readonly ObservableCollection<string> _draft = new();
+    private readonly ObservableCollection<ModelProfile> _modelProfiles = new();
+    private ModelProfile? _selectedPreset;
 
     public SettingsWindow(WorkspaceSettings settings)
     {
         InitializeComponent();
         _settings = settings;
+
         foreach (var w in _settings.Workspaces) _draft.Add(w);
         WorkspacesList.ItemsSource = _draft;
+
+        foreach (var p in _settings.ModelProfiles) _modelProfiles.Add(p);
+        ModelsList.ItemsSource = _modelProfiles;
+        PresetCombo.ItemsSource = ModelPresets.ThirdParty;
     }
 
     private void AddWorkspace_Click(object sender, RoutedEventArgs e)
@@ -39,8 +48,71 @@ public partial class SettingsWindow : Window
         if (WorkspacesList.SelectedItem is string s) _draft.Remove(s);
     }
 
+    // ── 模型 / Providers ──
+
+    /// <summary>选中一个内置预设：自动填名称/地址/默认模型；API Key 留给用户填。</summary>
+    private void Preset_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (PresetCombo.SelectedItem is not ModelProfile p) return;
+        _selectedPreset = p;
+        NameBox.Text = p.Name;
+        BaseUrlBox.Text = p.BaseUrl ?? "";
+        ModelBox.Text = p.Model ?? "";
+        ApiKeyBox.Text = "";
+    }
+
+    /// <summary>添加/保存一个第三方模型档案（立即持久化）。</summary>
+    private void AddModel_Click(object sender, RoutedEventArgs e)
+    {
+        var name = NameBox.Text?.Trim() ?? "";
+        var baseUrl = BaseUrlBox.Text?.Trim() ?? "";
+        var key = ApiKeyBox.Text?.Trim() ?? "";
+        var model = ModelBox.Text?.Trim();
+
+        if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(key))
+        {
+            MessageBox.Show(this, "请填写名称、地址和 API Key。", "Open Island",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // 选了预设就以预设为基底（带上其角色模型 Haiku/Sonnet/Opus + key 字段名），再用表单覆盖。
+        var keyEnv = _selectedPreset?.ApiKeyEnvName ?? "ANTHROPIC_AUTH_TOKEN";
+        var baseProfile = _selectedPreset ?? new ModelProfile { Kind = ModelKind.ThirdParty };
+        var profile = baseProfile with
+        {
+            Id = "user-" + Guid.NewGuid().ToString("N")[..8],
+            Name = name,
+            Kind = ModelKind.ThirdParty,
+            BaseUrl = baseUrl,
+            ApiKeyEnvName = keyEnv,
+            ApiKey = key,
+            Model = string.IsNullOrEmpty(model) ? null : model
+        };
+
+        _settings.AddOrUpdateModelProfile(profile);
+        _modelProfiles.Add(profile);
+
+        NameBox.Text = "";
+        BaseUrlBox.Text = "";
+        ModelBox.Text = "";
+        ApiKeyBox.Text = "";
+        PresetCombo.SelectedItem = null;
+        _selectedPreset = null;
+    }
+
+    private void RemoveModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModelsList.SelectedItem is ModelProfile p)
+        {
+            _settings.RemoveModelProfile(p.Id);
+            _modelProfiles.Remove(p);
+        }
+    }
+
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        // 工作区走草稿，保存时落盘；模型增删已即时持久化。
         _settings.SetWorkspaces(_draft);
         TrySetDialogResult(true);
         Close();

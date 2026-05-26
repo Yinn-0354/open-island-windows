@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using OpenIsland.Core;
 
 namespace OpenIsland.App.Services;
 
@@ -25,6 +26,12 @@ public class WorkspaceSettings
     /// Master mute for the island's completion / attention chimes. Default true.
     /// </summary>
     public bool SoundEnabled { get; private set; } = true;
+
+    /// <summary>用户在控制中心保存的第三方模型档案（含 API key）。内置 Claude 档不存这里。</summary>
+    public List<ModelProfile> ModelProfiles { get; private set; } = new();
+
+    /// <summary>当前活动模型档案 Id（全局；第三方写 env 对新 CLI 会话生效）。默认官方 Claude。</summary>
+    public string ActiveModelProfileId { get; private set; } = ModelProfile.OfficialClaudeId;
 
     public event EventHandler? Changed;
 
@@ -59,6 +66,33 @@ public class WorkspaceSettings
     public void SetSoundEnabled(bool v)
     {
         SoundEnabled = v;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>新增或更新一个第三方模型档案（按 Id）+ 持久化 + 通知。</summary>
+    public void AddOrUpdateModelProfile(ModelProfile profile)
+    {
+        var idx = ModelProfiles.FindIndex(p => p.Id == profile.Id);
+        if (idx >= 0) ModelProfiles[idx] = profile;
+        else ModelProfiles.Add(profile);
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>删除一个第三方模型档案 + 持久化 + 通知；删的若是活动档则回落官方 Claude。</summary>
+    public void RemoveModelProfile(string id)
+    {
+        ModelProfiles.RemoveAll(p => p.Id == id);
+        if (ActiveModelProfileId == id) ActiveModelProfileId = ModelProfile.OfficialClaudeId;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置当前活动模型档案 Id + 持久化 + 通知。</summary>
+    public void SetActiveModelProfile(string id)
+    {
+        ActiveModelProfileId = id;
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -110,6 +144,17 @@ public class WorkspaceSettings
             {
                 SoundEnabled = snd.GetBoolean();
             }
+            if (doc.RootElement.TryGetProperty("modelProfiles", out var mp)
+                && mp.ValueKind == JsonValueKind.Array)
+            {
+                try { ModelProfiles = mp.Deserialize<List<ModelProfile>>() ?? new(); }
+                catch { ModelProfiles = new(); }
+            }
+            if (doc.RootElement.TryGetProperty("activeModelProfileId", out var amp)
+                && amp.ValueKind == JsonValueKind.String)
+            {
+                ActiveModelProfileId = amp.GetString() ?? ModelProfile.OfficialClaudeId;
+            }
         }
         catch (Exception ex)
         {
@@ -130,7 +175,9 @@ public class WorkspaceSettings
                 {
                     workspaces = Workspaces,
                     plan5hTokenBudget = Plan5hTokenBudget,
-                    soundEnabled = SoundEnabled
+                    soundEnabled = SoundEnabled,
+                    modelProfiles = ModelProfiles,
+                    activeModelProfileId = ActiveModelProfileId
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_path, payload);

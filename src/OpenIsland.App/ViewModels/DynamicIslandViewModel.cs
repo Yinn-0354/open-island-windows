@@ -3,6 +3,7 @@ using System.Timers;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OpenIsland.App.Services;
+using OpenIsland.Core;
 using OpenIsland.Core.Models;
 
 namespace OpenIsland.App.ViewModels;
@@ -376,13 +377,13 @@ public partial class DynamicIslandViewModel : ObservableObject
             {
                 assignedIds.Add(session.Id);
                 if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
-                active.Add(new IslandSessionItem(session, _sessionManager, DismissSession));
+                active.Add(new IslandSessionItem(session, _sessionManager, DismissSession, _settings));
             }
             else
             {
                 // 进程刚起来、scan 还没扫到 ——退到 RunningSessionInfo 显示
                 if (IsHiddenByDismiss(r.SessionId, null)) continue;
-                active.Add(new IslandSessionItem(r, _sessionManager, DismissSession));
+                active.Add(new IslandSessionItem(r, _sessionManager, DismissSession, _settings));
             }
         }
 
@@ -521,6 +522,7 @@ public partial class IslandSessionItem : ObservableObject
     private readonly RunningSessionInfo? _runningInfo;
     private readonly SessionManager? _sessionManager;
     private readonly Action<string>? _onDismiss;
+    private readonly WorkspaceSettings? _settings;
 
     public string Id => _session?.Id ?? _runningInfo?.SessionId ?? "";
     public string Title => _session?.Title ?? GetRunningInfoTitle() ?? "Claude";
@@ -804,18 +806,22 @@ public partial class IslandSessionItem : ObservableObject
         }
     }
 
-    public IslandSessionItem(AgentSession session, SessionManager sessionManager, Action<string>? onDismiss = null)
+    public IslandSessionItem(AgentSession session, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null)
     {
         _session = session;
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
+        _settings = settings;
+        InitSelectedModel();
     }
 
-    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null)
+    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null)
     {
         _runningInfo = runningInfo;
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
+        _settings = settings;
+        InitSelectedModel();
     }
 
     /// <summary>
@@ -899,6 +905,79 @@ public partial class IslandSessionItem : ObservableObject
         "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop",
         "clipboard-failed" => "剪贴板被占用，请重试",
         _ => "发送失败"
+    };
+
+    // ── 模型切换（F2）：卡片上的下拉，选中即切换 ──
+    // Claude 模型档（官方/Opus/Sonnet/Haiku）实时（/model 或清 env）；第三方档写 env，重开终端生效。
+    public System.Collections.Generic.IReadOnlyList<ModelProfile> SelectableModels
+        => _settings == null
+            ? ModelPresets.BuiltInClaude
+            : ModelPresets.BuiltInClaude.Concat(_settings.ModelProfiles).ToList();
+
+    [ObservableProperty] private ModelProfile? _selectedModel;
+    [ObservableProperty] private string? _modelStatus;
+    private bool _suppressModelSwitch;
+
+    public string ActiveModelName
+    {
+        get
+        {
+            var id = _settings?.ActiveModelProfileId ?? ModelProfile.OfficialClaudeId;
+            return SelectableModels.FirstOrDefault(m => m.Id == id)?.Name ?? "Claude";
+        }
+    }
+
+    private void InitSelectedModel()
+    {
+        var activeId = _settings?.ActiveModelProfileId ?? ModelProfile.OfficialClaudeId;
+        var match = SelectableModels.FirstOrDefault(m => m.Id == activeId)
+                    ?? SelectableModels.FirstOrDefault();
+        _suppressModelSwitch = true;   // 程序化初始化不触发切换动作
+        SelectedModel = match;
+        _suppressModelSwitch = false;
+    }
+
+    partial void OnSelectedModelChanged(ModelProfile? value)
+    {
+        if (_suppressModelSwitch || value == null) return;
+        _ = ApplyModelAsync(value);
+    }
+
+    private async Task ApplyModelAsync(ModelProfile profile)
+    {
+        if (_sessionManager == null || _session == null)
+        {
+            ModelStatus = "仅运行中的会话可切换";
+            return;
+        }
+        try
+        {
+            ModelStatus = "切换中…";
+            var result = await _sessionManager.SwitchModelAsync(_session.Id, profile);
+            if (result.Ok)
+            {
+                _settings?.SetActiveModelProfile(profile.Id);
+                OnPropertyChanged(nameof(ActiveModelName));
+            }
+            ModelStatus = MapModelReason(result.Reason, result.Ok);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"ApplyModelAsync failed: {ex.Message}");
+            ModelStatus = "切换出错";
+        }
+    }
+
+    private static string MapModelReason(string? reason, bool ok) => reason switch
+    {
+        "switched-official" => "已切到官方 Claude（新 CLI 会话生效）",
+        "needs-restart" => "已写入，重开终端后生效",
+        "no-terminal-match" => "没找到该会话的终端",
+        "foreground-mismatch" => "没切到目标窗口，已取消",
+        "write-failed" => "写 settings.json 失败",
+        "no-op" => "无变化",
+        "no-session" => "会话不存在",
+        _ => ok ? "已切换" : "切换失败"
     };
 
     [RelayCommand]

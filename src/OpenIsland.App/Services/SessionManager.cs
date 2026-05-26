@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.IO;
+using System.Text.Json.Nodes;
 using OpenIsland.Core;
 using OpenIsland.Core.Bridge;
 using OpenIsland.Core.Hooks;
@@ -1132,6 +1133,75 @@ public class SessionManager : IDisposable
             .Select(r => new TerminalCandidate(r.ProcessId, r.WorkingDirectory, r.SessionId))
             .ToList();
         return TerminalTargeting.ResolvePid(session.JumpTarget?.WorkingDirectory, session.Id, candidates);
+    }
+
+    /// <summary>
+    /// 岛上卡片"切换模型"入口。
+    ///   - Claude 官方档：清掉 ~/.claude/settings.json 的第三方 env（新 CLI 会话回到 Anthropic 登录）。
+    ///   - Claude 模型档（opus/sonnet/haiku）：注入 /model（实时，CLI+Desktop，复用快捷回复注入）。
+    ///   - 第三方档：把 provider 的 env 写进 ~/.claude/settings.json（原子写 + 备份），重开终端后生效。
+    /// 活动档 Id 的持久化由调用方（VM 经 WorkspaceSettings）负责。
+    /// </summary>
+    public async Task<InjectResult> SwitchModelAsync(string sessionId, ModelProfile profile)
+    {
+        if (profile.Kind == ModelKind.ClaudeModel)
+        {
+            if (profile.Id == ModelProfile.OfficialClaudeId)
+            {
+                var cleared = WriteClaudeProviderEnv(ClaudeModelEnv.ClearManaged);
+                return new InjectResult(cleared, cleared ? "switched-official" : "write-failed");
+            }
+
+            var cmd = ClaudeModelEnv.BuildModelCommand(profile);
+            if (string.IsNullOrEmpty(cmd))
+                return new InjectResult(false, "no-op");
+            return await SendQuickReplyAsync(sessionId, cmd); // 注入 /model（实时）
+        }
+
+        // 第三方：写 env（重开终端后生效）
+        var wrote = WriteClaudeProviderEnv(root => ClaudeModelEnv.ApplyThirdParty(root, profile));
+        return new InjectResult(wrote, wrote ? "needs-restart" : "write-failed");
+    }
+
+    /// <summary>读 ~/.claude/settings.json → 应用变更 → 原子写回（temp + replace）+ 时间戳备份；保留其它字段。</summary>
+    private static bool WriteClaudeProviderEnv(Func<JsonObject, JsonObject> mutate)
+    {
+        try
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var path = Path.Combine(userProfile, ".claude", "settings.json");
+
+            JsonObject root;
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                root = JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json) as JsonObject
+                       ?? new JsonObject();
+            }
+            else
+            {
+                root = new JsonObject();
+            }
+
+            mutate(root);
+
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            if (File.Exists(path))
+                File.Copy(path, path + $".backup.{DateTime.Now:yyyyMMddHHmmss}", overwrite: true);
+
+            var tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+            File.WriteAllText(tmp, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            if (File.Exists(path)) File.Replace(tmp, path, null);
+            else File.Move(tmp, path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"WriteClaudeProviderEnv failed: {ex.Message}");
+            return false;
+        }
     }
 
     public async Task JumpToSessionAsync(string sessionId)

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:OpenIsland.App"
         Title="Open Island · 设置"
-        Width="580" Height="440"
+        Width="600" Height="720"
         Background="#1C1C1E"
         Foreground="#F2F2F7"
         FontFamily="Segoe UI Variable, Segoe UI"
@@ -70,33 +70,91 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#2C2C2E"/>
+            <Setter Property="Foreground" Value="#F2F2F7"/>
+            <Setter Property="BorderBrush" Value="#3A3A3C"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="CaretBrush" Value="#F2F2F7"/>
+            <Setter Property="Margin" Value="0,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="TextBlock" x:Key="FieldLabel">
+            <Setter Property="Foreground" Value="#8E8E93"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="22,18">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="工作区目录"
-                   FontSize="18" FontWeight="Bold" Foreground="#F2F2F7"/>
-        <TextBlock Grid.Row="1" Margin="0,4,0,12"
-                   FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
-                   Text="选定一个或多个项目根目录。Overview / Models 仅统计 cwd 落在这些目录下的会话。空列表 = 不过滤，全量统计。"/>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- ── 工作区目录 ── -->
+                <TextBlock Text="工作区目录" FontSize="18" FontWeight="Bold" Foreground="#F2F2F7"/>
+                <TextBlock Margin="0,4,0,12" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
+                           Text="选定一个或多个项目根目录。Overview / Models 仅统计 cwd 落在这些目录下的会话。空列表 = 不过滤，全量统计。"/>
+                <Border Background="#2C2C2E" CornerRadius="10" Padding="2">
+                    <ListBox x:Name="WorkspacesList" SelectionMode="Single" Height="120"/>
+                </Border>
+                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Content="添加目录…" Click="AddWorkspace_Click"/>
+                    <Button Content="移除选中" Click="RemoveWorkspace_Click"/>
+                </StackPanel>
 
-        <Border Grid.Row="2" Background="#2C2C2E" CornerRadius="10" Padding="2">
-            <ListBox x:Name="WorkspacesList" SelectionMode="Single"/>
-        </Border>
+                <!-- ── 模型 / Providers ── -->
+                <TextBlock Text="模型 / Providers" FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,26,0,0"/>
+                <TextBlock Margin="0,4,0,12" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
+                           Text="添加第三方模型后，可在灵动岛的会话卡上切换。第三方模型写入 ~/.claude/settings.json，重开终端后生效；官方 Claude / Opus / Sonnet / Haiku 已内置，无需在此添加。"/>
+                <Border Background="#2C2C2E" CornerRadius="10" Padding="2">
+                    <ListBox x:Name="ModelsList" SelectionMode="Single" Height="96" DisplayMemberPath="Name"/>
+                </Border>
+                <Button Content="删除选中模型" Click="RemoveModel_Click" HorizontalAlignment="Left" Margin="0,8,0,0"/>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,0">
-            <Button Content="添加目录…" Click="AddWorkspace_Click"/>
-            <Button Content="移除选中" Click="RemoveWorkspace_Click"/>
-        </StackPanel>
+                <TextBlock Text="添加模型" FontWeight="SemiBold" Foreground="#F2F2F7" Margin="0,18,0,6"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,16,0,0" HorizontalAlignment="Right">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="预设" Style="{StaticResource FieldLabel}"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1" x:Name="PresetCombo"
+                              DisplayMemberPath="Name" Margin="0,3"
+                              Background="#2C2C2E" Foreground="#F2F2F7"
+                              SelectionChanged="Preset_Changed"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="名称" Style="{StaticResource FieldLabel}"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="NameBox"/>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="地址" Style="{StaticResource FieldLabel}"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="BaseUrlBox"/>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="模型" Style="{StaticResource FieldLabel}"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="ModelBox"/>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="API Key" Style="{StaticResource FieldLabel}"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="ApiKeyBox"/>
+                </Grid>
+                <Button Content="添加 / 保存模型" Style="{StaticResource PrimaryButton}"
+                        HorizontalAlignment="Left" Margin="0,12,0,0" Click="AddModel_Click"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,0" HorizontalAlignment="Right">
             <Button Content="取消" Click="CancelButton_Click"/>
             <Button Content="保存" Style="{StaticResource PrimaryButton}" Margin="0" Click="SaveButton_Click"/>
         </StackPanel>
