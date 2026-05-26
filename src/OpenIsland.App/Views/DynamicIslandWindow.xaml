@@ -783,7 +783,24 @@
                                                                 </TextBlock>
                                                             </Grid>
                                                             <Button Grid.Column="1" Command="{Binding SendQuickReplyCommand}"
-                                                                    Style="{StaticResource CardIconBtn}" Margin="6,0,0,0" ToolTip="发送（回车）">
+                                                                    Margin="6,0,0,0" Cursor="Hand" ToolTip="发送（回车）"
+                                                                    FocusVisualStyle="{x:Null}">
+                                                                <Button.Template>
+                                                                    <ControlTemplate TargetType="Button">
+                                                                        <Border x:Name="SBd" Width="26" Height="24" CornerRadius="6"
+                                                                                Background="Transparent">
+                                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                                        </Border>
+                                                                        <ControlTemplate.Triggers>
+                                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                                <Setter TargetName="SBd" Property="Background" Value="#2A2A2A"/>
+                                                                            </Trigger>
+                                                                            <Trigger Property="IsPressed" Value="True">
+                                                                                <Setter TargetName="SBd" Property="Background" Value="#3A3A3A"/>
+                                                                            </Trigger>
+                                                                        </ControlTemplate.Triggers>
+                                                                    </ControlTemplate>
+                                                                </Button.Template>
                                                                 <TextBlock Text="&#xE724;" FontFamily="Segoe MDL2 Assets"
                                                                            FontSize="12" Foreground="#0A84FF"/>
                                                             </Button>
