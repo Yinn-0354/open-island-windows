@@ -66,7 +66,7 @@ public partial class TerminalJumpService
         finally
         {
             // 等目标消费完粘贴再还原剪贴板（粘贴是异步投递，过早还原会粘到旧内容）。
-            await Task.Delay(120);
+            await Task.Delay(250);
             RestoreClipboardSafe(saved);
         }
     }
@@ -111,7 +111,7 @@ public partial class TerminalJumpService
         }
         finally
         {
-            await Task.Delay(120);
+            await Task.Delay(250);
             RestoreClipboardSafe(saved);
         }
     }

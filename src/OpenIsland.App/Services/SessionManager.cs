@@ -1148,7 +1148,7 @@ public class SessionManager : IDisposable
         {
             if (profile.Id == ModelProfile.OfficialClaudeId)
             {
-                var cleared = WriteClaudeProviderEnv(ClaudeModelEnv.ClearManaged);
+                var cleared = await Task.Run(() => WriteClaudeProviderEnv(ClaudeModelEnv.ClearManaged));
                 return new InjectResult(cleared, cleared ? "switched-official" : "write-failed");
             }
 
@@ -1158,8 +1158,10 @@ public class SessionManager : IDisposable
             return await SendQuickReplyAsync(sessionId, cmd); // 注入 /model（实时）
         }
 
-        // 第三方：写 env（重开终端后生效）
-        var wrote = WriteClaudeProviderEnv(root => ClaudeModelEnv.ApplyThirdParty(root, profile));
+        // 第三方：写 env（重开终端后生效）。空 key 直接拒绝，避免写出半截配置让下次会话起不来。
+        if (string.IsNullOrWhiteSpace(profile.ApiKey))
+            return new InjectResult(false, "no-key");
+        var wrote = await Task.Run(() => WriteClaudeProviderEnv(root => ClaudeModelEnv.ApplyThirdParty(root, profile)));
         return new InjectResult(wrote, wrote ? "needs-restart" : "write-failed");
     }
 
@@ -1175,8 +1177,20 @@ public class SessionManager : IDisposable
             if (File.Exists(path))
             {
                 var json = File.ReadAllText(path);
-                root = JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json) as JsonObject
-                       ?? new JsonObject();
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    root = new JsonObject();
+                }
+                else if (JsonNode.Parse(json) is JsonObject obj)
+                {
+                    root = obj;
+                }
+                else
+                {
+                    // 有效 JSON 但不是对象（数组/标量）—— 不覆盖用户文件，中止。
+                    System.Diagnostics.Debug.WriteLine("WriteClaudeProviderEnv: settings.json is not a JSON object; aborting.");
+                    return false;
+                }
             }
             else
             {
@@ -1188,8 +1202,9 @@ public class SessionManager : IDisposable
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+            // 单个滚动备份（避免每次切换在 ~/.claude 堆出无数 .backup.<时间戳> 文件）。
             if (File.Exists(path))
-                File.Copy(path, path + $".backup.{DateTime.Now:yyyyMMddHHmmss}", overwrite: true);
+                File.Copy(path, path + ".openisland.bak", overwrite: true);
 
             var tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
             File.WriteAllText(tmp, root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));

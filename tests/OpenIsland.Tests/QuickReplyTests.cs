@@ -42,10 +42,18 @@ public class TerminalTargetingTests
     private static TerminalCandidate C(int pid, string? cwd, string? sid) => new(pid, cwd, sid);
 
     [Fact]
-    public void ResolvePid_MatchesByCwd_IgnoringCaseAndTrailingSlash()
+    public void ResolvePid_UniqueCwdMatch_ReturnsIt_IgnoringCaseAndTrailingSlash()
     {
         var cands = new[] { C(10, @"C:\proj\a", "s-a"), C(20, @"C:\proj\b\", "s-b") };
         Assert.Equal(20, TerminalTargeting.ResolvePid(@"c:\proj\b", null, cands));
+    }
+
+    [Fact]
+    public void ResolvePid_AmbiguousCwd_TwoSessionsSameDir_ReturnsNull()
+    {
+        // Two agents in the SAME directory: can't tell which card the user meant — abort, don't guess.
+        var cands = new[] { C(10, @"C:\proj\a", "s-1"), C(20, @"C:\proj\a", "s-2") };
+        Assert.Null(TerminalTargeting.ResolvePid(@"C:\proj\a", null, cands));
     }
 
     [Fact]
@@ -56,12 +64,21 @@ public class TerminalTargetingTests
     }
 
     [Fact]
-    public void ResolvePid_NoPositiveMatch_ReturnsNull_EvenWithSingleCandidate()
+    public void ResolvePid_SingleCandidate_FallsBackToIt_WhenNoPositiveMatch()
     {
-        // The dangerous "only one claude running -> it's the target" fallback must NOT
-        // apply to injection: a stray prompt in the wrong session is harmful.
-        var cands = new[] { C(99, null, "some-other-session") };
-        Assert.Null(TerminalTargeting.ResolvePid(@"C:\proj\x", "my-session", cands));
+        // On Windows the running claude's cwd is often unreadable and its id is synthetic, so
+        // both positive matches miss. With exactly ONE claude alive there is no ambiguity — it's
+        // the target. (This is what makes the feature work in the common single-session case.)
+        var cands = new[] { C(99, null, "synthetic-id") };
+        Assert.Equal(99, TerminalTargeting.ResolvePid(@"C:\proj\x", "real-uuid", cands));
+    }
+
+    [Fact]
+    public void ResolvePid_MultipleCandidates_NoPositiveMatch_ReturnsNull()
+    {
+        // 2+ alive and nothing disambiguates → abort (never blind-inject into one of several).
+        var cands = new[] { C(98, null, "x"), C(99, null, "y") };
+        Assert.Null(TerminalTargeting.ResolvePid(@"C:\proj\x", "real-uuid", cands));
     }
 
     [Fact]

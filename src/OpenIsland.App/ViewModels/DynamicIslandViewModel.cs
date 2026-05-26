@@ -353,6 +353,10 @@ public partial class DynamicIslandViewModel : ObservableObject
         var assignedIds = new HashSet<string>();
         var active = new List<IslandSessionItem>();
 
+        // 重建卡片时按 Id 保留每张卡正在进行的瞬态 UI（展开 / 正在输入的快捷回复 / 状态文字），
+        // 否则 transcript 写入触发的频繁刷新会把用户刚打的字、刚选的模型刷没。
+        var prev = Sessions.GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
+
         foreach (var r in runningProcesses)
         {
             AgentSession? session = null;
@@ -377,13 +381,17 @@ public partial class DynamicIslandViewModel : ObservableObject
             {
                 assignedIds.Add(session.Id);
                 if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
-                active.Add(new IslandSessionItem(session, _sessionManager, DismissSession, _settings));
+                var item = new IslandSessionItem(session, _sessionManager, DismissSession, _settings);
+                if (prev.TryGetValue(session.Id, out var carry)) item.CarryOverTransientState(carry);
+                active.Add(item);
             }
             else
             {
                 // 进程刚起来、scan 还没扫到 ——退到 RunningSessionInfo 显示
                 if (IsHiddenByDismiss(r.SessionId, null)) continue;
-                active.Add(new IslandSessionItem(r, _sessionManager, DismissSession, _settings));
+                var item = new IslandSessionItem(r, _sessionManager, DismissSession, _settings);
+                if (prev.TryGetValue(r.SessionId, out var carry)) item.CarryOverTransientState(carry);
+                active.Add(item);
             }
         }
 
@@ -864,6 +872,7 @@ public partial class IslandSessionItem : ObservableObject
     [ObservableProperty] private bool _showQuickReply;
     [ObservableProperty] private string _quickReplyInput = "";
     [ObservableProperty] private string? _quickReplyStatus;
+    private bool _busy; // 防重入：发送 / 模型切换进行中时忽略再次触发
 
     [RelayCommand]
     private void ToggleQuickReply() => ShowQuickReply = !ShowQuickReply;
@@ -881,18 +890,23 @@ public partial class IslandSessionItem : ObservableObject
         if (_sessionManager == null || _session == null) return;
         var text = QuickReplyInput;
         if (string.IsNullOrWhiteSpace(text)) return;
-
-        QuickReplyStatus = "发送中…";
-        var result = await _sessionManager.SendQuickReplyAsync(_session.Id, text);
-        if (result.Ok)
+        if (_busy) return;
+        _busy = true;
+        try
         {
-            QuickReplyInput = "";
-            QuickReplyStatus = "已发送";
+            QuickReplyStatus = "发送中…";
+            var result = await _sessionManager.SendQuickReplyAsync(_session.Id, text);
+            if (result.Ok)
+            {
+                QuickReplyInput = "";
+                QuickReplyStatus = "已发送";
+            }
+            else
+            {
+                QuickReplyStatus = QuickReplyReasonText(result.Reason);
+            }
         }
-        else
-        {
-            QuickReplyStatus = QuickReplyReasonText(result.Reason);
-        }
+        finally { _busy = false; }
     }
 
     private static string QuickReplyReasonText(string? reason) => reason switch
@@ -906,6 +920,15 @@ public partial class IslandSessionItem : ObservableObject
         "clipboard-failed" => "剪贴板被占用，请重试",
         _ => "发送失败"
     };
+
+    /// <summary>卡片重建时从旧实例迁移正在进行的瞬态 UI（展开/输入/状态），避免频繁刷新打断用户。</summary>
+    internal void CarryOverTransientState(IslandSessionItem old)
+    {
+        ShowQuickReply = old.ShowQuickReply;
+        QuickReplyInput = old.QuickReplyInput;     // 会触发 OnQuickReplyInputChanged 清状态…
+        QuickReplyStatus = old.QuickReplyStatus;   // …故在其后再设回
+        ModelStatus = old.ModelStatus;
+    }
 
     // ── 模型切换（F2）：卡片上的下拉，选中即切换 ──
     // Claude 模型档（官方/Opus/Sonnet/Haiku）实时（/model 或清 env）；第三方档写 env，重开终端生效。
@@ -950,6 +973,8 @@ public partial class IslandSessionItem : ObservableObject
             ModelStatus = "仅运行中的会话可切换";
             return;
         }
+        if (_busy) return;
+        _busy = true;
         try
         {
             ModelStatus = "切换中…";
@@ -966,12 +991,14 @@ public partial class IslandSessionItem : ObservableObject
             System.Diagnostics.Debug.WriteLine($"ApplyModelAsync failed: {ex.Message}");
             ModelStatus = "切换出错";
         }
+        finally { _busy = false; }
     }
 
     private static string MapModelReason(string? reason, bool ok) => reason switch
     {
         "switched-official" => "已切到官方 Claude（新 CLI 会话生效）",
         "needs-restart" => "已写入，重开终端后生效",
+        "no-key" => "该模型未配置 API Key",
         "no-terminal-match" => "没找到该会话的终端",
         "foreground-mismatch" => "没切到目标窗口，已取消",
         "write-failed" => "写 settings.json 失败",
