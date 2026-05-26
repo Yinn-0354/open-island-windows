@@ -11,9 +11,9 @@ public static class ModelPresets
     public static IReadOnlyList<ModelProfile> BuiltInClaude { get; } = new[]
     {
         new ModelProfile { Id = ModelProfile.OfficialClaudeId, Name = "Claude（官方）", Kind = ModelKind.ClaudeModel },
-        new ModelProfile { Id = "claude-opus",   Name = "Claude Opus",   Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "opus" },
-        new ModelProfile { Id = "claude-sonnet", Name = "Claude Sonnet", Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "sonnet" },
-        new ModelProfile { Id = "claude-haiku",  Name = "Claude Haiku",  Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "haiku" },
+        new ModelProfile { Id = "claude-opus",   Name = "Claude Opus",   Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "opus",   Model = "claude-opus-4-7" },
+        new ModelProfile { Id = "claude-sonnet", Name = "Claude Sonnet", Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "sonnet", Model = "claude-sonnet-4-6" },
+        new ModelProfile { Id = "claude-haiku",  Name = "Claude Haiku",  Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "haiku",  Model = "claude-haiku-4-5-20251001" },
     };
 
     /// <summary>第三方 provider 模板（ApiKey 留空，用户在控制中心填）。</summary>

@@ -183,8 +183,72 @@ public partial class DynamicIslandViewModel : ObservableObject
         };
         _greenStatusTimer.AutoReset = false;
 
+        InitSelectedModelChoice();
+        _settings.Changed += OnSettingsChangedForModels;
+
         RefreshSessions();
     }
+
+    // ── 全局模型切换（音量条下方那一栏）：选中即切换，写 ~/.claude/settings.json，对新 CLI 会话生效 ──
+    public System.Collections.Generic.IReadOnlyList<ModelProfile> ModelChoices
+        => ModelPresets.BuiltInClaude.Concat(_settings.ModelProfiles).ToList();
+
+    [ObservableProperty] private ModelProfile? _selectedModelChoice;
+    [ObservableProperty] private string? _globalModelStatus;
+    private bool _suppressModelSwitch;
+    private bool _busyModel;
+
+    private void OnSettingsChangedForModels(object? sender, EventArgs e)
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(ModelChoices));
+            InitSelectedModelChoice();
+        });
+    }
+
+    private void InitSelectedModelChoice()
+    {
+        var activeId = _settings.ActiveModelProfileId;
+        var match = ModelChoices.FirstOrDefault(m => m.Id == activeId) ?? ModelChoices.FirstOrDefault();
+        _suppressModelSwitch = true;   // 程序化初始化不触发切换
+        SelectedModelChoice = match;
+        _suppressModelSwitch = false;
+    }
+
+    partial void OnSelectedModelChoiceChanged(ModelProfile? value)
+    {
+        if (_suppressModelSwitch || value == null) return;
+        _ = SwitchGlobalModelAsync(value);
+    }
+
+    private async Task SwitchGlobalModelAsync(ModelProfile profile)
+    {
+        if (_busyModel) return;
+        _busyModel = true;
+        try
+        {
+            GlobalModelStatus = "切换中…";
+            var result = await _sessionManager.SwitchGlobalModelAsync(profile);
+            if (result.Ok) _settings.SetActiveModelProfile(profile.Id);
+            GlobalModelStatus = MapModelReason(result.Reason, result.Ok);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"SwitchGlobalModelAsync failed: {ex.Message}");
+            GlobalModelStatus = "切换出错";
+        }
+        finally { _busyModel = false; }
+    }
+
+    private static string MapModelReason(string? reason, bool ok) => reason switch
+    {
+        "switched-official" => "已切到官方 Claude（新会话生效）",
+        "needs-restart" => "已写入，重开终端后生效",
+        "no-key" => "该模型未配置 API Key",
+        "write-failed" => "写 settings.json 失败",
+        _ => ok ? "已切换" : "切换失败"
+    };
 
     private void OnSystemStatsUpdated(object? sender, SystemStatsSnapshot s)
     {

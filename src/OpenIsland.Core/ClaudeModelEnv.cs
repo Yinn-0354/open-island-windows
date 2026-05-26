@@ -81,6 +81,25 @@ public static class ClaudeModelEnv
             : $"/model {profile.ClaudeModelSlug.Trim()}";
     }
 
+    /// <summary>
+    /// 全局切到官方 Claude 端点上的某个模型：先清掉所有第三方受管键（去掉 base_url/token 等，
+    /// 回到 Anthropic 登录），再按需只设 ANTHROPIC_MODEL（空 = 用账号默认模型）。
+    /// </summary>
+    public static JsonObject SetOfficialModel(JsonObject root, string? modelId)
+    {
+        ClearManaged(root);
+        if (!string.IsNullOrWhiteSpace(modelId))
+        {
+            if (root["env"] is not JsonObject env)
+            {
+                env = new JsonObject();
+                root["env"] = env;
+            }
+            env["ANTHROPIC_MODEL"] = modelId;
+        }
+        return root;
+    }
+
     private static void RemoveManaged(JsonObject env)
     {
         foreach (var key in ManagedEnvKeys)

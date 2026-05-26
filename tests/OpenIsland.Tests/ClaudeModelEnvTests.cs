@@ -92,4 +92,26 @@ public class ClaudeModelEnvTests
     {
         Assert.Null(ClaudeModelEnv.BuildModelCommand(ThirdParty("u", "t", "m")));
     }
+
+    [Fact]
+    public void SetOfficialModel_WithId_SetsOnlyModel_ClearsThirdPartyKeys()
+    {
+        var root = Parse("""
+        { "env": { "ANTHROPIC_BASE_URL": "https://x", "ANTHROPIC_AUTH_TOKEN": "t", "ANTHROPIC_MODEL": "old", "FOO": "bar" } }
+        """);
+        ClaudeModelEnv.SetOfficialModel(root, "claude-opus-4-7");
+        var env = (JsonObject)root["env"]!;
+        Assert.Null(env["ANTHROPIC_BASE_URL"]);
+        Assert.Null(env["ANTHROPIC_AUTH_TOKEN"]);
+        Assert.Equal("claude-opus-4-7", (string?)env["ANTHROPIC_MODEL"]);
+        Assert.Equal("bar", (string?)env["FOO"]); // user's own env key preserved
+    }
+
+    [Fact]
+    public void SetOfficialModel_NullId_ClearsManagedAndEmptyEnv()
+    {
+        var root = Parse("""{ "env": { "ANTHROPIC_MODEL": "x" } }""");
+        ClaudeModelEnv.SetOfficialModel(root, null);
+        Assert.Null(root["env"]);
+    }
 }

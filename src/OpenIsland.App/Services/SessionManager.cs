@@ -1165,7 +1165,27 @@ public class SessionManager : IDisposable
         return new InjectResult(wrote, wrote ? "needs-restart" : "write-failed");
     }
 
-    /// <summary>读 ~/.claude/settings.json → 应用变更 → 原子写回（temp + replace）+ 时间戳备份；保留其它字段。</summary>
+    /// <summary>
+    /// 全局切换活动模型（写 ~/.claude/settings.json，对新 CLI 会话生效）—— 无需会话上下文。
+    ///   - Claude 档：SetOfficialModel（官方端点；内置 Opus/Sonnet/Haiku 带模型 id，官方档清空）。
+    ///   - 第三方档：ApplyThirdParty（写 env 块），空 key 直接拒绝。
+    /// </summary>
+    public async Task<InjectResult> SwitchGlobalModelAsync(ModelProfile profile)
+    {
+        if (profile.Kind == ModelKind.ClaudeModel)
+        {
+            var ok = await Task.Run(() => WriteClaudeProviderEnv(root => ClaudeModelEnv.SetOfficialModel(root, profile.Model)));
+            var reason = profile.Id == ModelProfile.OfficialClaudeId ? "switched-official" : "needs-restart";
+            return new InjectResult(ok, ok ? reason : "write-failed");
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.ApiKey))
+            return new InjectResult(false, "no-key");
+        var wrote = await Task.Run(() => WriteClaudeProviderEnv(root => ClaudeModelEnv.ApplyThirdParty(root, profile)));
+        return new InjectResult(wrote, wrote ? "needs-restart" : "write-failed");
+    }
+
+    /// <summary>读 ~/.claude/settings.json → 应用变更 → 原子写回（temp + replace）+ 备份；保留其它字段。</summary>
     private static bool WriteClaudeProviderEnv(Func<JsonObject, JsonObject> mutate)
     {
         try
