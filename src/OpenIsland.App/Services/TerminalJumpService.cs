@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Automation;
 using Microsoft.Extensions.Logging;
+using OpenIsland.Core;
 using OpenIsland.Core.Models;
 
 namespace OpenIsland.App.Services;
@@ -166,6 +167,14 @@ public class TerminalJumpService
     public async Task<bool> LaunchClaudeResumeAsync(string sessionId, string? workingDirectory)
     {
         if (string.IsNullOrEmpty(sessionId)) return false;
+        // sessionId comes from untrusted hook/transcript data and is interpolated into the
+        // `claude --resume {sessionId}` shell command below. Reject anything outside the safe
+        // allow-list (letters/digits/-/_) to prevent command injection. See SessionIdValidator.
+        if (!SessionIdValidator.IsValid(sessionId))
+        {
+            _logger?.LogWarning("Refusing claude --resume: session id failed validation");
+            return false;
+        }
         var cwd = !string.IsNullOrEmpty(workingDirectory) && Directory.Exists(workingDirectory)
             ? workingDirectory
             : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

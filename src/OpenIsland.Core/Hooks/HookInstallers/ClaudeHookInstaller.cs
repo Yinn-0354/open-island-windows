@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace OpenIsland.Core.Hooks.HookInstallers;
@@ -42,6 +43,100 @@ public class ClaudeHookInstaller : IHookInstaller
         return $"\"{hooksBinaryPath}\" --source {source}";
     }
 
+    /// <summary>Substring that identifies OpenIsland's own hook command entries.</summary>
+    public const string HookBinaryMarker = "open-island-hooks";
+
+    /// <summary>
+    /// Merge OpenIsland's hook command into the settings DOM for the given events, preserving
+    /// all other settings keys, other event keys, and other (non-OpenIsland) entries on the
+    /// managed events. Idempotent — re-running replaces our own entry instead of duplicating it.
+    /// </summary>
+    public static JsonObject MergeHookInstall(JsonObject root, IReadOnlyList<string> events, string hookCommand)
+    {
+        if (root["hooks"] is not JsonObject hooks)
+        {
+            hooks = new JsonObject();
+            root["hooks"] = hooks;
+        }
+
+        foreach (var ev in events)
+        {
+            if (hooks[ev] is not JsonArray arr)
+            {
+                arr = new JsonArray();
+                hooks[ev] = arr;
+            }
+
+            // Drop any pre-existing OpenIsland entries first so re-installing is idempotent,
+            // then append our entry in Claude Code's nested matcher-group format.
+            RemoveOpenIslandEntries(arr);
+            arr.Add(new JsonObject
+            {
+                ["hooks"] = new JsonArray(new JsonObject
+                {
+                    ["type"] = "command",
+                    ["command"] = hookCommand
+                })
+            });
+        }
+
+        return root;
+    }
+
+    /// <summary>
+    /// Remove only OpenIsland's own hook entries from every event in the settings DOM, dropping
+    /// events that become empty and the whole "hooks" object if nothing else remains. Leaves all
+    /// unrelated settings and the user's own hooks intact.
+    /// </summary>
+    public static JsonObject RemoveHookInstall(JsonObject root)
+    {
+        if (root["hooks"] is not JsonObject hooks)
+            return root;
+
+        foreach (var ev in hooks.Select(kv => kv.Key).ToList())
+        {
+            if (hooks[ev] is JsonArray arr)
+            {
+                RemoveOpenIslandEntries(arr);
+                if (arr.Count == 0)
+                    hooks.Remove(ev);
+            }
+        }
+
+        if (hooks.Count == 0)
+            root.Remove("hooks");
+
+        return root;
+    }
+
+    private static void RemoveOpenIslandEntries(JsonArray arr)
+    {
+        for (var i = arr.Count - 1; i >= 0; i--)
+        {
+            if (arr[i] is JsonObject group && GroupReferencesOpenIsland(group))
+                arr.RemoveAt(i);
+        }
+    }
+
+    private static bool GroupReferencesOpenIsland(JsonObject group)
+    {
+        if (group["hooks"] is not JsonArray inner)
+            return false;
+
+        foreach (var entry in inner)
+        {
+            if (entry is JsonObject e
+                && e["command"] is JsonValue cv
+                && cv.TryGetValue<string>(out var cmd)
+                && cmd.Contains(HookBinaryMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// 默认会注册的事件子集 ——
     /// PreToolUse: 同步阻塞 Claude 直到用户审批（事前权限拦截，transcript 无法做到）
@@ -82,32 +177,22 @@ public class ClaudeHookInstaller : IHookInstaller
                 return false;
             }
 
-            // 读取现有配置
-            Dictionary<string, JsonElement>? settings = null;
+            // 读取现有配置（保留用户已有的全部字段和其它 hook 事件）
+            JsonObject root;
             if (File.Exists(settingsPath))
             {
                 var json = await File.ReadAllTextAsync(settingsPath, ct);
-                settings = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+                root = JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json) as JsonObject
+                       ?? new JsonObject();
             }
-            settings ??= new Dictionary<string, JsonElement>();
+            else
+            {
+                root = new JsonObject();
+            }
 
-            // 创建hooks配置（Claude Code 要求的嵌套格式）
+            // 只合并 OpenIsland 受管的事件子集 —— 绝不整体覆盖用户的 hooks 字段
             var hookCommand = GetHookCommand(hooksBinaryPath, source);
-            var hookEntry = new
-            {
-                hooks = new[]
-                {
-                    new { type = "command", command = hookCommand }
-                }
-            };
-            var hooks = new Dictionary<string, object[]>();
-            foreach (var ev in events)
-            {
-                hooks[ev] = new object[] { hookEntry };
-            }
-
-            // 更新settings
-            settings["hooks"] = JsonSerializer.SerializeToElement(hooks);
+            MergeHookInstall(root, events, hookCommand);
 
             // 备份原配置
             if (File.Exists(settingsPath))
@@ -124,7 +209,7 @@ public class ClaudeHookInstaller : IHookInstaller
                 Directory.CreateDirectory(dir);
             }
 
-            var newJson = JsonSerializer.Serialize(settings, new JsonSerializerOptions
+            var newJson = root.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true
             });
@@ -165,20 +250,17 @@ public class ClaudeHookInstaller : IHookInstaller
 
             // 读取现有配置
             var json = await File.ReadAllTextAsync(settingsPath, ct);
-            var settings = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
-            if (settings == null) return true;
+            var root = JsonNode.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json) as JsonObject;
+            if (root == null) return true;
 
-            // 移除hooks
-            if (settings.ContainsKey("hooks"))
-            {
-                settings.Remove("hooks");
-            }
+            // 只移除 OpenIsland 自己装的 hook 条目，保留用户其它 hook 和全部配置
+            RemoveHookInstall(root);
 
             // 备份并写入
             var backupPath = settingsPath + $".backup.uninstall.{DateTime.Now:yyyyMMddHHmmss}";
             File.Copy(settingsPath, backupPath, overwrite: true);
 
-            var newJson = JsonSerializer.Serialize(settings, new JsonSerializerOptions
+            var newJson = root.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true
             });

@@ -252,7 +252,7 @@ public class ClaudeTranscriptDiscovery
 
             if (root.TryGetProperty("timestamp", out var tsElement))
             {
-                if (DateTime.TryParse(tsElement.GetString(), out var ts))
+                if (ClaudeTimestamp.TryParseUtc(tsElement.GetString(), out var ts))
                 {
                     session.LastActiveAt = ts;
                     if (!session.CreatedAt.HasValue)
@@ -315,7 +315,7 @@ public class ClaudeTranscriptDiscovery
         // 获取时间戳
         if (rootDoc.RootElement.TryGetProperty("timestamp", out var tsElement))
         {
-            if (DateTime.TryParse(tsElement.GetString(), out var ts))
+            if (ClaudeTimestamp.TryParseUtc(tsElement.GetString(), out var ts))
             {
                 msg.Timestamp = ts;
             }
