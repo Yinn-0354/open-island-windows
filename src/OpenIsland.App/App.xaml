@@ -28,6 +28,81 @@
             <SolidColorBrush x:Key="WaitingColor" Color="#FF9800"/>
             <SolidColorBrush x:Key="ErrorColor" Color="#F44336"/>
             <SolidColorBrush x:Key="CompletedColor" Color="#9E9E9E"/>
+
+            <!-- ── Claude 风格深色下拉（暖深面 + coral 选中）── 取色自 awesome-design-md/design-md/claude：
+                 surface-dark #181715 / elevated #252320 / soft #1f1e1b，文字 #faf9f5 / muted #a09d96，主色 coral #cc785c。
+                 用来替换 WPF 默认的白底 ComboBox。 -->
+            <Style x:Key="ClaudeComboItem" TargetType="ComboBoxItem">
+                <Setter Property="Foreground" Value="#FAF9F5"/>
+                <Setter Property="Padding" Value="10,6"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBoxItem">
+                            <Border x:Name="Bd" Background="Transparent" CornerRadius="6" Margin="3,1" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsHighlighted" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#2F2C28"/>
+                                </Trigger>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter Property="Foreground" Value="#CC785C"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="ClaudeCombo" TargetType="ComboBox">
+                <Setter Property="Foreground" Value="#FAF9F5"/>
+                <Setter Property="Background" Value="#1F1E1B"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Height" Value="26"/>
+                <Setter Property="VerticalContentAlignment" Value="Center"/>
+                <Setter Property="ItemContainerStyle" Value="{StaticResource ClaudeComboItem}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBox">
+                            <Grid>
+                                <ToggleButton x:Name="Toggle" Focusable="False" ClickMode="Press"
+                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="Bd" Background="#1F1E1B" BorderBrush="#3A3631"
+                                                    BorderThickness="1" CornerRadius="8"/>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#CC785C"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  VerticalAlignment="Center" HorizontalAlignment="Left"
+                                                  Margin="10,0,26,0"/>
+                                <Path x:Name="Arrow" IsHitTestVisible="False"
+                                      HorizontalAlignment="Right" VerticalAlignment="Center"
+                                      Margin="0,0,10,0" Fill="#A09D96" Data="M0,0 L4,4 L8,0 Z"/>
+                                <Popup x:Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}"
+                                       AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                    <Border Background="#252320" BorderBrush="#3A3631" BorderThickness="1" CornerRadius="8"
+                                            Margin="0,4,0,0" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                            MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                        <ScrollViewer>
+                                            <ItemsPresenter/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

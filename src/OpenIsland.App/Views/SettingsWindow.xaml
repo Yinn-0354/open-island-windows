@@ -133,8 +133,8 @@
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="预设" Style="{StaticResource FieldLabel}"/>
                     <ComboBox Grid.Row="0" Grid.Column="1" x:Name="PresetCombo"
+                              Style="{StaticResource ClaudeCombo}"
                               DisplayMemberPath="Name" Margin="0,3"
-                              Background="#2C2C2E" Foreground="#F2F2F7"
                               SelectionChanged="Preset_Changed"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="名称" Style="{StaticResource FieldLabel}"/>
