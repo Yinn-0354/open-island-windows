@@ -558,16 +558,22 @@ public partial class DynamicIslandViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 头部点击命令（短点而非拖拽时由 code-behind 调用）：先清空列表，再 toggle 展开。
-    /// 见 ClearAllSessions 注释 / DynamicIslandWindow.Header_MouseUp。
-    /// Header tap command: clear the list, then toggle expand. Called from code-behind
-    /// only on a genuine click (not a drag); see Header_MouseUp.
+    /// 头部点击命令（短点而非拖拽时由 code-behind 调用）：只切换展开/收起态，不再清理任务。
+    /// 清理任务改由模型栏的"清理任务"按钮（ClearTasksCommand）显式触发。
+    /// 见 DynamicIslandWindow.Header_MouseUp。
+    /// Header tap command: toggle expand/collapse only — no longer clears tasks. Called from
+    /// code-behind only on a genuine click (not a drag); see Header_MouseUp.
     /// </summary>
     public void OnHeaderTapped()
     {
-        ClearAllSessions();
+        // 收起/展开灵动岛只切换展开态，不再清理任务 —— 清理改由模型栏的"清理任务"按钮显式触发，
+        // 避免折叠/展开就把刚结束（或正在跑）的任务卡片弄没了。
         IsExpanded = !IsExpanded;
     }
+
+    /// <summary>模型栏"清理任务"按钮：显式清理任务卡片（沿用 ClearAllSessions：清已结束/空闲，保留活动中的）。</summary>
+    [RelayCommand]
+    private void ClearTasks() => ClearAllSessions();
 
     /// <summary>
     /// 返回 true = 这条 session 当前应保持隐藏（被收起且还没"再次活动"）。
