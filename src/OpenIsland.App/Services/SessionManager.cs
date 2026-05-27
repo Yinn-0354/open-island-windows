@@ -770,40 +770,52 @@ public class SessionManager : IDisposable
     /// 把"一直允许"规则 append 到 ~/.claude/settings.json 的 permissions.allow 数组。
     /// 不存在 permissions / allow 字段时创建。已存在同字符串规则时跳过，避免重复堆积。
     /// </summary>
+    // 串行化对 ~/.claude/settings.json 的所有读-改-写：本方法（权限"一直允许"）与
+    // WriteClaudeProviderEnv（模型 env）可能在不同线程并发（后者经 Task.Run），
+    // 无锁会相互覆盖、甚至写到一半损坏文件。两个写入者共用这把锁。
+    private static readonly object _claudeSettingsFileLock = new();
+
     private static void AppendAllowRuleToSettings(AllowRule rule)
     {
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var settingsPath = Path.Combine(userProfile, ".claude", "settings.json");
-        if (!File.Exists(settingsPath))
+        lock (_claudeSettingsFileLock)
         {
-            // 没 settings 也不报错——下次 Claude Code 启动时会自己生成
-            return;
-        }
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var settingsPath = Path.Combine(userProfile, ".claude", "settings.json");
+            if (!File.Exists(settingsPath))
+            {
+                // 没 settings 也不报错——下次 Claude Code 启动时会自己生成
+                return;
+            }
 
-        var text = File.ReadAllText(settingsPath);
-        var node = System.Text.Json.Nodes.JsonNode.Parse(text) as System.Text.Json.Nodes.JsonObject;
-        if (node == null) return;
+            var text = File.ReadAllText(settingsPath);
+            var node = System.Text.Json.Nodes.JsonNode.Parse(text) as System.Text.Json.Nodes.JsonObject;
+            if (node == null) return;
 
-        if (node["permissions"] is not System.Text.Json.Nodes.JsonObject perm)
-        {
-            perm = new System.Text.Json.Nodes.JsonObject();
-            node["permissions"] = perm;
-        }
-        if (perm["allow"] is not System.Text.Json.Nodes.JsonArray allowArr)
-        {
-            allowArr = new System.Text.Json.Nodes.JsonArray();
-            perm["allow"] = allowArr;
-        }
+            if (node["permissions"] is not System.Text.Json.Nodes.JsonObject perm)
+            {
+                perm = new System.Text.Json.Nodes.JsonObject();
+                node["permissions"] = perm;
+            }
+            if (perm["allow"] is not System.Text.Json.Nodes.JsonArray allowArr)
+            {
+                allowArr = new System.Text.Json.Nodes.JsonArray();
+                perm["allow"] = allowArr;
+            }
 
-        var ruleStr = rule.ToSettingString();
-        foreach (var existing in allowArr)
-        {
-            if (existing?.GetValue<string>() == ruleStr) return; // 已经在了
-        }
-        allowArr.Add(ruleStr);
+            var ruleStr = rule.ToSettingString();
+            foreach (var existing in allowArr)
+            {
+                if (existing?.GetValue<string>() == ruleStr) return; // 已经在了
+            }
+            allowArr.Add(ruleStr);
 
-        var json = node.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(settingsPath, json);
+            var json = node.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            // 原子写：tmp + replace，避免写到一半崩溃损坏文件（与 WriteClaudeProviderEnv 一致）。
+            var tmp = settingsPath + ".tmp." + Guid.NewGuid().ToString("N");
+            File.WriteAllText(tmp, json);
+            if (File.Exists(settingsPath)) File.Replace(tmp, settingsPath, null);
+            else File.Move(tmp, settingsPath);
+        }
     }
 
     public void AnswerQuestion(string sessionId, string answer)
@@ -1188,6 +1200,8 @@ public class SessionManager : IDisposable
     /// <summary>读 ~/.claude/settings.json → 应用变更 → 原子写回（temp + replace）+ 备份；保留其它字段。</summary>
     private static bool WriteClaudeProviderEnv(Func<JsonObject, JsonObject> mutate)
     {
+        // 与 AppendAllowRuleToSettings 共用同一把锁，串行化对 settings.json 的并发写。
+        lock (_claudeSettingsFileLock)
         try
         {
             var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

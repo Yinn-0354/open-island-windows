@@ -179,7 +179,8 @@ public partial class DynamicIslandViewModel : ObservableObject
         _greenStatusTimer.Elapsed += (_, _) =>
         {
             _justCompletedTask = false;
-            System.Windows.Application.Current.Dispatcher.BeginInvoke(UpdateStatusColor);
+            // 关闭程序时 Application.Current 可能已为 null（定时器最后一跳）；用 ?. 防退出崩溃。
+            System.Windows.Application.Current?.Dispatcher?.BeginInvoke(UpdateStatusColor);
         };
         _greenStatusTimer.AutoReset = false;
 
@@ -297,7 +298,8 @@ public partial class DynamicIslandViewModel : ObservableObject
 
     private void OnTaskCompleted(object? sender, AgentSession session)
     {
-        System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        // 关闭程序时 Application.Current 可能已为 null（completion 定时器在 teardown 后回调）；?. 防崩溃。
+        System.Windows.Application.Current?.Dispatcher?.BeginInvoke(() =>
         {
             _justCompletedTask = true;
             UpdateStatusColor();
@@ -1027,6 +1029,12 @@ public partial class IslandSessionItem : ObservableObject
                 QuickReplyStatus = QuickReplyReasonText(result.Reason);
             }
         }
+        catch (Exception ex)
+        {
+            // 与 SwitchGlobalModelAsync 一致：兜住注入路径的异常，绝不让它从 async 命令逃逸崩溃。
+            System.Diagnostics.Debug.WriteLine($"SendQuickReplyAsync failed: {ex.Message}");
+            QuickReplyStatus = "发送出错";
+        }
         finally { _busy = false; }
     }
 
@@ -1037,6 +1045,8 @@ public partial class IslandSessionItem : ObservableObject
         "no-session" => "会话不存在",
         "no-terminal" or "no-terminal-match" => "没找到该会话的终端",
         "foreground-mismatch" => "没能切到目标窗口，已取消",
+        "foreground-lost" => "目标窗口失焦，已粘贴未提交",
+        "inject-error" => "注入出错，已取消",
         "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop",
         "clipboard-failed" => "剪贴板被占用，请重试",
         _ => "发送失败"

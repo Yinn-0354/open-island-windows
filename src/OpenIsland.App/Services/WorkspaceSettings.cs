@@ -180,7 +180,11 @@ public class WorkspaceSettings
                     activeModelProfileId = ActiveModelProfileId
                 },
                 new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_path, payload);
+            // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。
+            var tmp = _path + ".tmp." + System.Guid.NewGuid().ToString("N");
+            File.WriteAllText(tmp, payload);
+            if (File.Exists(_path)) File.Replace(tmp, _path, null);
+            else File.Move(tmp, _path);
         }
         catch (Exception ex)
         {

@@ -15,11 +15,38 @@ public class QuickReplyTextTests
     }
 
     [Fact]
-    public void Prepare_TrimsOuterWhitespace_KeepsInner()
+    public void Prepare_TrimsOuterWhitespace()
     {
-        var r = QuickReplyText.Prepare("  hello\nworld  ");
+        var r = QuickReplyText.Prepare("  hello world  ");
         Assert.True(r.Ok);
-        Assert.Equal("hello\nworld", r.Text);
+        Assert.Equal("hello world", r.Text);
+    }
+
+    // 关键修复：注入是「粘贴整段 + 末尾一个回车」。若回复里含内部换行，多数终端会把每个
+    // 换行当成一次提交，导致 line1 被当 prompt 先跑掉、末尾回车又提交残段。所以 Prepare
+    // 必须把内部换行（\n / \r\n / \r，含夹杂空白与连续空行）规整成单个空格 —— 作为一条 prompt 发送。
+    [Theory]
+    [InlineData("line1\nline2", "line1 line2")]
+    [InlineData("line1\r\nline2", "line1 line2")]
+    [InlineData("line1\rline2", "line1 line2")]
+    [InlineData("a\n\n\nb", "a b")]
+    [InlineData("a\n   \nb", "a b")]
+    [InlineData("  first\nsecond  ", "first second")]
+    public void Prepare_CollapsesInnerNewlinesToSingleSpace(string raw, string expected)
+    {
+        var r = QuickReplyText.Prepare(raw);
+        Assert.True(r.Ok);
+        Assert.Equal(expected, r.Text);
+        Assert.DoesNotContain('\n', r.Text);
+        Assert.DoesNotContain('\r', r.Text);
+    }
+
+    [Fact]
+    public void Prepare_SingleLine_Unchanged()
+    {
+        var r = QuickReplyText.Prepare("just one line");
+        Assert.True(r.Ok);
+        Assert.Equal("just one line", r.Text);
     }
 
     [Fact]

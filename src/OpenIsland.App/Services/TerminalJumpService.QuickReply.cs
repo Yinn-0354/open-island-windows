@@ -55,13 +55,17 @@ public partial class TerminalJumpService
 
             SendCtrlV();
             await Task.Delay(120);
-            if (submit)
-            {
-                SendVk(VK_RETURN);
-                await Task.Delay(80);
-            }
+            if (submit && !TrySubmitIfStillForeground(targetHwnd))
+                return new InjectResult(false, "foreground-lost");
+            if (submit) await Task.Delay(80);
 
             return new InjectResult(true, null);
+        }
+        catch (Exception ex)
+        {
+            // 注入途中（激活/SendInput/粘贴）抛出 —— 兜住，绝不让它从 async 命令逃逸导致进程崩溃。
+            _logger?.LogWarning(ex, "SendTextToTerminalAsync: injection threw");
+            return new InjectResult(false, "inject-error");
         }
         finally
         {
@@ -101,19 +105,40 @@ public partial class TerminalJumpService
             // Claude Desktop 激活后聊天输入框默认聚焦，直接粘贴 + 回车。
             SendCtrlV();
             await Task.Delay(120);
-            if (submit)
-            {
-                SendVk(VK_RETURN);
-                await Task.Delay(80);
-            }
+            if (submit && !TrySubmitIfStillForeground(winHwnd))
+                return new InjectResult(false, "foreground-lost");
+            if (submit) await Task.Delay(80);
 
             return new InjectResult(true, null);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "SendTextToClaudeDesktopAsync: injection threw");
+            return new InjectResult(false, "inject-error");
         }
         finally
         {
             await Task.Delay(250);
             RestoreClipboardSafe(saved);
         }
+    }
+
+    /// <summary>
+    /// 提交前再确认目标仍在前台：粘贴后等待的 120ms 里可能被别的窗口抢走焦点，
+    /// 此时绝不能把回车打到错误窗口（会误提交别处的内容）。仅在目标仍是前台时发回车。
+    /// </summary>
+    private bool TrySubmitIfStillForeground(IntPtr target)
+    {
+        var fg = GetForegroundWindow();
+        if (fg != target)
+        {
+            _logger?.LogWarning(
+                "submit aborted: foreground changed before Enter (target=0x{Tgt:X}, fg=0x{Fg:X})",
+                target.ToInt64(), fg.ToInt64());
+            return false;
+        }
+        SendVk(VK_RETURN);
+        return true;
     }
 
     /// <summary>发一次 Ctrl+V 组合键：CTRL 按下 → V 按下 → V 抬起 → CTRL 抬起（一次投递）。</summary>
@@ -153,10 +178,19 @@ public partial class TerminalJumpService
 
     private static void RestoreClipboardSafe(string? saved)
     {
-        if (saved == null) return; // 原内容非文本（图片/文件）时无法完美还原，跳过
         try
         {
-            System.Windows.Application.Current?.Dispatcher.Invoke(() => System.Windows.Clipboard.SetText(saved));
+            var app = System.Windows.Application.Current;
+            if (app?.Dispatcher == null) return;
+            app.Dispatcher.Invoke(() =>
+            {
+                if (saved != null)
+                    System.Windows.Clipboard.SetText(saved);
+                else
+                    // 原内容非文本（图片/文件），SetText 时已被覆盖、无法完美还原；
+                    // 至少清掉我们注入的文字，不让回复内容残留在用户剪贴板里。
+                    System.Windows.Clipboard.Clear();
+            });
         }
         catch { }
     }
