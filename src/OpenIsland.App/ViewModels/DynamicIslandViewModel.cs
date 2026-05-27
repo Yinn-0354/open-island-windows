@@ -21,7 +21,7 @@ public interface IIslandSession
     IRelayCommand? DenyCommand { get; }
 }
 
-public partial class DynamicIslandViewModel : ObservableObject
+public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 {
     private readonly SessionManager _sessionManager;
     private readonly PopupWindowService _popupService;
@@ -302,7 +302,9 @@ public partial class DynamicIslandViewModel : ObservableObject
         System.Windows.Application.Current?.Dispatcher?.BeginInvoke(() =>
         {
             _justCompletedTask = true;
-            UpdateStatusColor();
+            // 先刷新会话与 AttentionCount，再由 RefreshSessions 末尾的 UpdateStatusColor 基于
+            // 最新状态算颜色与提示音边沿 —— 避免 TaskCompleted 早于 SessionsChanged 到达时读到旧聚合。
+            RefreshSessions();
             _greenStatusTimer.Stop();
             _greenStatusTimer.Start();
         });
@@ -480,6 +482,19 @@ public partial class DynamicIslandViewModel : ObservableObject
         HasAttention = AttentionCount > 0;
         HasAnySessions = Sessions.Count > 0;
 
+        // 剪枝 _dismissed：移除已彻底消失的会话（既不在已知会话、也不在运行进程里）。
+        // 否则其条目会永久驻留（内存泄漏），且若该 id 日后以 Idle 重现，会被状态机永久卡隐藏。
+        if (_dismissed.Count > 0)
+        {
+            var alive = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var s in _sessionManager.GetAllSessions())
+                if (!string.IsNullOrEmpty(s.Id)) alive.Add(s.Id);
+            foreach (var r in runningProcesses)
+                if (!string.IsNullOrEmpty(r.SessionId)) alive.Add(r.SessionId);
+            foreach (var k in _dismissed.Keys.Where(k => !alive.Contains(k)).ToList())
+                _dismissed.Remove(k);
+        }
+
         // 找第一条 WaitingForApproval —— 用作权限专属视图的数据源
         IslandSessionItem? perm = null;
         foreach (var s in Sessions)
@@ -609,6 +624,21 @@ public partial class DynamicIslandViewModel : ObservableObject
 
         // 其它（收起时还在 Running，本轮没结束；或没有 phase 信息的兜底项）→ 继续隐藏
         return true;
+    }
+
+    /// <summary>
+    /// 取消所有事件订阅并停掉定时器。VM 是 DI singleton —— 应用退出时
+    /// App.OnExit → ServiceProvider.Dispose() 会自动调用本方法，无需手动接线。
+    /// </summary>
+    public void Dispose()
+    {
+        _sessionManager.SessionsChanged -= OnSessionsChanged;
+        _sessionManager.TaskCompleted -= OnTaskCompleted;
+        _systemStats.StatsUpdated -= OnSystemStatsUpdated;
+        _planUsage.UsageUpdated -= OnPlanUsageUpdated;
+        _settings.Changed -= OnSettingsChangedForModels;
+        _greenStatusTimer.Stop();
+        _greenStatusTimer.Dispose();
     }
 }
 

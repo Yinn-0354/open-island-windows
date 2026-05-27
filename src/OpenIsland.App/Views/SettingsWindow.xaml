@@ -113,7 +113,8 @@
                 <TextBlock Margin="0,4,0,12" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
                            Text="添加第三方模型后，可在灵动岛的会话卡上切换。第三方模型写入 ~/.claude/settings.json，重开终端后生效；官方 Claude / Opus / Sonnet / Haiku 已内置，无需在此添加。"/>
                 <Border Background="#2C2C2E" CornerRadius="10" Padding="2">
-                    <ListBox x:Name="ModelsList" SelectionMode="Single" Height="96" DisplayMemberPath="Name"/>
+                    <ListBox x:Name="ModelsList" SelectionMode="Single" Height="96" DisplayMemberPath="Name"
+                             SelectionChanged="Models_SelectionChanged"/>
                 </Border>
                 <Button Content="删除选中模型" Click="RemoveModel_Click" HorizontalAlignment="Left" Margin="0,8,0,0"/>
 
@@ -147,7 +148,10 @@
                     <TextBox Grid.Row="3" Grid.Column="1" x:Name="ModelBox"/>
 
                     <TextBlock Grid.Row="4" Grid.Column="0" Text="API Key" Style="{StaticResource FieldLabel}"/>
-                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="ApiKeyBox"/>
+                    <PasswordBox Grid.Row="4" Grid.Column="1" x:Name="ApiKeyBox"
+                                 Background="#2C2C2E" Foreground="#F2F2F7" BorderBrush="#3A3A3C"
+                                 BorderThickness="1" Padding="6,4" CaretBrush="#F2F2F7" Margin="0,3"
+                                 VerticalContentAlignment="Center"/>
                 </Grid>
                 <Button Content="添加 / 保存模型" Style="{StaticResource PrimaryButton}"
                         HorizontalAlignment="Left" Margin="0,12,0,0" Click="AddModel_Click"/>

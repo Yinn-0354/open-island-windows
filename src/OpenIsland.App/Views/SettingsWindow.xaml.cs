@@ -13,6 +13,7 @@ public partial class SettingsWindow : Window
     private readonly ObservableCollection<string> _draft = new();
     private readonly ObservableCollection<ModelProfile> _modelProfiles = new();
     private ModelProfile? _selectedPreset;
+    private string? _editingId; // 非空 = 正在编辑该 Id 的已存档案（保存时复用其 Id，不新建重复项）
 
     public SettingsWindow(WorkspaceSettings settings)
     {
@@ -55,10 +56,23 @@ public partial class SettingsWindow : Window
     {
         if (PresetCombo.SelectedItem is not ModelProfile p) return;
         _selectedPreset = p;
+        _editingId = null; // 选预设 = 新建模式
         NameBox.Text = p.Name;
         BaseUrlBox.Text = p.BaseUrl ?? "";
         ModelBox.Text = p.Model ?? "";
-        ApiKeyBox.Text = "";
+        ApiKeyBox.Password = "";
+    }
+
+    /// <summary>选中已有模型 = 进入编辑模式：回填表单并记住其 Id（保存时复用，不新建重复项）。</summary>
+    private void Models_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ModelsList.SelectedItem is not ModelProfile p) return;
+        _editingId = p.Id;
+        _selectedPreset = p; // 以被编辑档为基底，保留其 ApiKeyEnvName / 角色模型
+        NameBox.Text = p.Name;
+        BaseUrlBox.Text = p.BaseUrl ?? "";
+        ModelBox.Text = p.Model ?? "";
+        ApiKeyBox.Password = p.ApiKey ?? "";
     }
 
     /// <summary>添加/保存一个第三方模型档案（立即持久化）。</summary>
@@ -66,7 +80,7 @@ public partial class SettingsWindow : Window
     {
         var name = NameBox.Text?.Trim() ?? "";
         var baseUrl = BaseUrlBox.Text?.Trim() ?? "";
-        var key = ApiKeyBox.Text?.Trim() ?? "";
+        var key = ApiKeyBox.Password?.Trim() ?? "";
         var model = ModelBox.Text?.Trim();
 
         if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(key))
@@ -76,12 +90,14 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // 选了预设就以预设为基底（带上其角色模型 Haiku/Sonnet/Opus + key 字段名），再用表单覆盖。
+        // 选了预设 / 在编辑已存档就以其为基底（带上角色模型 Haiku/Sonnet/Opus + key 字段名），再用表单覆盖。
         var keyEnv = _selectedPreset?.ApiKeyEnvName ?? "ANTHROPIC_AUTH_TOKEN";
         var baseProfile = _selectedPreset ?? new ModelProfile { Kind = ModelKind.ThirdParty };
+        // 编辑模式复用原 Id；新建才生成新 Id —— 避免每次保存都堆出重复 profile。
+        var id = _editingId ?? ("user-" + Guid.NewGuid().ToString("N")[..8]);
         var profile = baseProfile with
         {
-            Id = "user-" + Guid.NewGuid().ToString("N")[..8],
+            Id = id,
             Name = name,
             Kind = ModelKind.ThirdParty,
             BaseUrl = baseUrl,
@@ -91,14 +107,19 @@ public partial class SettingsWindow : Window
         };
 
         _settings.AddOrUpdateModelProfile(profile);
-        _modelProfiles.Add(profile);
+        // UI 集合：编辑则就地替换，新建才追加。
+        var idx = -1;
+        for (int i = 0; i < _modelProfiles.Count; i++)
+            if (_modelProfiles[i].Id == id) { idx = i; break; }
+        if (idx >= 0) _modelProfiles[idx] = profile; else _modelProfiles.Add(profile);
 
         NameBox.Text = "";
         BaseUrlBox.Text = "";
         ModelBox.Text = "";
-        ApiKeyBox.Text = "";
+        ApiKeyBox.Password = "";
         PresetCombo.SelectedItem = null;
         _selectedPreset = null;
+        _editingId = null;
     }
 
     private void RemoveModel_Click(object sender, RoutedEventArgs e)

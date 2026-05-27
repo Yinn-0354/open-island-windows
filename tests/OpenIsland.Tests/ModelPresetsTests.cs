@@ -31,9 +31,19 @@ public class ModelPresetsTests
     }
 
     [Fact]
-    public void Gemini_UsesApiKeyEnvName()
+    public void Presets_DoNotIncludeGemini_WhichLacksAnthropicEndpoint()
     {
-        var gemini = ModelPresets.ThirdParty.Single(p => p.Id == "preset-gemini");
-        Assert.Equal("ANTHROPIC_API_KEY", gemini.ApiKeyEnvName);
+        // Gemini（generativelanguage）没有 Anthropic Messages API，直连 ANTHROPIC_BASE_URL 会失败，
+        // 已从预设移除；此处防回归，避免有人误加回去。
+        Assert.DoesNotContain(ModelPresets.ThirdParty, p => p.Id == "preset-gemini");
+        Assert.DoesNotContain(ModelPresets.ThirdParty,
+            p => p.BaseUrl != null && p.BaseUrl.Contains("generativelanguage"));
+    }
+
+    [Fact]
+    public void ThirdPartyPresets_AllUseAuthTokenEnv()
+    {
+        // 移除 Gemini（曾是唯一用 ANTHROPIC_API_KEY 的预设）后，其余预设均走默认 ANTHROPIC_AUTH_TOKEN。
+        Assert.All(ModelPresets.ThirdParty, p => Assert.Equal("ANTHROPIC_AUTH_TOKEN", p.ApiKeyEnvName));
     }
 }

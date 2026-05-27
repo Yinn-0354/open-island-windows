@@ -20,7 +20,8 @@ public static class ModelPresets
     public static IReadOnlyList<ModelProfile> ThirdParty { get; } = new[]
     {
         Preset("deepseek",    "DeepSeek",            "https://api.deepseek.com/anthropic",            "deepseek-v4-pro", haiku: "deepseek-v4-flash"),
-        Preset("gemini",      "Gemini",              "https://generativelanguage.googleapis.com",     "gemini-3.1-pro",  haiku: "gemini-3-flash", keyEnv: "ANTHROPIC_API_KEY"),
+        // 注意：不收录 Gemini —— Google generativelanguage 只提供 OpenAI / 原生 Gemini 兼容层，
+        // 没有 Anthropic Messages API（/v1/messages），直连 ANTHROPIC_BASE_URL 会失败，需翻译代理。
         Preset("glm",         "智谱 GLM",            "https://open.bigmodel.cn/api/anthropic",        "glm-5"),
         Preset("glm-zai",     "智谱 GLM (z.ai)",     "https://api.z.ai/api/anthropic",                "glm-5"),
         Preset("kimi",        "Kimi (Moonshot)",     "https://api.moonshot.cn/anthropic",             "kimi-k2.6"),

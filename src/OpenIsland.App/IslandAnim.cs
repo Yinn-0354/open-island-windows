@@ -103,9 +103,11 @@ public static class Anim
     {
         var st = GetScaleTransform(fe);
         if (st == null) return;
-        var anim = new DoubleAnimation { To = to, Duration = dur, EasingFunction = ease };
-        st.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
-        st.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+        // X / Y 各用独立动画实例：避免同一个可变 DoubleAnimation 被两个属性共用而耦合时钟。
+        var animX = new DoubleAnimation { To = to, Duration = dur, EasingFunction = ease };
+        var animY = new DoubleAnimation { To = to, Duration = dur, EasingFunction = ease };
+        st.BeginAnimation(ScaleTransform.ScaleXProperty, animX);
+        st.BeginAnimation(ScaleTransform.ScaleYProperty, animY);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -128,6 +130,7 @@ public static class Anim
     private static void OnEntranceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not FrameworkElement fe || !(bool)e.NewValue) return;
+        if (GetEntrancePlayed(fe)) return; // 已播放过：绝不重播（防 Loaded 多次触发 / 重复置 true 累积 handler）
 
         // 已加载则立即播；否则挂到 Loaded 上播一次（用完即摘，保证只跑一遍）
         if (fe.IsLoaded)
@@ -147,9 +150,24 @@ public static class Anim
 
     private static void PlayEntrance(FrameworkElement fe)
     {
-        // 入场专用 TranslateTransform（基线 Y=0；假设元素没有其它 RenderTransform）
+        if (GetEntrancePlayed(fe)) return; // 双保险：一个元素生命周期内只入场一次
+        SetEntrancePlayed(fe, true);
+
+        // 入场专用 TranslateTransform（基线 Y=0）。不破坏元素已有的 RenderTransform：
+        // 若已有非 Identity 且不是 Translate，用 TransformGroup 把原 transform 与 translate 组合。
         var translate = new TranslateTransform(0, 0);
-        fe.RenderTransform = translate;
+        var existing = fe.RenderTransform;
+        if (existing != null && existing != Transform.Identity && existing is not TranslateTransform)
+        {
+            var group = new TransformGroup();
+            group.Children.Add(existing);
+            group.Children.Add(translate);
+            fe.RenderTransform = group;
+        }
+        else
+        {
+            fe.RenderTransform = translate;
+        }
 
         // FillBehavior.Stop：动画结束后回到基线（Opacity=1 / Y=0），不留挂起时钟（每张卡省一个 clock）
         var fade = new DoubleAnimation { From = 0, To = 1, Duration = EntranceDur, EasingFunction = EaseOutCubic, FillBehavior = FillBehavior.Stop };
@@ -203,6 +221,21 @@ public static class Anim
             fe.Visibility = Visibility.Visible;
             var fade = new DoubleAnimation { From = 0, To = 1, Duration = RevealOpenDur, EasingFunction = EaseOutCubic };
             var grow = new DoubleAnimation { From = 0, To = 1, Duration = RevealOpenDur, EasingFunction = EaseOutCubic };
+
+            // 展开完成后定格到终值并释放动画 hold clock（先写本地值再清动画，顺序保证不闪），
+            // 避免每个展开的元素长期挂着一个 HoldEnd 时钟。期间若又被收起则交给 close 分支处理。
+            void OnOpenDone(object? s, EventArgs args)
+            {
+                fade.Completed -= OnOpenDone;
+                if (GetRevealOpen(fe))
+                {
+                    fe.Opacity = 1; st.ScaleY = 1;
+                    fe.BeginAnimation(UIElement.OpacityProperty, null);
+                    st.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                }
+            }
+            fade.Completed += OnOpenDone;
+
             fe.BeginAnimation(UIElement.OpacityProperty, fade);
             st.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
         }
@@ -410,4 +443,13 @@ public static class Anim
 
     private static bool GetFillInitialized(DependencyObject obj) => (bool)obj.GetValue(FillInitializedProperty);
     private static void SetFillInitialized(DependencyObject obj, bool value) => obj.SetValue(FillInitializedProperty, value);
+
+    // Entrance "已播放" 标记：保证一个元素生命周期内只入场一次（随元素一起 GC）。
+    private static readonly DependencyProperty EntrancePlayedProperty =
+        DependencyProperty.RegisterAttached(
+            "EntrancePlayed", typeof(bool), typeof(Anim),
+            new PropertyMetadata(false));
+
+    private static bool GetEntrancePlayed(DependencyObject obj) => (bool)obj.GetValue(EntrancePlayedProperty);
+    private static void SetEntrancePlayed(DependencyObject obj, bool value) => obj.SetValue(EntrancePlayedProperty, value);
 }

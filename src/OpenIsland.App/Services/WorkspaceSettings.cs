@@ -147,7 +147,16 @@ public class WorkspaceSettings
             if (doc.RootElement.TryGetProperty("modelProfiles", out var mp)
                 && mp.ValueKind == JsonValueKind.Array)
             {
-                try { ModelProfiles = mp.Deserialize<List<ModelProfile>>() ?? new(); }
+                try
+                {
+                    var loaded = mp.Deserialize<List<ModelProfile>>() ?? new();
+                    // 解密落盘的 API key（旧明文向后兼容、解密失败置空，见 ApiKeyProtector）。
+                    var result = new List<ModelProfile>(loaded.Count);
+                    foreach (var p in loaded)
+                        result.Add(string.IsNullOrEmpty(p.ApiKey)
+                            ? p : p with { ApiKey = ApiKeyProtector.Unprotect(p.ApiKey) });
+                    ModelProfiles = result;
+                }
                 catch { ModelProfiles = new(); }
             }
             if (doc.RootElement.TryGetProperty("activeModelProfileId", out var amp)
@@ -170,13 +179,19 @@ public class WorkspaceSettings
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             // 三个 key 一起序列化 —— 写任一项都不丢另外两项
             // (workspaces / plan5hTokenBudget / soundEnabled 互不覆盖)
+            // 落盘前把每个 profile 的明文 API key 用 DPAPI 加密（运行时内存里 ModelProfiles 仍是明文，不改）。
+            var profilesForDisk = new List<ModelProfile>(ModelProfiles.Count);
+            foreach (var p in ModelProfiles)
+                profilesForDisk.Add(string.IsNullOrEmpty(p.ApiKey)
+                    ? p : p with { ApiKey = ApiKeyProtector.Protect(p.ApiKey) });
+
             var payload = JsonSerializer.Serialize(
                 new
                 {
                     workspaces = Workspaces,
                     plan5hTokenBudget = Plan5hTokenBudget,
                     soundEnabled = SoundEnabled,
-                    modelProfiles = ModelProfiles,
+                    modelProfiles = profilesForDisk,
                     activeModelProfileId = ActiveModelProfileId
                 },
                 new JsonSerializerOptions { WriteIndented = true });

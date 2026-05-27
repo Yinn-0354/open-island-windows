@@ -1454,6 +1454,13 @@ public class SessionManager : IDisposable
         _cleanupTimer?.Dispose();
         _safetyScanTimer?.Dispose();
         _processSyncTimer?.Dispose();
+        // drain 完成防抖定时器：否则一个 pending 的 completion 定时器可能在 teardown 之后
+        // 才回调 TaskCompleted（落到已释放的 VM/Dispatcher 上）。
+        lock (_completionDebounceLock)
+        {
+            foreach (var t in _completionDebounce.Values) { t.Stop(); t.Dispose(); }
+            _completionDebounce.Clear();
+        }
         _bridgeServer.MessageReceived -= OnBridgeMessageReceived;
         _processMonitor.RunningSessionsChanged -= OnRunningSessionsChanged;
         _claudeWatcher.EventEmitted -= OnClaudeWatcherEvent;

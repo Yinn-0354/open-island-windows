@@ -214,5 +214,10 @@ public class TypingDots : Control
         }
 
         _storyboard.Stop(this);
+        // 同时 Remove 并丢弃引用：Storyboard 内部缓存了对模板里具体 Ellipse 的引用。
+        // 释放它可避免控件被复用 / 模板重应用后残留陈旧元素引用与空转时钟；
+        // 下次可见时 StartAnimation 会基于当前模板元素重新构建一份。
+        _storyboard.Remove(this);
+        _storyboard = null;
     }
 }

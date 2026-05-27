@@ -25,101 +25,121 @@ public partial class TerminalJumpService
     private const ushort VK_V = 0x56;
     private const ushort VK_RETURN = 0x0D;
 
+    // 进程级注入闸门：剪贴板是进程全局资源，串行化所有注入，避免两张卡片同时注入时
+    // 互相覆盖各自保存/写入/还原的剪贴板内容（per-card 的 _busy 只防同一张卡重入）。
+    private readonly System.Threading.SemaphoreSlim _injectGate = new(1, 1);
+
     /// <summary>把文字粘贴进承载 claude pid 的终端窗口，可选回车提交。</summary>
     public async Task<InjectResult> SendTextToTerminalAsync(int claudePid, string text, bool submit)
     {
-        var targetHwnd = FindTerminalHwndByPidChain(claudePid);
-        if (targetHwnd == IntPtr.Zero)
-        {
-            _logger?.LogWarning("SendTextToTerminalAsync: no terminal window for pid {Pid}", claudePid);
-            return new InjectResult(false, "no-terminal");
-        }
-
-        var saved = GetClipboardTextSafe();
-        if (!SetClipboardTextSafe(text))
-            return new InjectResult(false, "clipboard-failed");
-
+        await _injectGate.WaitAsync();
         try
         {
-            ActivateWindow(targetHwnd);
-            await Task.Delay(350);
-
-            var fg = GetForegroundWindow();
-            if (fg != targetHwnd)
+            var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+            if (targetHwnd == IntPtr.Zero)
             {
-                _logger?.LogWarning(
-                    "SendTextToTerminalAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting paste to avoid wrong window",
-                    targetHwnd.ToInt64(), fg.ToInt64());
-                return new InjectResult(false, "foreground-mismatch");
+                _logger?.LogWarning("SendTextToTerminalAsync: no terminal window for pid {Pid}", claudePid);
+                return new InjectResult(false, "no-terminal");
             }
 
-            SendCtrlV();
-            await Task.Delay(120);
-            if (submit && !TrySubmitIfStillForeground(targetHwnd))
-                return new InjectResult(false, "foreground-lost");
-            if (submit) await Task.Delay(80);
+            var saved = GetClipboardTextSafe();
+            if (!SetClipboardTextSafe(text))
+                return new InjectResult(false, "clipboard-failed");
 
-            return new InjectResult(true, null);
-        }
-        catch (Exception ex)
-        {
-            // 注入途中（激活/SendInput/粘贴）抛出 —— 兜住，绝不让它从 async 命令逃逸导致进程崩溃。
-            _logger?.LogWarning(ex, "SendTextToTerminalAsync: injection threw");
-            return new InjectResult(false, "inject-error");
+            try
+            {
+                ActivateWindow(targetHwnd);
+                await Task.Delay(350);
+
+                var fg = GetForegroundWindow();
+                if (fg != targetHwnd)
+                {
+                    _logger?.LogWarning(
+                        "SendTextToTerminalAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting paste to avoid wrong window",
+                        targetHwnd.ToInt64(), fg.ToInt64());
+                    return new InjectResult(false, "foreground-mismatch");
+                }
+
+                SendCtrlV();
+                await Task.Delay(120);
+                if (submit && !TrySubmitIfStillForeground(targetHwnd))
+                    return new InjectResult(false, "foreground-lost");
+                if (submit) await Task.Delay(80);
+
+                return new InjectResult(true, null);
+            }
+            catch (Exception ex)
+            {
+                // 注入途中（激活/SendInput/粘贴）抛出 —— 兜住，绝不让它从 async 命令逃逸导致进程崩溃。
+                _logger?.LogWarning(ex, "SendTextToTerminalAsync: injection threw");
+                return new InjectResult(false, "inject-error");
+            }
+            finally
+            {
+                // 等目标消费完粘贴再还原剪贴板（粘贴是异步投递，过早还原会粘到旧内容）。
+                await Task.Delay(250);
+                RestoreClipboardSafe(saved);
+            }
         }
         finally
         {
-            // 等目标消费完粘贴再还原剪贴板（粘贴是异步投递，过早还原会粘到旧内容）。
-            await Task.Delay(250);
-            RestoreClipboardSafe(saved);
+            _injectGate.Release();
         }
     }
 
     /// <summary>把文字粘贴进 Claude Desktop 的聊天输入框（默认聚焦），可选回车提交。</summary>
     public async Task<InjectResult> SendTextToClaudeDesktopAsync(string text, bool submit)
     {
-        if (!ActivateClaudeDesktopWindow(null))
-            return new InjectResult(false, "desktop-activate-failed");
-
-        var winHwnd = FindClaudeDesktopMainHwnd();
-        if (winHwnd == IntPtr.Zero)
-            return new InjectResult(false, "no-desktop-window");
-
-        var saved = GetClipboardTextSafe();
-        if (!SetClipboardTextSafe(text))
-            return new InjectResult(false, "clipboard-failed");
-
+        await _injectGate.WaitAsync();
         try
         {
-            await Task.Delay(200);
+            if (!ActivateClaudeDesktopWindow(null))
+                return new InjectResult(false, "desktop-activate-failed");
 
-            var fg = GetForegroundWindow();
-            if (fg != winHwnd)
+            var winHwnd = FindClaudeDesktopMainHwnd();
+            if (winHwnd == IntPtr.Zero)
+                return new InjectResult(false, "no-desktop-window");
+
+            var saved = GetClipboardTextSafe();
+            if (!SetClipboardTextSafe(text))
+                return new InjectResult(false, "clipboard-failed");
+
+            try
             {
-                _logger?.LogWarning(
-                    "SendTextToClaudeDesktopAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting",
-                    winHwnd.ToInt64(), fg.ToInt64());
-                return new InjectResult(false, "foreground-mismatch");
+                await Task.Delay(200);
+
+                var fg = GetForegroundWindow();
+                if (fg != winHwnd)
+                {
+                    _logger?.LogWarning(
+                        "SendTextToClaudeDesktopAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting",
+                        winHwnd.ToInt64(), fg.ToInt64());
+                    return new InjectResult(false, "foreground-mismatch");
+                }
+
+                // Claude Desktop 激活后聊天输入框默认聚焦，直接粘贴 + 回车。
+                SendCtrlV();
+                await Task.Delay(120);
+                if (submit && !TrySubmitIfStillForeground(winHwnd))
+                    return new InjectResult(false, "foreground-lost");
+                if (submit) await Task.Delay(80);
+
+                return new InjectResult(true, null);
             }
-
-            // Claude Desktop 激活后聊天输入框默认聚焦，直接粘贴 + 回车。
-            SendCtrlV();
-            await Task.Delay(120);
-            if (submit && !TrySubmitIfStillForeground(winHwnd))
-                return new InjectResult(false, "foreground-lost");
-            if (submit) await Task.Delay(80);
-
-            return new InjectResult(true, null);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "SendTextToClaudeDesktopAsync: injection threw");
-            return new InjectResult(false, "inject-error");
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "SendTextToClaudeDesktopAsync: injection threw");
+                return new InjectResult(false, "inject-error");
+            }
+            finally
+            {
+                await Task.Delay(250);
+                RestoreClipboardSafe(saved);
+            }
         }
         finally
         {
-            await Task.Delay(250);
-            RestoreClipboardSafe(saved);
+            _injectGate.Release();
         }
     }
 
