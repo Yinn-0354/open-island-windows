@@ -627,9 +627,22 @@ public partial class IslandSessionItem : ObservableObject
         _ => "#757575"
     };
 
-    /// <summary>状态点颜色的 Color 值（给 Anim.FillColor 平滑变色用）。</summary>
-    public System.Windows.Media.Color StatusColorValue
-        => (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(StatusColor)!;
+    // 状态点颜色缓存（避免每次读 StatusColorValue 都解析字符串，也消除 ConvertFromString 的 NRE/异常风险）。
+    private static readonly System.Windows.Media.Color _cRunning   = System.Windows.Media.Color.FromRgb(0x21, 0x96, 0xF3);
+    private static readonly System.Windows.Media.Color _cAttention = System.Windows.Media.Color.FromRgb(0xFF, 0x98, 0x00);
+    private static readonly System.Windows.Media.Color _cCompleted = System.Windows.Media.Color.FromRgb(0x9E, 0x9E, 0x9E);
+    private static readonly System.Windows.Media.Color _cIdle      = System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50);
+    private static readonly System.Windows.Media.Color _cDefault   = System.Windows.Media.Color.FromRgb(0x75, 0x75, 0x75);
+
+    /// <summary>状态点颜色的 Color 值（给 Anim.FillColor 平滑变色用）。与 StatusColor 同套规则。</summary>
+    public System.Windows.Media.Color StatusColorValue => Phase switch
+    {
+        SessionPhase.Running => _cRunning,
+        SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer => _cAttention,
+        SessionPhase.Completed => _cCompleted,
+        SessionPhase.Idle => _cIdle,
+        _ => _cDefault
+    };
 
     /// <summary>是否 Running —— 给"思考中"3 点指示器显隐用。</summary>
     public bool IsRunningPhase => Phase == SessionPhase.Running;
@@ -1015,91 +1028,6 @@ public partial class IslandSessionItem : ObservableObject
         _ => "发送失败"
     };
 
-    /// <summary>卡片重建时从旧实例迁移正在进行的瞬态 UI（展开/输入/状态），避免频繁刷新打断用户。</summary>
-    internal void CarryOverTransientState(IslandSessionItem old)
-    {
-        ShowQuickReply = old.ShowQuickReply;
-        QuickReplyInput = old.QuickReplyInput;     // 会触发 OnQuickReplyInputChanged 清状态…
-        QuickReplyStatus = old.QuickReplyStatus;   // …故在其后再设回
-        ModelStatus = old.ModelStatus;
-    }
-
-    // ── 模型切换（F2）：卡片上的下拉，选中即切换 ──
-    // Claude 模型档（官方/Opus/Sonnet/Haiku）实时（/model 或清 env）；第三方档写 env，重开终端生效。
-    public System.Collections.Generic.IReadOnlyList<ModelProfile> SelectableModels
-        => _settings == null
-            ? ModelPresets.BuiltInClaude
-            : ModelPresets.BuiltInClaude.Concat(_settings.ModelProfiles).ToList();
-
-    [ObservableProperty] private ModelProfile? _selectedModel;
-    [ObservableProperty] private string? _modelStatus;
-    private bool _suppressModelSwitch;
-
-    public string ActiveModelName
-    {
-        get
-        {
-            var id = _settings?.ActiveModelProfileId ?? ModelProfile.OfficialClaudeId;
-            return SelectableModels.FirstOrDefault(m => m.Id == id)?.Name ?? "Claude";
-        }
-    }
-
-    private void InitSelectedModel()
-    {
-        var activeId = _settings?.ActiveModelProfileId ?? ModelProfile.OfficialClaudeId;
-        var match = SelectableModels.FirstOrDefault(m => m.Id == activeId)
-                    ?? SelectableModels.FirstOrDefault();
-        _suppressModelSwitch = true;   // 程序化初始化不触发切换动作
-        SelectedModel = match;
-        _suppressModelSwitch = false;
-    }
-
-    partial void OnSelectedModelChanged(ModelProfile? value)
-    {
-        if (_suppressModelSwitch || value == null) return;
-        _ = ApplyModelAsync(value);
-    }
-
-    private async Task ApplyModelAsync(ModelProfile profile)
-    {
-        if (_sessionManager == null || _session == null)
-        {
-            ModelStatus = "仅运行中的会话可切换";
-            return;
-        }
-        if (_busy) return;
-        _busy = true;
-        try
-        {
-            ModelStatus = "切换中…";
-            var result = await _sessionManager.SwitchModelAsync(_session.Id, profile);
-            if (result.Ok)
-            {
-                _settings?.SetActiveModelProfile(profile.Id);
-                OnPropertyChanged(nameof(ActiveModelName));
-            }
-            ModelStatus = MapModelReason(result.Reason, result.Ok);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"ApplyModelAsync failed: {ex.Message}");
-            ModelStatus = "切换出错";
-        }
-        finally { _busy = false; }
-    }
-
-    private static string MapModelReason(string? reason, bool ok) => reason switch
-    {
-        "switched-official" => "已切到官方 Claude（新 CLI 会话生效）",
-        "needs-restart" => "已写入，重开终端后生效",
-        "no-key" => "该模型未配置 API Key",
-        "no-terminal-match" => "没找到该会话的终端",
-        "foreground-mismatch" => "没切到目标窗口，已取消",
-        "write-failed" => "写 settings.json 失败",
-        "no-op" => "无变化",
-        "no-session" => "会话不存在",
-        _ => ok ? "已切换" : "切换失败"
-    };
 
     [RelayCommand]
     private async Task JumpAsync()

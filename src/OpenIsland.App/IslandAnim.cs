@@ -77,9 +77,10 @@ public static class Anim
             fe.RenderTransformOrigin = new Point(0.5, 0.5);
             EnsureScaleTransform(fe);
 
-            fe.PreviewMouseLeftButtonDown += OnPressDown;
-            fe.PreviewMouseLeftButtonUp += OnPressUp;
-            fe.MouseLeave += OnPressLeave;
+            // 先解绑再绑定：保证恰好一份订阅（防 Style/local 值竞争或重复置 true 导致重复挂钩）
+            fe.PreviewMouseLeftButtonDown -= OnPressDown; fe.PreviewMouseLeftButtonDown += OnPressDown;
+            fe.PreviewMouseLeftButtonUp -= OnPressUp;     fe.PreviewMouseLeftButtonUp += OnPressUp;
+            fe.MouseLeave -= OnPressLeave;                fe.MouseLeave += OnPressLeave;
         }
         else
         {
@@ -146,12 +147,13 @@ public static class Anim
 
     private static void PlayEntrance(FrameworkElement fe)
     {
-        // 入场专用 TranslateTransform（此处假设元素没有其它 RenderTransform）
-        var translate = new TranslateTransform(0, 8);
+        // 入场专用 TranslateTransform（基线 Y=0；假设元素没有其它 RenderTransform）
+        var translate = new TranslateTransform(0, 0);
         fe.RenderTransform = translate;
 
-        var fade = new DoubleAnimation { From = 0, To = 1, Duration = EntranceDur, EasingFunction = EaseOutCubic };
-        var slide = new DoubleAnimation { From = 8, To = 0, Duration = EntranceDur, EasingFunction = EaseOutCubic };
+        // FillBehavior.Stop：动画结束后回到基线（Opacity=1 / Y=0），不留挂起时钟（每张卡省一个 clock）
+        var fade = new DoubleAnimation { From = 0, To = 1, Duration = EntranceDur, EasingFunction = EaseOutCubic, FillBehavior = FillBehavior.Stop };
+        var slide = new DoubleAnimation { From = 8, To = 0, Duration = EntranceDur, EasingFunction = EaseOutCubic, FillBehavior = FillBehavior.Stop };
 
         fe.BeginAnimation(UIElement.OpacityProperty, fade);
         translate.BeginAnimation(TranslateTransform.YProperty, slide);
@@ -213,7 +215,7 @@ public static class Anim
             void OnDone(object? s, EventArgs args)
             {
                 fade.Completed -= OnDone;
-                fe.Visibility = Visibility.Collapsed;
+                if (!GetRevealOpen(fe)) fe.Visibility = Visibility.Collapsed; // 期间又被打开则别收起
             }
             fade.Completed += OnDone;
 
