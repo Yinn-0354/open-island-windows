@@ -183,7 +183,6 @@ public partial class DynamicIslandViewModel : ObservableObject
         };
         _greenStatusTimer.AutoReset = false;
 
-        InitSelectedModelChoice();
         _settings.Changed += OnSettingsChangedForModels;
 
         RefreshSessions();
@@ -193,34 +192,21 @@ public partial class DynamicIslandViewModel : ObservableObject
     public System.Collections.Generic.IReadOnlyList<ModelProfile> ModelChoices
         => ModelPresets.BuiltInClaude.Concat(_settings.ModelProfiles).ToList();
 
-    [ObservableProperty] private ModelProfile? _selectedModelChoice;
     [ObservableProperty] private string? _globalModelStatus;
-    private bool _suppressModelSwitch;
+    [ObservableProperty] private bool _modelMenuOpen;
     private bool _busyModel;
 
+    // 纯按钮 + 弹出列表：点列表里的某个模型即切换并收起菜单（不显示当前模型）。
+    [RelayCommand]
+    private async Task SwitchToModel(ModelProfile? profile)
+    {
+        if (profile == null) return;
+        ModelMenuOpen = false;
+        await SwitchGlobalModelAsync(profile);
+    }
+
     private void OnSettingsChangedForModels(object? sender, EventArgs e)
-    {
-        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            OnPropertyChanged(nameof(ModelChoices));
-            InitSelectedModelChoice();
-        });
-    }
-
-    private void InitSelectedModelChoice()
-    {
-        var activeId = _settings.ActiveModelProfileId;
-        var match = ModelChoices.FirstOrDefault(m => m.Id == activeId) ?? ModelChoices.FirstOrDefault();
-        _suppressModelSwitch = true;   // 程序化初始化不触发切换
-        SelectedModelChoice = match;
-        _suppressModelSwitch = false;
-    }
-
-    partial void OnSelectedModelChoiceChanged(ModelProfile? value)
-    {
-        if (_suppressModelSwitch || value == null) return;
-        _ = SwitchGlobalModelAsync(value);
-    }
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(ModelChoices)));
 
     private async Task SwitchGlobalModelAsync(ModelProfile profile)
     {

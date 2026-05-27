@@ -456,23 +456,70 @@
                             </Grid>
                         </Border>
 
-                        <!-- ── 模型切换栏（全局）：选模型写 ~/.claude/settings.json，对新 CLI 会话生效；最右 * 留空，后续安排 ── -->
+                        <!-- ── 模型切换栏：一个按钮，点开弹出模型列表即切换（不显示当前模型）；最右 * 留空 ── -->
                         <Border Background="#111111" CornerRadius="10" Margin="8,0,8,2" Padding="10,6">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="模型" Foreground="#9AA0A6" FontSize="12"
-                                           VerticalAlignment="Center" Margin="2,0,8,0"/>
-                                <ComboBox Grid.Column="1" MinWidth="150"
-                                          Style="{StaticResource ClaudeCombo}"
-                                          ItemsSource="{Binding ModelChoices}"
-                                          SelectedItem="{Binding SelectedModelChoice, Mode=TwoWay}"
-                                          DisplayMemberPath="Name"/>
-                                <TextBlock Grid.Column="2" Text="{Binding GlobalModelStatus}"
+                                <ToggleButton x:Name="ModelMenuToggle" Grid.Column="0" Cursor="Hand"
+                                              FocusVisualStyle="{x:Null}"
+                                              IsChecked="{Binding ModelMenuOpen, Mode=TwoWay}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="Bd" Background="#252320" BorderBrush="#3A3631"
+                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="切换模型" Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                    <Path Margin="7,2,0,0" VerticalAlignment="Center" Fill="#CC785C" Data="M0,0 L4,4 L8,0 Z"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#CC785C"/>
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#CC785C"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+
+                                <Popup PlacementTarget="{Binding ElementName=ModelMenuToggle}" Placement="Bottom"
+                                       VerticalOffset="4" IsOpen="{Binding ModelMenuOpen, Mode=TwoWay}"
+                                       StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                                    <Border Background="#252320" BorderBrush="#3A3631" BorderThickness="1"
+                                            CornerRadius="8" Padding="4" MinWidth="170">
+                                        <ItemsControl ItemsSource="{Binding ModelChoices}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Cursor="Hand" FocusVisualStyle="{x:Null}"
+                                                            Command="{Binding DataContext.SwitchToModelCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding}">
+                                                        <Button.Template>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border x:Name="IBd" Background="Transparent" CornerRadius="6" Padding="10,6" Margin="1">
+                                                                    <ContentPresenter/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="IBd" Property="Background" Value="#2F2C28"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Button.Template>
+                                                        <TextBlock Text="{Binding Name}" Foreground="#FAF9F5" FontSize="12"/>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Border>
+                                </Popup>
+
+                                <TextBlock Grid.Column="1" Text="{Binding GlobalModelStatus}"
                                            Foreground="#777777" FontSize="10" VerticalAlignment="Center"
                                            Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
                             </Grid>
