@@ -360,6 +360,7 @@
                                 <!-- 圆形媒体键按钮：透明底，hover 圆形高亮 -->
                                 <Style x:Key="MediaBtn" TargetType="Button">
                                     <Setter Property="Cursor" Value="Hand"/>
+                                    <Setter Property="local:Anim.PressScale" Value="True"/>
                                     <Setter Property="Width" Value="26"/>
                                     <Setter Property="Height" Value="26"/>
                                     <Setter Property="Margin" Value="2,0"/>
@@ -464,7 +465,7 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <ToggleButton x:Name="ModelMenuToggle" Grid.Column="0" Cursor="Hand"
-                                              FocusVisualStyle="{x:Null}"
+                                              FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
                                               IsChecked="{Binding ModelMenuOpen, Mode=TwoWay}">
                                     <ToggleButton.Template>
                                         <ControlTemplate TargetType="ToggleButton">
@@ -634,7 +635,8 @@
                                                 CornerRadius="12"
                                                 Padding="12,10"
                                                 Margin="0,2"
-                                                Cursor="Hand">
+                                                Cursor="Hand"
+                                                local:Anim.Entrance="True">
                                             <Border.InputBindings>
                                                 <MouseBinding Gesture="LeftClick"
                                                               Command="{Binding JumpCommand}"/>
@@ -653,7 +655,8 @@
                                                          Width="12" Height="12"
                                                          VerticalAlignment="Center"
                                                          Margin="3,0,13,0"
-                                                         Fill="{Binding StatusColor, Converter={StaticResource StrToBrush}}"/>
+                                                         local:Anim.FillColor="{Binding StatusColorValue}"
+                                                         local:Anim.Pulse="{Binding IsAttentionPhase}"/>
                                                 <StackPanel Grid.Column="1"
                                                             Orientation="Horizontal"
                                                             VerticalAlignment="Center">
@@ -668,6 +671,9 @@
                                                                FontSize="11"
                                                                Margin="8,0,0,0"
                                                                VerticalAlignment="Center"/>
+                                                    <!-- Running 时的"思考中"3 点脉冲（AI-Native 风），Idle/完成自动隐藏不耗 CPU -->
+                                                    <local:TypingDots VerticalAlignment="Center" Margin="8,0,0,0"
+                                                                      Visibility="{Binding IsRunningPhase, Converter={StaticResource BoolToVis}}"/>
                                                 </StackPanel>
 
                                                 <!-- 卡片右侧操作区：3 个权限模式切换图标按钮 + 原小叉号。
@@ -689,6 +695,7 @@
                                                         <!-- 共用：20x20 圆角图标按钮模板（叉号同款 hover） -->
                                                         <Style x:Key="CardIconBtn" TargetType="Button">
                                                             <Setter Property="Cursor" Value="Hand"/>
+                                                            <Setter Property="local:Anim.PressScale" Value="True"/>
                                                             <Setter Property="VerticalAlignment" Value="Center"/>
                                                             <Setter Property="Margin" Value="2,0,0,0"/>
                                                             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -789,7 +796,7 @@
 
                                                 <!-- 快捷回复输入行（F1）：点回复图标展开；敲字回车发送（发送前校验目标终端在前台，否则中止） -->
                                                 <Border Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0"
-                                                        Visibility="{Binding ShowQuickReply, Converter={StaticResource BoolToVis}}">
+                                                        local:Anim.RevealOpen="{Binding ShowQuickReply}">
                                                     <StackPanel>
                                                         <Grid>
                                                             <Grid.ColumnDefinitions>
@@ -823,7 +830,7 @@
                                                             </Grid>
                                                             <Button Grid.Column="1" Command="{Binding SendQuickReplyCommand}"
                                                                     Margin="6,0,0,0" Cursor="Hand" ToolTip="发送（回车）"
-                                                                    FocusVisualStyle="{x:Null}">
+                                                                    FocusVisualStyle="{x:Null}" local:Anim.PressScale="True">
                                                                 <Button.Template>
                                                                     <ControlTemplate TargetType="Button">
                                                                         <Border x:Name="SBd" Width="26" Height="24" CornerRadius="6"

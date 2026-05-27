@@ -401,11 +401,7 @@ public partial class DynamicIslandViewModel : ObservableObject
             .ToList();
 
         var assignedIds = new HashSet<string>();
-        var active = new List<IslandSessionItem>();
-
-        // 重建卡片时按 Id 保留每张卡正在进行的瞬态 UI（展开 / 正在输入的快捷回复 / 状态文字），
-        // 否则 transcript 写入触发的频繁刷新会把用户刚打的字、刚选的模型刷没。
-        var prev = Sessions.GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
+        var desired = new List<(string Key, AgentSession? Session, RunningSessionInfo? Info)>();
 
         foreach (var r in runningProcesses)
         {
@@ -423,33 +419,59 @@ public partial class DynamicIslandViewModel : ObservableObject
                         StringComparison.OrdinalIgnoreCase));
             }
 
-            // 2. 没 cwd 时退回到"最近被改写过的 .jsonl 对应的 scan 会话"——
-            //    有真实首条用户消息标题，跟 cc-switch 一样
+            // 2. 没 cwd 时退回到"最近被改写过的 .jsonl 对应的 scan 会话"
             session ??= sessionsByRecency.FirstOrDefault(s => !assignedIds.Contains(s.Id));
 
             if (session != null)
             {
                 assignedIds.Add(session.Id);
                 if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
-                var item = new IslandSessionItem(session, _sessionManager, DismissSession, _settings);
-                if (prev.TryGetValue(session.Id, out var carry)) item.CarryOverTransientState(carry);
-                active.Add(item);
+                desired.Add((session.Id, session, null));
             }
             else
             {
-                // 进程刚起来、scan 还没扫到 ——退到 RunningSessionInfo 显示
                 if (IsHiddenByDismiss(r.SessionId, null)) continue;
-                var item = new IslandSessionItem(r, _sessionManager, DismissSession, _settings);
-                if (prev.TryGetValue(r.SessionId, out var carry)) item.CarryOverTransientState(carry);
-                active.Add(item);
+                desired.Add((r.SessionId, null, r));
             }
         }
 
-        Sessions.Clear();
-        // 不再硬限 6 条 —— XAML 里的 ScrollViewer 用 MaxHeight 控制可视高度，剩下的滚动可见。
-        // No more hard cap at 6 — the XAML ScrollViewer caps visible height; overflow scrolls.
-        foreach (var item in active.Take(20))
-            Sessions.Add(item);
+        var capped0 = desired.Count > 20 ? desired.GetRange(0, 20) : desired;
+        // 去重 Key —— RunningSessionInfo 的合成 SessionId 可能撞车；重复 Key 会让下面的协调越界崩。
+        var seenKeys = new HashSet<string>();
+        var capped = new List<(string Key, AgentSession? Session, RunningSessionInfo? Info)>();
+        foreach (var d in capped0)
+            if (seenKeys.Add(d.Key)) capped.Add(d);
+
+        // 增量协调 Sessions：按 Id 复用同一张卡片实例（就地 Update），只增删/重排差异。
+        // 不整列 Clear()+重建 —— 进场/变色/脉冲动画只在卡片真正新增或状态真变化时触发，
+        // 而不是每次 transcript 刷新都狂闪；正在输入的快捷回复 / 展开态也天然保留（同一实例）。
+        var desiredKeys = new HashSet<string>(capped.Select(c => c.Key));
+        for (int i = Sessions.Count - 1; i >= 0; i--)
+            if (!desiredKeys.Contains(Sessions[i].Id)) Sessions.RemoveAt(i);
+
+        for (int i = 0; i < capped.Count; i++)
+        {
+            var (key, session, info) = capped[i];
+            var found = -1;
+            for (int j = i; j < Sessions.Count; j++)
+                if (Sessions[j].Id == key) { found = j; break; }
+
+            if (found < 0)
+            {
+                var item = session != null
+                    ? new IslandSessionItem(session, _sessionManager, DismissSession, _settings)
+                    : new IslandSessionItem(info!, _sessionManager, DismissSession, _settings);
+                Sessions.Insert(i, item); // 前 i 项已就位，i <= Count，安全
+            }
+            else
+            {
+                if (found != i) Sessions.Move(found, i);
+                if (session != null) Sessions[i].Update(session); else Sessions[i].Update(info!);
+            }
+        }
+
+        // 去掉尾部多余项（残留重复等）
+        while (Sessions.Count > capped.Count) Sessions.RemoveAt(Sessions.Count - 1);
 
         RunningCount = runningProcesses.Count;
         AttentionCount = _sessionManager.GetAttentionCount();
@@ -576,8 +598,8 @@ public partial class DynamicIslandViewModel : ObservableObject
 
 public partial class IslandSessionItem : ObservableObject
 {
-    private readonly AgentSession? _session;
-    private readonly RunningSessionInfo? _runningInfo;
+    private AgentSession? _session;
+    private RunningSessionInfo? _runningInfo;
     private readonly SessionManager? _sessionManager;
     private readonly Action<string>? _onDismiss;
     private readonly WorkspaceSettings? _settings;
@@ -604,6 +626,16 @@ public partial class IslandSessionItem : ObservableObject
         SessionPhase.Idle => "#4CAF50",
         _ => "#757575"
     };
+
+    /// <summary>状态点颜色的 Color 值（给 Anim.FillColor 平滑变色用）。</summary>
+    public System.Windows.Media.Color StatusColorValue
+        => (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(StatusColor)!;
+
+    /// <summary>是否 Running —— 给"思考中"3 点指示器显隐用。</summary>
+    public bool IsRunningPhase => Phase == SessionPhase.Running;
+
+    /// <summary>是否需关注（权限/问题）—— 给注意力脉冲用。</summary>
+    public bool IsAttentionPhase => Phase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer;
 
     private string? GetRunningInfoTitle()
     {
@@ -870,7 +902,6 @@ public partial class IslandSessionItem : ObservableObject
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
         _settings = settings;
-        InitSelectedModel();
     }
 
     public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null)
@@ -879,7 +910,20 @@ public partial class IslandSessionItem : ObservableObject
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
         _settings = settings;
-        InitSelectedModel();
+    }
+
+    /// <summary>就地更新为新的 AgentSession 并刷新所有派生属性（卡片复用，动画只在真状态变化时触发）。</summary>
+    public void Update(AgentSession session)
+    {
+        _session = session;
+        OnPropertyChanged(string.Empty); // 通知所有绑定重读（Title/Phase/StatusColorValue/IsRunningPhase…）
+    }
+
+    /// <summary>就地更新为新的 RunningSessionInfo（仅有进程信息、scan 还没扫到时）。</summary>
+    public void Update(RunningSessionInfo info)
+    {
+        if (_session == null) _runningInfo = info;
+        OnPropertyChanged(string.Empty);
     }
 
     /// <summary>
