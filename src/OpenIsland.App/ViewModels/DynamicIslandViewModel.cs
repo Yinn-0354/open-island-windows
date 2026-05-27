@@ -539,6 +539,14 @@ public partial class DynamicIslandViewModel : ObservableObject
         foreach (var s in Sessions.ToList())
         {
             if (string.IsNullOrEmpty(s.Id)) continue;
+            // 不收起当前正活动的会话（Running / 需关注）—— 折叠/清空灵动岛不该把"正在跑的任务"
+            // 弄没了：一条持续 Running 的会话被收起后，要等它本轮结束再开新一轮才会回来，期间岛上
+            // 既无卡片、聚合状态又显示空闲，看着就像任务消失了。这里只清理已结束/空闲的卡片，
+            // 活动中的会话保持可见（聚合状态也就仍正确显示"有任务在跑"）。
+            if (s.Phase is SessionPhase.Running
+                or SessionPhase.WaitingForApproval
+                or SessionPhase.WaitingForAnswer)
+                continue;
             // 已在 _dismissed 里的不要覆盖其 sawQuiet（保持它在状态机里的既有进度）
             if (!_dismissed.ContainsKey(s.Id))
                 _dismissed[s.Id] = false;
