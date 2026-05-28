@@ -46,6 +46,11 @@ public record ClaudeHookPayload
     [JsonPropertyName("tool_input")]
     public JsonElement? ToolInput { get; init; }
 
+    /// <summary>Claude Code 给每次工具调用的唯一 id。并行 subagent 共享同一 session_id 时，
+    /// 用它区分 / 去重同会话的多个并发权限请求（队列的稳定键）。</summary>
+    [JsonPropertyName("tool_use_id")]
+    public string? ToolUseId { get; init; }
+
     [JsonPropertyName("tool_response")]
     public JsonElement? ToolResponse { get; init; }
 
@@ -127,7 +132,7 @@ public record ClaudeHookPayload
                 SessionId = sessionId,
                 Request = new PermissionRequest
                 {
-                    Id = Guid.NewGuid().ToString("N")[..8],
+                    Id = ToolUseId ?? Guid.NewGuid().ToString("N")[..8],
                     ToolName = ToolName ?? "unknown",
                     Description = Message ?? $"{ToolName}: {ToolInput}",
                     ToolInput = ToolInput?.Deserialize<Dictionary<string, object>>(),
@@ -143,7 +148,7 @@ public record ClaudeHookPayload
                 SessionId = sessionId,
                 Request = new PermissionRequest
                 {
-                    Id = Guid.NewGuid().ToString("N")[..8],
+                    Id = ToolUseId ?? Guid.NewGuid().ToString("N")[..8],
                     ToolName = ToolName ?? "unknown",
                     Description = $"{ToolName}: {SummarizeToolInput(ToolName, ToolInput)}",
                     ToolInput = ToolInput?.Deserialize<Dictionary<string, object>>(),

@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace OpenIsland.Core.Models;
 
 /// <summary>
@@ -23,7 +25,13 @@ public record AgentSession
     public bool IsProcessAlive { get; init; } = true;
 
     // 可选元数据
-    public PermissionRequest? PermissionRequest { get; init; }
+    /// <summary>该会话所有待处理的权限请求（FIFO 队列）。支持并行 subagent 共享同一
+    /// session_id 时的多个并发请求 —— 入队而非互相覆盖。</summary>
+    public ImmutableList<PermissionRequest> PendingPermissions { get; init; } = ImmutableList<PermissionRequest>.Empty;
+
+    /// <summary>队头：最早的待处理权限请求，无则 null。UI 与旧代码读这个即可
+    /// （= 当前该处理的那个，对应终端里正在弹的提示）。</summary>
+    public PermissionRequest? PermissionRequest => PendingPermissions.Count > 0 ? PendingPermissions[0] : null;
     public QuestionPrompt? QuestionPrompt { get; init; }
     public JumpTarget? JumpTarget { get; init; }
 
@@ -63,7 +71,6 @@ public record AgentSession
         string? title = null,
         SessionPhase? phase = null,
         string? summary = null,
-        PermissionRequest? permissionRequest = null,
         QuestionPrompt? questionPrompt = null,
         JumpTarget? jumpTarget = null,
         SessionAttachmentState? attachmentState = null,
@@ -74,7 +81,6 @@ public record AgentSession
             Title = title ?? Title,
             Phase = phase ?? Phase,
             Summary = summary ?? Summary,
-            PermissionRequest = permissionRequest ?? PermissionRequest,
             QuestionPrompt = questionPrompt ?? QuestionPrompt,
             JumpTarget = jumpTarget ?? JumpTarget,
             AttachmentState = attachmentState ?? AttachmentState,

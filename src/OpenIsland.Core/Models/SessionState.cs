@@ -131,7 +131,7 @@ public class SessionState
             summary: updated.Summary,
             phase: newPhase
         );
-        if (clearPermission) newSession = newSession with { PermissionRequest = null };
+        if (clearPermission) newSession = newSession with { PendingPermissions = ImmutableList<PermissionRequest>.Empty };
         if (clearQuestion) newSession = newSession with { QuestionPrompt = null };
 
         // Senders only attach Title when they have a meaningful one (custom title or first user
@@ -149,10 +149,17 @@ public class SessionState
         if (!_sessionsById.TryGetValue(requested.SessionId, out var session))
             return this;
 
-        var newSession = session.With(
-            phase: SessionPhase.WaitingForApproval,
-            permissionRequest: requested.Request
-        );
+        // 入队（按 Id/tool_use_id 去重，避免同一请求被重复 hook 投递堆叠）；不覆盖已有的 ——
+        // 支持并行 subagent 共享同一 session_id 时的多个并发权限请求逐个排队。
+        if (session.PendingPermissions.Any(p => p.Id == requested.Request.Id))
+            return this;
+
+        var newSession = session with
+        {
+            Phase = SessionPhase.WaitingForApproval,
+            PendingPermissions = session.PendingPermissions.Add(requested.Request),
+            UpdatedAt = DateTime.UtcNow
+        };
 
         return new SessionState(_sessionsById.SetItem(newSession.Id, newSession).Values);
     }
@@ -244,29 +251,34 @@ public class SessionState
 
         var newSession = session.With(
             phase: SessionPhase.Running,
-            summary: resolved.Summary,
-            permissionRequest: null,
-            questionPrompt: null
-        );
+            summary: resolved.Summary
+        ) with
+        {
+            PendingPermissions = ImmutableList<PermissionRequest>.Empty,
+            QuestionPrompt = null
+        };
 
         return new SessionState(_sessionsById.SetItem(newSession.Id, newSession).Values);
     }
 
     /// <summary>
-    /// 解决权限请求
+    /// 解决一个权限请求：移除队头（= 终端当前正在问的那个，逐个对应）。
+    /// 队列还有就保持 WaitingForApproval 显示下一个；全部答完才转 Running ——
+    /// 支持并行 subagent 共享同一 session_id 时的多个并发请求逐个解决。
     /// </summary>
     public SessionState ResolvePermission(string sessionId, bool approved, string? summary = null)
     {
         if (!_sessionsById.TryGetValue(sessionId, out var session))
             return this;
+        if (session.PendingPermissions.Count == 0)
+            return this;
 
-        // 用 record `with {}` 直接清 PermissionRequest —— With() 现在的 ?? 语义
-        // 不能传 null 来清字段，要清就直接赋值。
+        var remaining = session.PendingPermissions.RemoveAt(0);
         var newSession = session with
         {
-            Phase = SessionPhase.Running,
+            Phase = remaining.Count > 0 ? SessionPhase.WaitingForApproval : SessionPhase.Running,
             Summary = summary ?? session.Summary,
-            PermissionRequest = null,
+            PendingPermissions = remaining,
             UpdatedAt = DateTime.UtcNow
         };
 

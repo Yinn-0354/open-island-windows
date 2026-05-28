@@ -936,6 +936,13 @@
                                            FontSize="11"
                                            Margin="10,0,0,0"
                                            VerticalAlignment="Center"/>
+                                <!-- 并发待批准徽标：并行 subagent 同会话有多个权限请求时，提示还排队着几个 -->
+                                <Border Visibility="{Binding HasMultiplePending, Converter={StaticResource BoolToVis}}"
+                                        Background="#3A2A12" CornerRadius="6" Padding="7,2"
+                                        Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding PendingPermissionBadge}"
+                                               Foreground="#FFCC8A" FontSize="10" FontWeight="SemiBold"/>
+                                </Border>
                             </StackPanel>
 
                             <!-- Tool tag + headline：⚠ 工具 + 关键参数 -->

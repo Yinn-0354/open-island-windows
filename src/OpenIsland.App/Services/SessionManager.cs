@@ -462,7 +462,7 @@ public class SessionManager : IDisposable
                                 var newSession = s with
                                 {
                                     Phase = SessionPhase.Idle,
-                                    PermissionRequest = null,
+                                    PendingPermissions = System.Collections.Immutable.ImmutableList<PermissionRequest>.Empty,
                                     Summary = "Ready for input",
                                     UpdatedAt = DateTime.UtcNow
                                 };

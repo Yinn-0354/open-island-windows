@@ -764,6 +764,15 @@ public partial class IslandSessionItem : ObservableObject
                 ? "点击 Allow once / Deny —— 直接同步到 Claude Desktop"
                 : "点击上方任一项，或在 Claude 终端按 1 / 2 / 3";
 
+    /// <summary>该会话当前排队的待批准请求总数（并行 subagent 共享 session_id 时会 > 1）。</summary>
+    public int PendingPermissionCount => _session?.PendingPermissions.Count ?? 0;
+
+    /// <summary>队列里还有不止一个待批准（并发场景）时为 true，用于显示"还有 N 个"徽标。</summary>
+    public bool HasMultiplePending => PendingPermissionCount > 1;
+
+    /// <summary>并发待批准徽标文案，如 "+2 个待批准"（不含当前正显示的队头那个）。</summary>
+    public string PendingPermissionBadge => HasMultiplePending ? $"+{PendingPermissionCount - 1} 个待批准" : "";
+
     /// <summary>
     /// 权限请求时显示的"工具名 + 主要参数"标题行，例如 "WebFetch · https://vibeisland.app/"。
     /// B 模式下岛只镜像 Claude 终端 prompt，不再交互，标题就要把请求内容讲清楚。
