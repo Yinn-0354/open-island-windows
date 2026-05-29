@@ -552,16 +552,15 @@
                             </Grid>
                         </Border>
 
-                        <!-- ── Plan usage 行：Claude 订阅 5h 滚动窗口用量 ──
-                             Plan 模式：Plan + 进度条 + 62% + 重置 2h13m
+                        <!-- ── 5 小时余额行：Claude 订阅 5h 滚动窗口剩余额度 ──
+                             订阅模式：5h + 余额条 + 余 73% + 重置 2h13m
                              API  模式：API · 1.24M tokens（无进度条/重置）
-                             配色/间距对齐上方媒体行（#111111 / CornerRadius 10 / Margin 8,0,8,2）。
-                             暂时取消：整行折叠（删掉 Visibility="Collapsed" 即恢复）。 -->
+                             数据来自 /api/oauth/usage（= /usage 同源，零 message 配额）。
+                             配色/间距对齐上方媒体行（#111111 / CornerRadius 10 / Margin 8,0,8,2）。 -->
                         <Border Background="#111111"
                                 CornerRadius="10"
                                 Margin="8,0,8,2"
-                                Padding="10,8"
-                                Visibility="Collapsed">
+                                Padding="10,8">
                             <Border.Resources>
                                 <!-- 扁平进度条：无边框、圆角细条，Foreground 绑 PlanBarColor，
                                      轨道 #26FFFFFF，高度 6。无 code-behind，纯模板实现 -->

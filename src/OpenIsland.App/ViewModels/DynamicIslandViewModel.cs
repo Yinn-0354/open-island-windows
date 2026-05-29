@@ -275,15 +275,29 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             else
             {
                 PlanIsApi = false;
-                PlanLabel = "Plan";
-                PlanPercentText = s.Percent + "%";
-                PlanBarFraction = s.Fraction;
-                PlanResetText = s.ResetIn is { } r && r > TimeSpan.Zero
-                    ? $"重置 {(int)r.TotalHours}h{r.Minutes:00}m"
-                    : "";
-                PlanBarColor = s.Percent >= 90 ? "#E74C3C"
-                             : s.Percent >= 70 ? "#FF9F0A"
-                             : "#0A84FF";
+                PlanLabel = "5h";
+                if (s.Indeterminate)
+                {
+                    // 还没拿到真实 5h 数据：显示"余 --"，中性灰、空条、无重置。绝不伪造百分比。
+                    PlanPercentText = "余 --";
+                    PlanBarFraction = 0;
+                    PlanResetText = "";
+                    PlanBarColor = "#5A5A5E";
+                }
+                else
+                {
+                    // 显示「余额」（剩余），不是已用：余额 = 100% - 已用%。
+                    int remaining = Math.Clamp(100 - s.Percent, 0, 100);
+                    PlanPercentText = $"余 {remaining}%";
+                    // 余额条：满=绿（额度多），随消耗下降，少时转橙/红。
+                    PlanBarFraction = Math.Clamp(1.0 - s.Fraction, 0, 1);
+                    PlanResetText = s.ResetIn is { } r && r > TimeSpan.Zero
+                        ? $"重置 {(int)r.TotalHours}h{r.Minutes:00}m"
+                        : "";
+                    PlanBarColor = remaining <= 10 ? "#E74C3C"
+                                 : remaining <= 30 ? "#FF9F0A"
+                                 : "#30D158";
+                }
             }
         });
     }

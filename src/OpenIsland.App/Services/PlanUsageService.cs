@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using OpenIsland.App.ViewModels;
+using OpenIsland.Core;
 using OpenIsland.Core.Models;
 
 namespace OpenIsland.App.Services;
@@ -24,6 +25,10 @@ public record PlanUsageSnapshot
     public double Fraction { get; init; }
     public int Percent { get; init; }
     public TimeSpan? ResetIn { get; init; }
+
+    /// <summary>true = 还没拿到真实 5h 用量（探针未成功/网络不可达）。此时显示"余 --"，
+    /// 绝不用猜测额度伪造百分比。</summary>
+    public bool Indeterminate { get; init; }
 }
 
 public sealed class PlanUsageService : IDisposable
@@ -41,10 +46,7 @@ public sealed class PlanUsageService : IDisposable
     private DateTime? _probeResetUtc;   // 5h 窗口绝对重置时刻 (UTC)
     private DateTime _lastProbeUtc = DateTime.MinValue;
 
-    /// <summary>探针失败时的兜底分母（粗略，仅占位防 100%；真实值永远以探针为准）。</summary>
-    private const ulong FallbackBudget5h = 220_000_000UL;
-
-    /// <summary>探针最短间隔：5 分钟（API 调用，别频繁；用量本来也是慢变量）。</summary>
+    /// <summary>探针最短间隔：5 分钟（/api/oauth/usage 对频繁轮询会 429；用量本来也是慢变量）。</summary>
     private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(5);
 
     private static readonly string CredentialsPath = Path.Combine(
@@ -67,8 +69,14 @@ public sealed class PlanUsageService : IDisposable
         Sample();
     }
 
-    /// <summary>功能总开关。false = 整个 Plan usage 功能停用（行折叠 + 后台不跑）。</summary>
-    private const bool FeatureEnabled = false;
+    /// <summary>功能总开关。true = 显示订阅 5 小时余额（行展开 + 后台探针跑）。</summary>
+    private const bool FeatureEnabled = true;
+
+    /// <summary>访问 /api/oauth/usage 必须带的 User-Agent；缺它会命中激进限流桶持续 429。</summary>
+    private const string ClaudeCodeUserAgent = "claude-code/2.1.156";
+
+    private static string Trunc(string? s, int n)
+        => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s[..n] + "…");
 
     private static void Diag(string msg)
     {
@@ -128,12 +136,10 @@ public sealed class PlanUsageService : IDisposable
             // 触发探针（节流 5min，后台跑，不阻塞计时器）。
             MaybeProbe();
 
-            double frac;
-            TimeSpan? resetIn;
             if (_probeFraction is double pf)
             {
-                // ✅ 真实值：Anthropic 限流头
-                frac = pf;
+                // ✅ 真实值：/api/oauth/usage 的 5h 窗口利用率
+                TimeSpan? resetIn;
                 if (_probeResetUtc is DateTime pr)
                 {
                     var rr = pr - now;
@@ -143,27 +149,28 @@ public sealed class PlanUsageService : IDisposable
                 {
                     resetIn = localReset;
                 }
+
+                double clamped = Math.Clamp(pf, 0, 1);
+                UsageUpdated?.Invoke(this, new PlanUsageSnapshot
+                {
+                    IsApi = false,
+                    UsedTokens = used5h,
+                    Fraction = clamped,
+                    Percent = (int)Math.Round(clamped * 100),
+                    ResetIn = resetIn
+                });
             }
             else
             {
-                // 兜底：固定额度估算（绝不自指）。优先用 settings.json 里**实时**读到的
-                // plan5hTokenBudget（我按一个真实数据点校准好写进去 → 纯自动、随用量按比例走、
-                // 不用重启/重部署即可生效）；没有才用内置常量。
-                ulong budget = ReadLiveBudget() ?? FallbackBudget5h;
-                frac = budget == 0 ? 0 : used5h / (double)budget;
-                resetIn = localReset;
-                Diag($"fallback: used5h={used5h} budget={budget} -> {(int)Math.Round(Math.Clamp(frac, 0, 1) * 100)}%");
+                // 还没有真实数据（探针未成功 / 网络不可达 / OAuth 失效）：标记 Indeterminate，
+                // UI 显示"余 --"。绝不用猜测额度伪造一个百分比（那会显示成误导性的 0% 余额）。
+                UsageUpdated?.Invoke(this, new PlanUsageSnapshot
+                {
+                    IsApi = false,
+                    UsedTokens = used5h,
+                    Indeterminate = true
+                });
             }
-
-            double clamped = Math.Clamp(frac, 0, 1);
-            UsageUpdated?.Invoke(this, new PlanUsageSnapshot
-            {
-                IsApi = false,
-                UsedTokens = used5h,
-                Fraction = clamped,
-                Percent = (int)Math.Round(clamped * 100),
-                ResetIn = resetIn
-            });
         }
         catch
         {
@@ -209,87 +216,34 @@ public sealed class PlanUsageService : IDisposable
         catch (Exception ex) { Diag($"cred parse failed: {ex.Message} -> fallback"); return; }
         if (string.IsNullOrEmpty(token)) { Diag("no accessToken -> fallback"); return; }
 
-        // 最小消息请求；限流头在边缘即返回（即便 4xx 也有），max_tokens:1 token 开销可忽略。
-        using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
+        // GET 订阅用量端点：零 message 配额，直接返回 5h/7d 窗口利用率（= /usage 的同源数据）。
+        // 必须带 User-Agent: claude-code/<ver>，否则命中激进限流桶持续 429。
+        using var req = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/usage");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
         req.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        req.Content = new StringContent(
-            "{\"model\":\"claude-3-5-haiku-20241022\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}",
-            Encoding.UTF8, "application/json");
+        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        req.Headers.UserAgent.TryParseAdd(ClaudeCodeUserAgent);
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Diag($"usage HTTP {(int)resp.StatusCode}: {Trunc(body, 500)}");
 
-        var rl = new List<string>();
-        long? limit = null, remaining = null;
-        DateTime? resetUtc = null;
-        double? statusFraction = null;
-
-        foreach (var h in resp.Headers)
+        if (!resp.IsSuccessStatusCode)
         {
-            if (!h.Key.StartsWith("anthropic-ratelimit", StringComparison.OrdinalIgnoreCase)) continue;
-            var val = string.Join(",", h.Value);
-            rl.Add($"{h.Key}={val}");
-            var key = h.Key.ToLowerInvariant();
-
-            // 优先 5h 窗口的 limit/remaining；没有则吃 unified 通用的。
-            if (key.Contains("unified") && key.EndsWith("limit") && long.TryParse(val, out var lv)) limit = lv;
-            if (key.Contains("unified") && key.EndsWith("remaining") && long.TryParse(val, out var rv)) remaining = rv;
-            if (key.Contains("unified") && key.Contains("reset"))
-            {
-                if (DateTimeOffset.TryParse(val, out var dto)) resetUtc = dto.UtcDateTime;
-                else if (long.TryParse(val, out var secs))
-                    resetUtc = DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime;
-            }
-            // 退路：unified-status = allowed / allowed_warning / rejected
-            if (key.Contains("unified") && key.Contains("status"))
-                statusFraction = val.Contains("reject", StringComparison.OrdinalIgnoreCase) ? 1.0
-                    : val.Contains("warning", StringComparison.OrdinalIgnoreCase) ? 0.85 : (double?)null;
+            Diag("-> non-200, keep fallback estimate");
+            return;
         }
 
-        Diag(rl.Count == 0
-            ? $"HTTP {(int)resp.StatusCode}: no anthropic-ratelimit headers -> fallback"
-            : $"HTTP {(int)resp.StatusCode}: {string.Join(" | ", rl)}");
-
-        if (limit is long L && L > 0 && remaining is long Rem)
+        if (OAuthUsageParser.TryParseFiveHour(body, out var usedFrac, out var resetUtc))
         {
-            _probeFraction = Math.Clamp(1.0 - (double)Rem / L, 0, 1);
+            _probeFraction = usedFrac;
             _probeResetUtc = resetUtc;
-            Diag($"-> real fraction={_probeFraction:P1} reset={(_probeResetUtc?.ToString("u") ?? "n/a")}");
-        }
-        else if (statusFraction is double sf)
-        {
-            _probeFraction = sf;
-            _probeResetUtc = resetUtc;
-            Diag($"-> status-only fraction~{sf:P0} (no limit/remaining headers)");
+            Diag($"-> real 5h used={_probeFraction:P1} reset={(_probeResetUtc?.ToString("u") ?? "n/a")}");
         }
         else
         {
-            Diag("-> headers present but no numeric limit/remaining/status -> keep fallback");
+            Diag("-> 200 but five_hour not parseable -> keep fallback");
         }
-    }
-
-    /// <summary>
-    /// 实时从 %APPDATA%\OpenIsland\settings.json 读 plan5hTokenBudget（>0 才返回）。
-    /// 按真实数据点校准后只改这个文件就生效，无需重启 / 重部署。
-    /// </summary>
-    private static ulong? ReadLiveBudget()
-    {
-        try
-        {
-            var p = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "OpenIsland", "settings.json");
-            if (!File.Exists(p)) return null;
-            using var doc = JsonDocument.Parse(File.ReadAllText(p));
-            if (doc.RootElement.TryGetProperty("plan5hTokenBudget", out var b))
-            {
-                if (b.ValueKind == JsonValueKind.Number && b.TryGetUInt64(out var v) && v > 0) return v;
-                if (b.ValueKind == JsonValueKind.String && ulong.TryParse(b.GetString(), out var sv) && sv > 0) return sv;
-            }
-        }
-        catch { }
-        return null;
     }
 
     private static DateTime? TryGetMtime(string? path)
