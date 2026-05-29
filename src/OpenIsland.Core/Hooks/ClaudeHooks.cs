@@ -40,6 +40,11 @@ public record ClaudeHookPayload
     [JsonPropertyName("hook_event_name")]
     public string? HookEventName { get; init; }
 
+    /// <summary>会话当前权限模式：default / plan / acceptEdits / auto / dontAsk / bypassPermissions。
+    /// 决定 PreToolUse hook 是否应强制弹询问（仅 default 才强制，见 ClaudeHookPolicy）。</summary>
+    [JsonPropertyName("permission_mode")]
+    public string? PermissionMode { get; init; }
+
     [JsonPropertyName("tool_name")]
     public string? ToolName { get; init; }
 

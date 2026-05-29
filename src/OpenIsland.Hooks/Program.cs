@@ -142,7 +142,12 @@ public class Program
                 await Console.Error.WriteLineAsync($"Warning: Failed to forward hook: {ack?.Error ?? "unknown error"}");
             }
 
-            if (isInteractive)
+            // 只在 default（普通）模式才输出 permissionDecision:"ask"。
+            // 关键修复：hook 的显式 "ask" 会覆盖权限模式，即使用户在 bypassPermissions / auto /
+            // acceptEdits 也强制弹询问。这正是"一开岛就到处弹 accept"的根因。其余模式一律 defer
+            // （不输出决定），让 Claude 按用户选的模式自动放行；岛仍通过上面的 fire-and-forget 收到
+            // 事件做镜像显示，不受影响。
+            if (isInteractive && ClaudeHookPolicy.ShouldForceAsk(TryGetString(payload, "permission_mode")))
             {
                 await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                 {
