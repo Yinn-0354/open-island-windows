@@ -216,21 +216,13 @@ public sealed class PlanUsageService : IDisposable
         catch (Exception ex) { Diag($"cred parse failed: {ex.Message} -> fallback"); return; }
         if (string.IsNullOrEmpty(token)) { Diag("no accessToken -> fallback"); return; }
 
-        // GET 订阅用量端点：零 message 配额，直接返回 5h/7d 窗口利用率（= /usage 的同源数据）。
-        // 必须带 User-Agent: claude-code/<ver>，否则命中激进限流桶持续 429。
-        using var req = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/usage");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        req.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-        req.Headers.UserAgent.TryParseAdd(ClaudeCodeUserAgent);
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
-        var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-        Diag($"usage HTTP {(int)resp.StatusCode}: {Trunc(body, 500)}");
-
-        if (!resp.IsSuccessStatusCode)
+        // 取数：优先用系统自带 curl.exe。实测 .NET HttpClient（Framework 与 .NET 8 都试过）在
+        // 本环境会"连上后挂死到超时"，而 curl 0.5s 返回 200（TLS/HTTP2/代理/IPv6 它自己处理好）。
+        // curl 缺失（极老 Windows，<1803）才退回 HttpClient。
+        var body = await FetchUsageBodyAsync(token).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(body))
         {
-            Diag("-> non-200, keep fallback estimate");
+            Diag("-> no usage body -> keep fallback");
             return;
         }
 
@@ -242,8 +234,100 @@ public sealed class PlanUsageService : IDisposable
         }
         else
         {
-            Diag("-> 200 but five_hour not parseable -> keep fallback");
+            Diag($"-> body present but five_hour not parseable: {Trunc(body, 200)}");
         }
+    }
+
+    private const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
+
+    /// <summary>取订阅用量 JSON：curl.exe 优先（可靠），缺失才退回 HttpClient。绝不打印 token。</summary>
+    private async Task<string?> FetchUsageBodyAsync(string token)
+    {
+        var curl = ResolveCurlPath();
+        if (curl != null)
+        {
+            // curl 存在就只用 curl —— 不再退回 HttpClient（后者在本环境会挂死 ~12s）。
+            try { return await FetchViaCurlAsync(curl, token).ConfigureAwait(false); }
+            catch (Exception ex) { Diag($"curl fetch failed: {ex.Message}"); return null; }
+        }
+        try { return await FetchViaHttpClientAsync(token).ConfigureAwait(false); }
+        catch (Exception ex) { Diag($"httpclient fetch failed: {ex.Message}"); return null; }
+    }
+
+    private static string? ResolveCurlPath()
+    {
+        var sys = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "curl.exe");
+        if (File.Exists(sys)) return sys;
+        return "curl.exe"; // 交给 PATH 解析
+    }
+
+    /// <summary>
+    /// 用 curl.exe 拉用量。url + header（含 token）写进临时 -K 配置文件，避免 token 出现在
+    /// 命令行被其它进程窥见；用完即删。返回 200 时的 body，否则 null。
+    /// </summary>
+    private async Task<string?> FetchViaCurlAsync(string curlPath, string token)
+    {
+        var cfg = Path.Combine(Path.GetTempPath(), "oi-usage-" + Guid.NewGuid().ToString("N") + ".cfg");
+        try
+        {
+            var cfgText =
+                $"url = \"{UsageUrl}\"\n" +
+                $"header = \"Authorization: Bearer {token}\"\n" +
+                "header = \"anthropic-beta: oauth-2025-04-20\"\n" +
+                $"header = \"user-agent: {ClaudeCodeUserAgent}\"\n";
+            await File.WriteAllTextAsync(cfg, cfgText, new UTF8Encoding(false)).ConfigureAwait(false);
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = curlPath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("-sS");
+            psi.ArgumentList.Add("-m"); psi.ArgumentList.Add("12");
+            psi.ArgumentList.Add("-w"); psi.ArgumentList.Add("\n__HTTP__%{http_code}");
+            psi.ArgumentList.Add("-K"); psi.ArgumentList.Add(cfg);
+
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc == null) { Diag("curl: process start returned null"); return null; }
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+            {
+                try { await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { try { proc.Kill(true); } catch { } Diag("curl: timed out"); return null; }
+            }
+            var raw = await stdoutTask.ConfigureAwait(false);
+
+            int code = 0; string bodyText = raw;
+            int marker = raw.LastIndexOf("__HTTP__", StringComparison.Ordinal);
+            if (marker >= 0)
+            {
+                bodyText = raw.Substring(0, marker).TrimEnd('\r', '\n');
+                int.TryParse(raw.Substring(marker + 8).Trim(), out code);
+            }
+            Diag($"curl usage HTTP {code}: {Trunc(bodyText, 400)}");
+            return code == 200 ? bodyText : null;
+        }
+        finally
+        {
+            try { File.Delete(cfg); } catch { }
+        }
+    }
+
+    /// <summary>退路：HttpClient（部分环境会挂死，仅在 curl 缺失时用）。</summary>
+    private async Task<string?> FetchViaHttpClientAsync(string token)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        req.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+        req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        req.Headers.UserAgent.TryParseAdd(ClaudeCodeUserAgent);
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Diag($"httpclient usage HTTP {(int)resp.StatusCode}: {Trunc(body, 400)}");
+        return resp.IsSuccessStatusCode ? body : null;
     }
 
     private static DateTime? TryGetMtime(string? path)
