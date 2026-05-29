@@ -114,7 +114,10 @@ public class Program
             // 任务完成 / 权限请求 / 问题：直接由 hook 子进程在本地播提示音，不依赖 bridge ——
             // 这是用户钦定的"任务完成"提示音路径（之前主进程 BeepService 那条已撤）。
             // 即使主应用未运行，Stop 事件仍能让用户听到。
-            if (IsStopEvent(source, payload) || isInteractive)
+            // 交互 hook 只在真正需要弹询问时（default 模式）才响；bypass/auto 下 Claude 自动放行，
+            // 不该每次工具调用都"叮"一声。Stop（任务完成）始终响。
+            bool forceAsk = ClaudeHookPolicy.ShouldForceAsk(TryGetString(payload, "permission_mode"));
+            if (IsStopEvent(source, payload) || (isInteractive && forceAsk))
             {
                 PlayBeep();
             }
@@ -147,7 +150,7 @@ public class Program
             // acceptEdits 也强制弹询问。这正是"一开岛就到处弹 accept"的根因。其余模式一律 defer
             // （不输出决定），让 Claude 按用户选的模式自动放行；岛仍通过上面的 fire-and-forget 收到
             // 事件做镜像显示，不受影响。
-            if (isInteractive && ClaudeHookPolicy.ShouldForceAsk(TryGetString(payload, "permission_mode")))
+            if (isInteractive && forceAsk)
             {
                 await Console.Out.WriteLineAsync(JsonSerializer.Serialize(new
                 {

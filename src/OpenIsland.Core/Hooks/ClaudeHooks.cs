@@ -148,6 +148,12 @@ public record ClaudeHookPayload
                 Timestamp = timestamp
             },
 
+            // PreToolUse 只在 default（普通）模式拉起"等待审批"橙卡；bypass/auto/acceptEdits/
+            // dontAsk/plan 等非交互模式下 Claude 自动放行、无人工审批，也就没有可靠的解决事件回来，
+            // 若仍拉起橙卡会永久卡住（感叹号下不去）。这些模式直接丢弃 PreToolUse（返回 null），
+            // 会话的 Running/Idle 全交给 transcript watcher 驱动。与 hook 端的 ask 抑制同一策略。
+            "pretooluse" when !ClaudeHookPolicy.ShouldForceAsk(PermissionMode) => null,
+
             "pretooluse" => new PermissionRequested
             {
                 SessionId = sessionId,
