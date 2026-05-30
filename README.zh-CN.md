@@ -43,6 +43,14 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 
 ## ✨ Features
 
+- **切换模型** —— 音量栏下方"切换模型"按钮，点开弹出模型列表即切换。控制中心可添加第三方模型（参考 cc-switch 预设 —— DeepSeek / 智谱 GLM / Kimi / 通义千问 / OpenRouter / 硅基流动 / Novita / ModelScope / 小米 MiMo … 预填地址，只需填 API Key）。官方 Claude 档客户端 + CLI 都生效；第三方档写 `~/.claude/settings.json` 的 env、对新 CLI 会话生效。API Key 以 Windows DPAPI 加密落盘
+- **订阅 5 小时余量** —— 音量栏下方一行显示 Claude 订阅"5 小时滚动窗口"剩余额度（绿色余额条 + "余 XX%" + 重置倒计时），数据来自 `/api/oauth/usage`（与 `/usage` 同源，零 token 开销），5 分钟自动刷新，行尾刷新按钮可手动立即刷新
+- **中英文界面切换** —— 托盘右键 / 控制中心切换 中文 / English，默认跟随 Windows 系统语言，切换后持久化
+- **图钉固定会话** —— 会话卡右侧图钉按钮，被固定的会话"清理任务"不会清掉它
+- **点击 CPU% / RAM% 释放内存** —— 清理各进程工作集（类 RAM 清理工具），RAM% 随后下降
+
+  <img src="docs/screenshots/island-0.3.png" alt="Open Island —— 切换模型、5 小时余量、图钉会话" width="340"/>
+
 - **像素状态精灵** —— 头部指示器是像素动画（Aseprite sprite sheet，NearestNeighbor + 整数倍缩放，125% / 150% DPI 不糊），绑 `SessionPhase`：
   - **Running** → 连续循环 + 整体上下跳动
   - **Idle / Completed** → 停在最后一帧，每 30s 从多个空闲变体（`idle.png` / `idle2.png` / `idle3.png` … 自动发现，加图不改代码）里随机挑一个完整播一遍
@@ -65,7 +73,7 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
   - **Models** 按模型分组的 Token 占比 + I/O 详情
 - **Workspace 过滤** —— 设置里指定项目目录，统计仅算 cwd 在该目录下的会话
 - **Stop hook 触发任务完成** —— Claude Code 真正 `end_turn` 时桌面响铃 + 灵动岛绿灯闪
-- **CLI / 桌面端区分** —— 跳转按钮自动判断 entrypoint，CLI 会话开终端跑 `claude --resume`，桌面端会话激活客户端窗口
+- **CLI / 桌面端区分** —— 点击会话卡自动判断 entrypoint（取转录文件**最新**一行的值，会话从桌面端 `--resume` 到 CLI 后也判得对），并且只在"终端宿主"的 `claude.exe` 里找终端（排除桌面端常驻派生的大量子进程）：CLI 会话**激活已有终端**（终端已关才开新 tab 跑 `claude --resume`），桌面端会话激活客户端窗口
 
 ## 📦 安装
 

@@ -6,6 +6,29 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-30
+
+### Added
+
+- **订阅 5 小时余量** —— 灵动岛音量栏下方显示 Claude 订阅"5 小时滚动窗口"剩余额度（绿色余额条 + "余 XX%" + 重置倒计时）。数据来自 `/api/oauth/usage`（与 `/usage` 同源，零 token 开销，经系统自带 `curl.exe` 取数以绕开部分环境下 .NET HttpClient 挂死），5 分钟自动刷新，行尾刷新按钮可手动立即刷新
+- **全局模型切换** —— 音量栏下方"切换模型"按钮，点开弹出列表即切换。控制中心可添加第三方模型（参考 cc-switch 预设：DeepSeek / 智谱 GLM / Kimi / 通义千问 / OpenRouter / 硅基流动 / Novita / ModelScope / 小米 MiMo 等，预填地址、只需填 API Key）。官方 Claude 档客户端 + CLI 都生效；第三方档写 `~/.claude/settings.json` 的 env、对新 CLI 会话生效。API Key 以 Windows DPAPI 加密落盘
+- **中英文界面切换** —— 托盘右键 / 控制中心切换 中文 / English，默认跟随 Windows 系统语言，切换后持久化
+- **图钉固定会话** —— 会话卡右侧图钉按钮，被固定的会话"清理任务"不会清掉它
+- **点击 CPU% / RAM% 释放内存** —— 清理各进程工作集（类 RAM 清理工具），RAM% 随后下降
+- **灵动岛微动画** —— 卡片入场、状态点变色 / 脉冲、按压缩放、Running 时"思考中"三点脉冲等（只动 Opacity / RenderTransform，省 GPU、不触发布局）
+
+### Fixed
+
+- **快捷回复 / 点击卡片跳转发错宿主、找不到终端** —— Claude 桌面端常驻时有十几个 `claude.exe`（桌面主进程 + 大量派生子进程），旧逻辑在其中按 cwd 匹配歧义、单候选兜底失效 → CLI 会话的消息弹到了客户端、点卡片退化成开新终端 `claude --resume`。修复：① entrypoint 取转录文件**最新**一行的值（会话 desktop→`--resume`→cli 后被正确判为 cli）；② 终端解析只在"终端宿主"的 claude 里找（父进程是 shell / 终端，排除桌面端及其子进程）
+- **收起 / 展开灵动岛把任务弄没** —— 收起再展开不再清空任务卡；清理改由"清理任务"按钮显式触发，正在运行的会话也不会被清
+- **命令注入 / UTC 时间偏移 / hook settings 覆盖** —— `session_id` 严格校验防命令注入；transcript 时间戳按本地时区解析；安装 hook 改为**合并**写入，不再整体覆盖用户 `~/.claude/settings.json`
+- **若干健壮性** —— 剪贴板注入失败重试、退出时 `Application.Current` 为 null 崩溃、`settings.json` 并发写竞态、动画时钟泄漏等
+
+### Changed
+
+- **模型切换移到全局岛栏** —— 每会话单独切模型不可行，改为音量栏下方一栏全局切换
+- **快捷回复暂时取消** —— 功能未完善，暂时隐藏卡片上的回复图标与输入框（代码保留），后续更新再加入
+
 ## [0.2.2] - 2026-05-17
 
 ### Added

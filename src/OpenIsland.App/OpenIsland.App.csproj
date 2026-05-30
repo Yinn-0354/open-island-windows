@@ -8,6 +8,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>OpenIsland</AssemblyName>
     <RootNamespace>OpenIsland.App</RootNamespace>
+    <Version>0.3.0</Version>
     <!-- exe / 任务栏 / Alt+Tab 图标 -->
     <ApplicationIcon>Assets\face.ico</ApplicationIcon>
   </PropertyGroup>

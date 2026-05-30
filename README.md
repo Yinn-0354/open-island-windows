@@ -43,6 +43,14 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 
 ## ✨ Features
 
+- **Model switch** — a **Switch Model** button below the volume row pops up a model list; pick one to switch. Add third-party models in the Control Center (cc-switch-style presets — DeepSeek / Zhipu GLM / Kimi / Qwen / OpenRouter / SiliconFlow / Novita / ModelScope / Xiaomi MiMo … base URLs pre-filled, just paste your API key). Official Claude profiles apply to both the desktop client and the CLI; third-party profiles write the `env` block in `~/.claude/settings.json` and take effect in a new CLI session. API keys are stored encrypted with Windows DPAPI
+- **5-hour usage balance** — a row below the volume control shows your Claude subscription's 5-hour rolling-window remaining quota (green balance bar + "XX% left" + reset countdown), from `/api/oauth/usage` (same source as `/usage`, zero token cost), auto-refreshed every 5 minutes with a manual refresh button
+- **Language switch (中文 / English)** — toggle the UI language from the tray right-click menu or the Control Center; defaults to your Windows system language and is remembered after you change it
+- **Pin sessions** — a pin button on each card keeps that session from being removed by **Clear Tasks**
+- **Free memory** — click the CPU% / RAM% to trim every process's working set (RAM-cleaner style); RAM% drops afterward
+
+  <img src="docs/screenshots/island-0.3.png" alt="Open Island — model switch, 5-hour balance, pinned sessions" width="340"/>
+
 - **Pixel status sprite** — the header indicator is a pixel-art sprite (Aseprite sheet, nearest-neighbor + integer scaling so it stays crisp at 125% / 150% DPI) bound to `SessionPhase`:
   - **Running** → continuous loop + a gentle up-and-down bounce
   - **Idle / Completed** → holds the last frame, then every 30s randomly picks one of several idle variants (`idle.png` / `idle2.png` / `idle3.png` … auto-discovered, drop a file in to add one) and plays it once
@@ -65,8 +73,8 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
   - **Models** — token share per model + I/O breakdown
 - **Workspace filter** — restrict statistics to sessions whose `cwd` is under your configured project root(s)
 - **Stop hook completion signal** — the green "task complete" indicator and beep fire only when Claude Code emits a real `Stop` hook (true `end_turn` / `stop_sequence`), not on every mid-task `end_turn`
-- **CLI / Desktop routing** — clicking a session card auto-detects the transcript's `entrypoint`:
-  - `cli` → opens a new terminal running `claude --resume`
+- **CLI / Desktop routing** — clicking a session card auto-detects the transcript's `entrypoint` (using its **latest** value, so a session resumed from desktop into the CLI is routed correctly), and the terminal is located among only the **terminal-hosted** `claude.exe` processes (so the Claude Desktop app's many child processes don't confuse the match):
+  - `cli` → activates the existing terminal where the session is running (only opens a new `claude --resume` tab if that terminal is gone)
   - `claude-desktop` → activates the Claude Desktop window
 
 ## 📦 Installation
