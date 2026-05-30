@@ -1154,10 +1154,40 @@ public class SessionManager : IDisposable
     /// </summary>
     private int? ResolveTerminalPidForInjection(AgentSession session)
     {
-        var candidates = _processMonitor.GetRunningSessions()
+        var running = _processMonitor.GetRunningSessions().ToList();
+
+        // 只保留"终端宿主"的 claude（父进程是 shell/终端）——排除 Claude 桌面端主进程及其派生的
+        // 大量子 claude.exe（它们不是 CLI 终端，会把候选池搅乱、让 cwd 匹配歧义/单候选兜底失效，
+        // 正是"找不到该会话的终端"的根因：桌面端常驻时有十几个 claude.exe，只有 3 个是 CLI）。
+        var terminalHosted = running.Where(IsTerminalHostedClaude).ToList();
+        var pool = terminalHosted.Count > 0 ? terminalHosted : running; // 拿不到终端宿主信息时退回全集
+
+        var wantCwd = session.JumpTarget?.WorkingDirectory;
+        TerminalJumpService.InjectDiag(
+            $"resolve: wantCwd={wantCwd ?? "(null)"} running={running.Count} terminalHosted={terminalHosted.Count}");
+        foreach (var r in pool)
+            TerminalJumpService.InjectDiag($"resolve:   cand pid={r.ProcessId} ppid={r.ParentProcessId} cwd={r.WorkingDirectory ?? "(null)"}");
+
+        var candidates = pool
             .Select(r => new TerminalCandidate(r.ProcessId, r.WorkingDirectory, r.SessionId))
             .ToList();
-        return TerminalTargeting.ResolvePid(session.JumpTarget?.WorkingDirectory, session.Id, candidates);
+        return TerminalTargeting.ResolvePid(wantCwd, session.Id, candidates);
+    }
+
+    private static readonly HashSet<string> _terminalHostNames = new(StringComparer.OrdinalIgnoreCase)
+    { "powershell", "pwsh", "cmd", "windowsterminal", "wt", "conhost", "bash", "wsl", "alacritty", "wezterm", "nu", "tabby" };
+
+    /// <summary>该 claude 进程是否由终端/shell 承载（=CLI 会话）。父进程名是已知 shell/终端则是；
+    /// 父进程是 claude（桌面端派生的子进程）或其它则否。</summary>
+    private static bool IsTerminalHostedClaude(RunningSessionInfo r)
+    {
+        if (r.ParentProcessId is not int ppid || ppid <= 0) return false;
+        try
+        {
+            using var parent = System.Diagnostics.Process.GetProcessById(ppid);
+            return _terminalHostNames.Contains(parent.ProcessName);
+        }
+        catch { return false; }
     }
 
     /// <summary>

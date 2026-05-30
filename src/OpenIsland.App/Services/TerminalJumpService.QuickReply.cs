@@ -226,14 +226,19 @@ public partial class TerminalJumpService
 
     private static bool SetClipboardTextSafe(string text)
     {
-        try
+        var app = System.Windows.Application.Current;
+        if (app?.Dispatcher == null) return false;
+        // 剪贴板是全局独占资源，别的进程瞬间占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN。
+        // 重试若干次（每次短暂退避）——这是注入前最后一步，失败=整条消息发不出去，值得多试几次。
+        return app.Dispatcher.Invoke(() =>
         {
-            var app = System.Windows.Application.Current;
-            if (app?.Dispatcher == null) return false;
-            app.Dispatcher.Invoke(() => System.Windows.Clipboard.SetText(text));
-            return true;
-        }
-        catch { return false; }
+            for (int i = 0; i < 8; i++)
+            {
+                try { System.Windows.Clipboard.SetText(text); return true; }
+                catch { System.Threading.Thread.Sleep(40); }
+            }
+            return false;
+        });
     }
 
     private static void RestoreClipboardSafe(string? saved)
