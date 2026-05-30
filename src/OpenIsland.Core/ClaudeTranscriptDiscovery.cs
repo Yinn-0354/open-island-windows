@@ -242,12 +242,15 @@ public class ClaudeTranscriptDiscovery
                 session.ProjectName = Path.GetFileName(session.WorkingDirectory);
             }
 
-            // entrypoint: 仅在第一次见到时锁定（后续行不覆盖，避免一行写错就把整个 session 的
-            // entrypoint 翻盘）。常见值：cli / claude-desktop
-            if (string.IsNullOrEmpty(session.Entrypoint)
-                && root.TryGetProperty("entrypoint", out var entryElement))
+            // entrypoint: 取**最新一行**的值（transcript 按时间顺序追加，最后处理的=最近的）。
+            // 关键修复：同一会话可能先在 claude-desktop 开、之后被 `claude --resume` 拉到 cli 里继续
+            // （或反之）。若像旧逻辑那样锁死第一次见到的值，会话已经搬到 CLI 了，快捷回复/跳转却还
+            // 按最初的 claude-desktop 发到客户端 —— 这正是"发给 CLI 的消息弹到了客户端"的根因。
+            // 用最新值反映"当前在哪运行"，路由才正确。常见值：cli / claude-desktop。
+            if (root.TryGetProperty("entrypoint", out var entryElement))
             {
-                session.Entrypoint = entryElement.GetString();
+                var ep = entryElement.GetString();
+                if (!string.IsNullOrEmpty(ep)) session.Entrypoint = ep;
             }
 
             if (root.TryGetProperty("timestamp", out var tsElement))

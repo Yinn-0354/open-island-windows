@@ -29,49 +29,73 @@ public partial class TerminalJumpService
     // 互相覆盖各自保存/写入/还原的剪贴板内容（per-card 的 _busy 只防同一张卡重入）。
     private readonly System.Threading.SemaphoreSlim _injectGate = new(1, 1);
 
+    private static readonly string InjectDiagPath =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-inject.log");
+
+    /// <summary>注入诊断日志（落 %TEMP%\openisland-inject.log）。绝不打印注入文字本身，仅记长度。</summary>
+    internal static void InjectDiag(string msg)
+    {
+        try { System.IO.File.AppendAllText(InjectDiagPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+    }
+
     /// <summary>把文字粘贴进承载 claude pid 的终端窗口，可选回车提交。</summary>
     public async Task<InjectResult> SendTextToTerminalAsync(int claudePid, string text, bool submit)
     {
+        InjectDiag($"terminal: enter pid={claudePid} textLen={text?.Length ?? 0} submit={submit}");
         await _injectGate.WaitAsync();
         try
         {
             var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+            InjectDiag($"terminal: resolved hwnd=0x{targetHwnd.ToInt64():X}");
             if (targetHwnd == IntPtr.Zero)
             {
                 _logger?.LogWarning("SendTextToTerminalAsync: no terminal window for pid {Pid}", claudePid);
+                InjectDiag("terminal: -> no-terminal (FindTerminalHwndByPidChain 找不到窗口)");
                 return new InjectResult(false, "no-terminal");
             }
 
             var saved = GetClipboardTextSafe();
-            if (!SetClipboardTextSafe(text))
+            if (!SetClipboardTextSafe(text!))
+            {
+                InjectDiag("terminal: -> clipboard-failed (写剪贴板失败)");
                 return new InjectResult(false, "clipboard-failed");
+            }
 
             try
             {
+                var fgBefore = GetForegroundWindow();
                 ActivateWindow(targetHwnd);
                 await Task.Delay(350);
 
                 var fg = GetForegroundWindow();
+                InjectDiag($"terminal: fgBefore=0x{fgBefore.ToInt64():X} fgAfterActivate=0x{fg.ToInt64():X} target=0x{targetHwnd.ToInt64():X}");
                 if (fg != targetHwnd)
                 {
                     _logger?.LogWarning(
                         "SendTextToTerminalAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting paste to avoid wrong window",
                         targetHwnd.ToInt64(), fg.ToInt64());
+                    InjectDiag("terminal: -> foreground-mismatch (激活后目标不在前台，未粘贴)");
                     return new InjectResult(false, "foreground-mismatch");
                 }
 
                 SendCtrlV();
+                InjectDiag("terminal: pasted (Ctrl+V 已发)");
                 await Task.Delay(120);
                 if (submit && !TrySubmitIfStillForeground(targetHwnd))
+                {
+                    InjectDiag("terminal: -> foreground-lost (粘贴后目标失焦，未回车提交)");
                     return new InjectResult(false, "foreground-lost");
-                if (submit) await Task.Delay(80);
+                }
+                if (submit) { InjectDiag("terminal: Enter 已发"); await Task.Delay(80); }
 
+                InjectDiag("terminal: -> OK");
                 return new InjectResult(true, null);
             }
             catch (Exception ex)
             {
                 // 注入途中（激活/SendInput/粘贴）抛出 —— 兜住，绝不让它从 async 命令逃逸导致进程崩溃。
                 _logger?.LogWarning(ex, "SendTextToTerminalAsync: injection threw");
+                InjectDiag($"terminal: -> inject-error ({ex.GetType().Name}: {ex.Message})");
                 return new InjectResult(false, "inject-error");
             }
             finally
@@ -90,45 +114,61 @@ public partial class TerminalJumpService
     /// <summary>把文字粘贴进 Claude Desktop 的聊天输入框（默认聚焦），可选回车提交。</summary>
     public async Task<InjectResult> SendTextToClaudeDesktopAsync(string text, bool submit)
     {
+        InjectDiag($"desktop: enter textLen={text?.Length ?? 0} submit={submit}");
         await _injectGate.WaitAsync();
         try
         {
             if (!ActivateClaudeDesktopWindow(null))
+            {
+                InjectDiag("desktop: -> desktop-activate-failed");
                 return new InjectResult(false, "desktop-activate-failed");
+            }
 
             var winHwnd = FindClaudeDesktopMainHwnd();
+            InjectDiag($"desktop: winHwnd=0x{winHwnd.ToInt64():X}");
             if (winHwnd == IntPtr.Zero)
                 return new InjectResult(false, "no-desktop-window");
 
             var saved = GetClipboardTextSafe();
-            if (!SetClipboardTextSafe(text))
+            if (!SetClipboardTextSafe(text!))
+            {
+                InjectDiag("desktop: -> clipboard-failed");
                 return new InjectResult(false, "clipboard-failed");
+            }
 
             try
             {
                 await Task.Delay(200);
 
                 var fg = GetForegroundWindow();
+                InjectDiag($"desktop: fgAfterActivate=0x{fg.ToInt64():X} target=0x{winHwnd.ToInt64():X}");
                 if (fg != winHwnd)
                 {
                     _logger?.LogWarning(
                         "SendTextToClaudeDesktopAsync: foreground mismatch (target=0x{Tgt:X}, fg=0x{Fg:X}); aborting",
                         winHwnd.ToInt64(), fg.ToInt64());
+                    InjectDiag("desktop: -> foreground-mismatch");
                     return new InjectResult(false, "foreground-mismatch");
                 }
 
                 // Claude Desktop 激活后聊天输入框默认聚焦，直接粘贴 + 回车。
                 SendCtrlV();
+                InjectDiag("desktop: pasted");
                 await Task.Delay(120);
                 if (submit && !TrySubmitIfStillForeground(winHwnd))
+                {
+                    InjectDiag("desktop: -> foreground-lost");
                     return new InjectResult(false, "foreground-lost");
-                if (submit) await Task.Delay(80);
+                }
+                if (submit) { InjectDiag("desktop: Enter 已发"); await Task.Delay(80); }
 
+                InjectDiag("desktop: -> OK");
                 return new InjectResult(true, null);
             }
             catch (Exception ex)
             {
                 _logger?.LogWarning(ex, "SendTextToClaudeDesktopAsync: injection threw");
+                InjectDiag($"desktop: -> inject-error ({ex.GetType().Name}: {ex.Message})");
                 return new InjectResult(false, "inject-error");
             }
             finally

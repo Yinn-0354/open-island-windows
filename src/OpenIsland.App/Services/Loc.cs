@@ -115,6 +115,8 @@ public sealed class Loc : INotifyPropertyChanged
         ["Island_PlayPause"] = "播放 / 暂停",
         ["Island_Next"] = "下一首",
         ["Island_Volume"] = "系统音量",
+        ["Mem_Release_Tip"] = "点击释放内存（清理各进程工作集）",
+        ["Mem_Released"] = "已释放约 {0} MB 内存",
         // 5h 余额（VM 动态拼接）
         ["Balance_Format"] = "余 {0}%",
         ["Balance_Unknown"] = "余 --",
@@ -195,6 +197,8 @@ public sealed class Loc : INotifyPropertyChanged
         ["Island_PlayPause"] = "Play / Pause",
         ["Island_Next"] = "Next",
         ["Island_Volume"] = "System volume",
+        ["Mem_Release_Tip"] = "Click to free memory (trim process working sets)",
+        ["Mem_Released"] = "Freed ~{0} MB",
         // 5h balance
         ["Balance_Format"] = "{0}% left",
         ["Balance_Unknown"] = "-- left",

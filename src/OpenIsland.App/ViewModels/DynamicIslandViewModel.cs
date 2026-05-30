@@ -259,6 +259,42 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         });
     }
 
+    [System.Runtime.InteropServices.DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    /// <summary>
+    /// 点击 CPU / RAM 百分比触发：释放内存 —— GC 自己 + 把所有可访问进程的工作集换出物理内存
+    /// （EmptyWorkingSet，类似 RAM 清理工具）。无权限的系统/受保护进程跳过。RAM% 随下个 1s tick 下降。
+    /// </summary>
+    [RelayCommand]
+    private void ReleaseMemory()
+    {
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                long Sum() { long t = 0; foreach (var pr in System.Diagnostics.Process.GetProcesses()) { try { t += pr.WorkingSet64; } catch { } finally { pr.Dispose(); } } return t; }
+                var before = Sum();
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                int trimmed = 0;
+                foreach (var proc in System.Diagnostics.Process.GetProcesses())
+                {
+                    try { if (EmptyWorkingSet(proc.Handle)) trimmed++; }
+                    catch { /* 无权限 / 已退出，跳过 */ }
+                    finally { proc.Dispose(); }
+                }
+                var after = Sum();
+                var freedMb = (before - after) / (1024.0 * 1024.0);
+                try { System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-mem.log"),
+                    $"[{DateTime.Now:HH:mm:ss}] ReleaseMemory: trimmed {trimmed} procs, freed ~{freedMb:N0} MB\n"); } catch { }
+            }
+            catch { }
+        });
+    }
+
     /// <summary>字节/秒 → 紧凑字符串：&lt;1KB 显示 B/s，&lt;1MB 显示 KB/s，否则 MB/s。</summary>
     private static string FormatRate(double bytesPerSec)
     {

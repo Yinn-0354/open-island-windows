@@ -1116,21 +1116,34 @@ public class SessionManager : IDisposable
     /// </summary>
     public async Task<InjectResult> SendQuickReplyAsync(string sessionId, string text)
     {
+        TerminalJumpService.InjectDiag($"reply: enter session={sessionId} rawLen={text?.Length ?? 0}");
         var prepared = QuickReplyText.Prepare(text);
         if (!prepared.Ok)
+        {
+            TerminalJumpService.InjectDiag($"reply: -> prepare rejected ({prepared.Reason})");
             return new InjectResult(false, prepared.Reason);
+        }
+        TerminalJumpService.InjectDiag($"reply: prepared textLen={prepared.Text.Length}");
 
         var session = GetSession(sessionId);
         if (session == null)
+        {
+            TerminalJumpService.InjectDiag("reply: -> no-session (GetSession 返回 null)");
             return new InjectResult(false, "no-session");
+        }
 
         var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        TerminalJumpService.InjectDiag($"reply: entrypoint={entrypoint ?? "(null)"} title={session.Title}");
         if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
             return await _terminalJumpService.SendTextToClaudeDesktopAsync(prepared.Text, submit: true);
 
         var pid = ResolveTerminalPidForInjection(session);
         if (pid is not int p)
+        {
+            TerminalJumpService.InjectDiag("reply: -> no-terminal-match (ResolveTerminalPidForInjection 没解析到 pid)");
             return new InjectResult(false, "no-terminal-match");
+        }
+        TerminalJumpService.InjectDiag($"reply: resolved terminal pid={p}");
 
         return await _terminalJumpService.SendTextToTerminalAsync(p, prepared.Text, submit: true);
     }

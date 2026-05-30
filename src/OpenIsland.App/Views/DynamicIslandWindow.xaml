@@ -282,18 +282,31 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
+                                <!-- CPU / RAM 文本：点击释放内存（清理各进程工作集，RAM% 随后下降） -->
                                 <TextBlock Grid.Column="0"
                                            Text="{Binding CpuText}"
                                            Foreground="#9AA0A6"
                                            FontSize="11"
                                            FontFamily="Consolas, Cascadia Code, Segoe UI"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center"
+                                           Cursor="Hand"
+                                           ToolTip="{Binding [Mem_Release_Tip], Source={x:Static svc:Loc.Instance}}">
+                                    <TextBlock.InputBindings>
+                                        <MouseBinding Gesture="LeftClick" Command="{Binding ReleaseMemoryCommand}"/>
+                                    </TextBlock.InputBindings>
+                                </TextBlock>
                                 <TextBlock Grid.Column="1"
                                            Text="{Binding MemText}"
                                            Foreground="#9AA0A6"
                                            FontSize="11"
                                            FontFamily="Consolas, Cascadia Code, Segoe UI"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center"
+                                           Cursor="Hand"
+                                           ToolTip="{Binding [Mem_Release_Tip], Source={x:Static svc:Loc.Instance}}">
+                                    <TextBlock.InputBindings>
+                                        <MouseBinding Gesture="LeftClick" Command="{Binding ReleaseMemoryCommand}"/>
+                                    </TextBlock.InputBindings>
+                                </TextBlock>
                                 <TextBlock Grid.Column="2"
                                            Text="{Binding GpuText}"
                                            Foreground="#9AA0A6"
