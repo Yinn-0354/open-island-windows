@@ -52,6 +52,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// </summary>
     private readonly Dictionary<string, bool> _dismissed = new();
 
+    /// <summary>被图钉固定的会话 Id —— "清理任务"不会清掉它们（用户显式保留）。</summary>
+    private readonly HashSet<string> _pinned = new(StringComparer.Ordinal);
+
     // ── 系统状态栏：CPU / 内存 / GPU / 网速 ──
     [ObservableProperty] private string _cpuText = "CPU --";
     [ObservableProperty] private string _memText = "RAM --";
@@ -540,14 +543,16 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             if (found < 0)
             {
                 var item = session != null
-                    ? new IslandSessionItem(session, _sessionManager, DismissSession, _settings)
-                    : new IslandSessionItem(info!, _sessionManager, DismissSession, _settings);
+                    ? new IslandSessionItem(session, _sessionManager, DismissSession, _settings, TogglePinSession)
+                    : new IslandSessionItem(info!, _sessionManager, DismissSession, _settings, TogglePinSession);
+                item.IsPinned = _pinned.Contains(key);
                 Sessions.Insert(i, item); // 前 i 项已就位，i <= Count，安全
             }
             else
             {
                 if (found != i) Sessions.Move(found, i);
                 if (session != null) Sessions[i].Update(session); else Sessions[i].Update(info!);
+                Sessions[i].IsPinned = _pinned.Contains(key); // 图钉状态以 VM 的 _pinned 为准
             }
         }
 
@@ -606,6 +611,14 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         RefreshSessions();
     }
 
+    /// <summary>卡片图钉按钮：切换该会话的固定状态（固定后"清理任务"不会清掉它）。</summary>
+    private void TogglePinSession(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        if (!_pinned.Remove(id)) _pinned.Add(id);
+        RefreshSessions(); // 让卡片 IsPinned 跟着更新（图钉变色）
+    }
+
     /// <summary>
     /// 点 "Open Island" 头部触发的"一键清空当前列表"——把此刻列表里的每条 session
     /// 都按"单卡叉号收起"的同一套语义记进 _dismissed（value=false，沿用 sawQuiet 状态机），
@@ -640,6 +653,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             if (s.Phase is SessionPhase.Running
                 or SessionPhase.WaitingForApproval
                 or SessionPhase.WaitingForAnswer)
+                continue;
+            // 图钉固定的会话：用户显式保留，不清理。
+            if (_pinned.Contains(s.Id))
                 continue;
             // 已在 _dismissed 里的不要覆盖其 sawQuiet（保持它在状态机里的既有进度）
             if (!_dismissed.ContainsKey(s.Id))
@@ -726,6 +742,10 @@ public partial class IslandSessionItem : ObservableObject
     private RunningSessionInfo? _runningInfo;
     private readonly SessionManager? _sessionManager;
     private readonly Action<string>? _onDismiss;
+    private Action<string>? _onTogglePin;
+
+    /// <summary>是否被图钉固定（固定后"清理任务"不会清掉它）。由 VM 的 _pinned 集合驱动。</summary>
+    [ObservableProperty] private bool _isPinned;
     private readonly WorkspaceSettings? _settings;
 
     public string Id => _session?.Id ?? _runningInfo?.SessionId ?? "";
@@ -1042,21 +1062,26 @@ public partial class IslandSessionItem : ObservableObject
         }
     }
 
-    public IslandSessionItem(AgentSession session, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null)
+    public IslandSessionItem(AgentSession session, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null, Action<string>? onTogglePin = null)
     {
         _session = session;
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
         _settings = settings;
+        _onTogglePin = onTogglePin;
     }
 
-    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null)
+    public IslandSessionItem(RunningSessionInfo runningInfo, SessionManager sessionManager, Action<string>? onDismiss = null, WorkspaceSettings? settings = null, Action<string>? onTogglePin = null)
     {
         _runningInfo = runningInfo;
         _sessionManager = sessionManager;
         _onDismiss = onDismiss;
         _settings = settings;
+        _onTogglePin = onTogglePin;
     }
+
+    /// <summary>VM 在卡片复用时重置回调（构造时传的可能是首次的；复用走 Update 不重建，回调不变即可）。</summary>
+    public void SetTogglePin(Action<string>? cb) => _onTogglePin = cb;
 
     /// <summary>就地更新为新的 AgentSession 并刷新所有派生属性（卡片复用，动画只在真状态变化时触发）。</summary>
     public void Update(AgentSession session)
@@ -1078,6 +1103,10 @@ public partial class IslandSessionItem : ObservableObject
     /// </summary>
     [RelayCommand]
     private void Dismiss() => _onDismiss?.Invoke(Id);
+
+    /// <summary>图钉按钮：切换固定状态（固定后"清理任务"不清它）。实际状态由 VM 的 _pinned 持有。</summary>
+    [RelayCommand]
+    private void TogglePin() => _onTogglePin?.Invoke(Id);
 
     // ── 权限模式切换三按钮（#4）——均为 BEST-EFFORT ──
     // Claude Code 切权限模式只能在终端按 Shift+Tab *循环*（accept edits / auto /

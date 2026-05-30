@@ -815,14 +815,25 @@
                                                                    Foreground="#5A5A5A"/>
                                                     </Button>
 
-                                                    <!-- 快捷回复：点开/收起输入框（E8BD = 评论字形） -->
+                                                    <!-- 图钉：固定该会话，"清理任务"不会把它清掉（E718 = Pin 字形）。
+                                                         快捷回复（评论图标 + 输入框）暂时取消，后续更新再加入。 -->
                                                     <Button Style="{StaticResource CardIconBtn}"
-                                                            Command="{Binding ToggleQuickReplyCommand}"
-                                                            ToolTip="{Binding [Island_Reply_Tip], Source={x:Static svc:Loc.Instance}}">
-                                                        <TextBlock Text="&#xE8BD;"
+                                                            Command="{Binding TogglePinCommand}"
+                                                            ToolTip="{Binding [Island_Pin_Tip], Source={x:Static svc:Loc.Instance}}">
+                                                        <TextBlock Text="&#xE718;"
                                                                    FontFamily="Segoe MDL2 Assets"
-                                                                   FontSize="11"
-                                                                   Foreground="#5A5A5A"/>
+                                                                   FontSize="11">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="#5A5A5A"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsPinned}" Value="True">
+                                                                            <Setter Property="Foreground" Value="#CC785C"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
                                                     </Button>
 
                                                     <!-- 小叉号：临时把这条 session 从灵动岛收起，
@@ -858,9 +869,10 @@
                                                     </Button>
                                                 </StackPanel>
 
-                                                <!-- 快捷回复输入行（F1）：点回复图标展开；敲字回车发送（发送前校验目标终端在前台，否则中止） -->
+                                                <!-- 快捷回复输入行（F1）：暂时取消（功能未完善，后续更新再加入）。
+                                                     整行折叠 + 不再绑 RevealOpen，避免被展开。代码保留，删掉 Visibility 即恢复。 -->
                                                 <Border Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0"
-                                                        local:Anim.RevealOpen="{Binding ShowQuickReply}">
+                                                        Visibility="Collapsed">
                                                     <StackPanel>
                                                         <Grid>
                                                             <Grid.ColumnDefinitions>

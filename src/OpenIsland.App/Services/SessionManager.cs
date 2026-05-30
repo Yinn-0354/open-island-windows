@@ -1375,8 +1375,14 @@ public class SessionManager : IDisposable
     /// </summary>
     private int? ResolveClaudeProcessId(AgentSession session)
     {
-        var running = _processMonitor.GetRunningSessions();
-        if (running.Count == 0) return null;
+        var all = _processMonitor.GetRunningSessions();
+        if (all.Count == 0) return null;
+
+        // 只在"终端宿主"的 claude 里找（排除 Claude 桌面端主进程及其派生的大量子 claude.exe）。
+        // 否则桌面端常驻时有十几个 claude.exe，cwd 匹配歧义、单候选兜底失效 → 找不到已有终端 →
+        // 跳转退化成"开新终端 claude --resume"（用户报的：会话已在 CLI 开着却被要求重开）。
+        var terminalHosted = all.Where(IsTerminalHostedClaude).ToList();
+        var running = terminalHosted.Count > 0 ? (IReadOnlyCollection<RunningSessionInfo>)terminalHosted : all;
 
         var cwd = session.JumpTarget?.WorkingDirectory?.TrimEnd('\\', '/');
         if (!string.IsNullOrEmpty(cwd))
