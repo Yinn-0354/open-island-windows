@@ -25,6 +25,10 @@ public partial class App : Application
         ConfigureServices(services);
         _serviceProvider = services.BuildServiceProvider();
 
+        // 在任何窗口加载前先定好界面语言（auto = 跟随 Windows 系统语言）
+        var settings = _serviceProvider.GetRequiredService<WorkspaceSettings>();
+        Services.Loc.Instance.Init(settings.Language);
+
         // 初始化托盘服务
         _trayIcon = _serviceProvider.GetRequiredService<TrayIconService>();
         _trayIcon.Initialize();

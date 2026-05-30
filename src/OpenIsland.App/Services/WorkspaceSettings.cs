@@ -33,6 +33,9 @@ public class WorkspaceSettings
     /// <summary>当前活动模型档案 Id（全局；第三方写 env 对新 CLI 会话生效）。默认官方 Claude。</summary>
     public string ActiveModelProfileId { get; private set; } = ModelProfile.OfficialClaudeId;
 
+    /// <summary>界面语言： "auto"（跟随 Windows 系统语言）/ "zh" / "en"。默认 auto。json key = "language"。</summary>
+    public string Language { get; private set; } = "auto";
+
     public event EventHandler? Changed;
 
     public WorkspaceSettings()
@@ -66,6 +69,14 @@ public class WorkspaceSettings
     public void SetSoundEnabled(bool v)
     {
         SoundEnabled = v;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置界面语言（"auto"/"zh"/"en"）+ 持久化 + 通知监听者。</summary>
+    public void SetLanguage(string lang)
+    {
+        Language = lang is "zh" or "en" ? lang : "auto";
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -164,6 +175,12 @@ public class WorkspaceSettings
             {
                 ActiveModelProfileId = amp.GetString() ?? ModelProfile.OfficialClaudeId;
             }
+            if (doc.RootElement.TryGetProperty("language", out var lng)
+                && lng.ValueKind == JsonValueKind.String)
+            {
+                var v = lng.GetString();
+                Language = v is "zh" or "en" ? v : "auto";
+            }
         }
         catch (Exception ex)
         {
@@ -192,7 +209,8 @@ public class WorkspaceSettings
                     plan5hTokenBudget = Plan5hTokenBudget,
                     soundEnabled = SoundEnabled,
                     modelProfiles = profilesForDisk,
-                    activeModelProfileId = ActiveModelProfileId
+                    activeModelProfileId = ActiveModelProfileId,
+                    language = Language
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。

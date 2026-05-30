@@ -14,6 +14,7 @@ public partial class SettingsWindow : Window
     private readonly ObservableCollection<ModelProfile> _modelProfiles = new();
     private ModelProfile? _selectedPreset;
     private string? _editingId; // 非空 = 正在编辑该 Id 的已存档案（保存时复用其 Id，不新建重复项）
+    private bool _initializing = true; // 构造期设 LanguageCombo 选中项不触发切换
 
     public SettingsWindow(WorkspaceSettings settings)
     {
@@ -26,6 +27,19 @@ public partial class SettingsWindow : Window
         foreach (var p in _settings.ModelProfiles) _modelProfiles.Add(p);
         ModelsList.ItemsSource = _modelProfiles;
         PresetCombo.ItemsSource = ModelPresets.ThirdParty;
+
+        // 语言下拉对齐当前设置（auto=0 / zh=1 / en=2）
+        LanguageCombo.SelectedIndex = _settings.Language switch { "zh" => 1, "en" => 2, _ => 0 };
+        _initializing = false;
+    }
+
+    /// <summary>语言下拉改变：持久化 + 立即切换界面语言（本窗口与灵动岛、托盘同步刷新）。</summary>
+    private void Language_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+        var value = (LanguageCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "auto";
+        _settings.SetLanguage(value);
+        Loc.Instance.Apply(value);
     }
 
     private void AddWorkspace_Click(object sender, RoutedEventArgs e)
@@ -33,7 +47,7 @@ public partial class SettingsWindow : Window
         // .NET 8 内置的 OpenFolderDialog（无须 WinForms 依赖）
         var dlg = new OpenFolderDialog
         {
-            Title = "选择工作区目录",
+            Title = Loc.Get("Settings_AddDir"),
             Multiselect = false
         };
         if (dlg.ShowDialog(this) != true) return;
@@ -85,7 +99,7 @@ public partial class SettingsWindow : Window
 
         if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(key))
         {
-            MessageBox.Show(this, "请填写名称、地址和 API Key。", "Open Island",
+            MessageBox.Show(this, Loc.Get("Settings_FillRequired"), "Open Island",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }

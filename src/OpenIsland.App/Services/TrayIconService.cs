@@ -13,15 +13,23 @@ public class TrayIconService : IDisposable
 {
     private readonly PopupWindowService _popupService;
     private readonly SessionManager _sessionManager;
+    private readonly WorkspaceSettings _settings;
     private TaskbarIcon? _trayIcon;
     private System.Windows.Controls.MenuItem? _countMenuItem;
     private Icon? _faceIcon; // face.ico 加载一次缓存，三种状态共用
 
-    public TrayIconService(PopupWindowService popupService, SessionManager sessionManager)
+    public TrayIconService(PopupWindowService popupService, SessionManager sessionManager, WorkspaceSettings settings)
     {
         _popupService = popupService;
         _sessionManager = sessionManager;
+        _settings = settings;
         _sessionManager.SessionsChanged += OnSessionsChanged;
+        // 语言切换后重建菜单与图标提示（文案随之变中/英）
+        Loc.Instance.LanguageChanged += () => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (_trayIcon != null) _trayIcon.ContextMenu = CreateContextMenu();
+            UpdateIcon();
+        });
     }
 
     public void Initialize()
@@ -70,17 +78,17 @@ public class TrayIconService : IDisposable
             if (attentionCount > 0)
             {
                 _trayIcon.Icon = CreateAttentionIcon(attentionCount);
-                _trayIcon.ToolTipText = $"Open Island - {attentionCount} 个会话需要关注";
+                _trayIcon.ToolTipText = Loc.Format("Tip_Attention", attentionCount);
             }
             else if (runningCount > 0)
             {
                 _trayIcon.Icon = CreateRunningIcon(runningCount);
-                _trayIcon.ToolTipText = $"Open Island - {runningCount} 个会话运行中";
+                _trayIcon.ToolTipText = Loc.Format("Tip_Running", runningCount);
             }
             else
             {
                 _trayIcon.Icon = CreateIcon();
-                _trayIcon.ToolTipText = "Open Island - 就绪";
+                _trayIcon.ToolTipText = Loc.Get("Tip_Ready");
             }
         }
         catch (Exception ex)
@@ -97,7 +105,7 @@ public class TrayIconService : IDisposable
         {
             var attentionCount = _sessionManager.GetAttentionCount();
             var runningCount = _sessionManager.GetRunningCount();
-            _countMenuItem.Header = $"  运行中: {runningCount}, 需关注: {attentionCount}";
+            _countMenuItem.Header = Loc.Format("Tray_Counts", runningCount, attentionCount);
         }
         catch (Exception ex)
         {
@@ -128,7 +136,7 @@ public class TrayIconService : IDisposable
         // 状态项
         var statusItem = new System.Windows.Controls.MenuItem
         {
-            Header = "状态",
+            Header = Loc.Get("Tray_Status"),
             IsEnabled = false
         };
         menu.Items.Add(statusItem);
@@ -136,14 +144,14 @@ public class TrayIconService : IDisposable
         // 计数项（缓存引用以便更新）
         _countMenuItem = new System.Windows.Controls.MenuItem
         {
-            Header = "  运行中: 0, 需关注: 0",
+            Header = Loc.Format("Tray_Counts", 0, 0),
             IsEnabled = false
         };
         menu.Items.Add(_countMenuItem);
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         // 打开控制中心
-        var openItem = new System.Windows.Controls.MenuItem { Header = "打开控制中心" };
+        var openItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_Open") };
         openItem.Click += (_, _) =>
         {
             Application.Current.Dispatcher.BeginInvoke(() =>
@@ -161,7 +169,7 @@ public class TrayIconService : IDisposable
         menu.Items.Add(openItem);
 
         // 设置
-        var settingsItem = new System.Windows.Controls.MenuItem { Header = "设置..." };
+        var settingsItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_Settings") };
         settingsItem.Click += (_, _) =>
         {
             Application.Current.Dispatcher.BeginInvoke(() =>
@@ -178,10 +186,17 @@ public class TrayIconService : IDisposable
         };
         menu.Items.Add(settingsItem);
 
+        // 语言子菜单：跟随系统 / 中文 / English（当前项打勾）
+        var langItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_Language") };
+        langItem.Items.Add(BuildLangChoice("Lang_Auto", "auto"));
+        langItem.Items.Add(BuildLangChoice("Lang_Zh", "zh"));
+        langItem.Items.Add(BuildLangChoice("Lang_En", "en"));
+        menu.Items.Add(langItem);
+
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         // 退出
-        var exitItem = new System.Windows.Controls.MenuItem { Header = "退出" };
+        var exitItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_Exit") };
         exitItem.Click += (s, e) =>
         {
             if (_trayIcon != null)
@@ -197,6 +212,23 @@ public class TrayIconService : IDisposable
         menu.Opened += (_, _) => UpdateMenuText();
 
         return menu;
+    }
+
+    /// <summary>语言子项：当前生效设置打勾；点击 = 持久化 + 立即切换界面语言。</summary>
+    private System.Windows.Controls.MenuItem BuildLangChoice(string labelKey, string value)
+    {
+        var item = new System.Windows.Controls.MenuItem
+        {
+            Header = Loc.Get(labelKey),
+            IsCheckable = true,
+            IsChecked = _settings.Language == value
+        };
+        item.Click += (_, _) =>
+        {
+            _settings.SetLanguage(value);   // 持久化（"auto"/"zh"/"en"）
+            Loc.Instance.Apply(value);      // 实时切换：触发所有绑定与监听者刷新
+        };
+        return item;
     }
 
     /// <summary>

@@ -185,8 +185,18 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _greenStatusTimer.AutoReset = false;
 
         _settings.Changed += OnSettingsChangedForModels;
+        // 语言切换：5h 余额行等动态文案立即按新语言重渲染（静态 XAML 文本走 indexer 绑定自动刷新）。
+        Loc.Instance.LanguageChanged += OnLanguageChanged;
 
         RefreshSessions();
+    }
+
+    private void OnLanguageChanged()
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (_lastPlan is { } s) OnPlanUsageUpdated(this, s);
+        });
     }
 
     // ── 全局模型切换（音量条下方那一栏）：选中即切换，写 ~/.claude/settings.json，对新 CLI 会话生效 ──
@@ -215,7 +225,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _busyModel = true;
         try
         {
-            GlobalModelStatus = "切换中…";
+            GlobalModelStatus = Loc.Get("Model_Switching");
             var result = await _sessionManager.SwitchGlobalModelAsync(profile);
             if (result.Ok) _settings.SetActiveModelProfile(profile.Id);
             GlobalModelStatus = MapModelReason(result.Reason, result.Ok);
@@ -223,18 +233,18 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"SwitchGlobalModelAsync failed: {ex.Message}");
-            GlobalModelStatus = "切换出错";
+            GlobalModelStatus = Loc.Get("Model_SwitchError");
         }
         finally { _busyModel = false; }
     }
 
     private static string MapModelReason(string? reason, bool ok) => reason switch
     {
-        "switched-official" => "已切到官方 Claude（新会话生效）",
-        "needs-restart" => "已写入，重开终端后生效",
-        "no-key" => "该模型未配置 API Key",
-        "write-failed" => "写 settings.json 失败",
-        _ => ok ? "已切换" : "切换失败"
+        "switched-official" => Loc.Get("Model_SwitchedOfficial"),
+        "needs-restart" => Loc.Get("Model_NeedsRestart"),
+        "no-key" => Loc.Get("Model_NoKey"),
+        "write-failed" => Loc.Get("Model_WriteFailed"),
+        _ => Loc.Get(ok ? "Model_Switched" : "Model_SwitchFailed")
     };
 
     private void OnSystemStatsUpdated(object? sender, SystemStatsSnapshot s)
@@ -276,8 +286,11 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// API 模式只显示 token 数；Plan 模式显示百分比 + 进度条 + 重置倒计时，
     /// 颜色阈值：&lt;70% 蓝 / 70-89% 橙 / ≥90% 红。
     /// </summary>
+    private PlanUsageSnapshot? _lastPlan; // 缓存最近一帧，语言切换时按当前语言重渲染
+
     private void OnPlanUsageUpdated(object? sender, PlanUsageSnapshot s)
     {
+        _lastPlan = s;
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
             if (s.IsApi)
@@ -293,7 +306,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 if (s.Indeterminate)
                 {
                     // 还没拿到真实 5h 数据：显示"余 --"，中性灰、空条、无重置。绝不伪造百分比。
-                    PlanPercentText = "余 --";
+                    PlanPercentText = Loc.Get("Balance_Unknown");
                     PlanBarFraction = 0;
                     PlanResetText = "";
                     PlanBarColor = "#5A5A5E";
@@ -302,11 +315,11 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 {
                     // 显示「余额」（剩余），不是已用：余额 = 100% - 已用%。
                     int remaining = Math.Clamp(100 - s.Percent, 0, 100);
-                    PlanPercentText = $"余 {remaining}%";
+                    PlanPercentText = Loc.Format("Balance_Format", remaining);
                     // 余额条：满=绿（额度多），随消耗下降，少时转橙/红。
                     PlanBarFraction = Math.Clamp(1.0 - s.Fraction, 0, 1);
                     PlanResetText = s.ResetIn is { } r && r > TimeSpan.Zero
-                        ? $"重置 {(int)r.TotalHours}h{r.Minutes:00}m"
+                        ? Loc.Format("Reset_Format", (int)r.TotalHours, r.Minutes)
                         : "";
                     PlanBarColor = remaining <= 10 ? "#E74C3C"
                                  : remaining <= 30 ? "#FF9F0A"
@@ -665,6 +678,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _systemStats.StatsUpdated -= OnSystemStatsUpdated;
         _planUsage.UsageUpdated -= OnPlanUsageUpdated;
         _settings.Changed -= OnSettingsChangedForModels;
+        Loc.Instance.LanguageChanged -= OnLanguageChanged;
         _greenStatusTimer.Stop();
         _greenStatusTimer.Dispose();
     }
@@ -1084,12 +1098,12 @@ public partial class IslandSessionItem : ObservableObject
         _busy = true;
         try
         {
-            QuickReplyStatus = "发送中…";
+            QuickReplyStatus = Loc.Get("Reply_Sending");
             var result = await _sessionManager.SendQuickReplyAsync(_session.Id, text);
             if (result.Ok)
             {
                 QuickReplyInput = "";
-                QuickReplyStatus = "已发送";
+                QuickReplyStatus = Loc.Get("Reply_Sent");
             }
             else
             {
@@ -1100,23 +1114,23 @@ public partial class IslandSessionItem : ObservableObject
         {
             // 与 SwitchGlobalModelAsync 一致：兜住注入路径的异常，绝不让它从 async 命令逃逸崩溃。
             System.Diagnostics.Debug.WriteLine($"SendQuickReplyAsync failed: {ex.Message}");
-            QuickReplyStatus = "发送出错";
+            QuickReplyStatus = Loc.Get("Reply_SendError");
         }
         finally { _busy = false; }
     }
 
     private static string QuickReplyReasonText(string? reason) => reason switch
     {
-        "empty" => "请输入内容",
-        "too long" => "内容过长",
-        "no-session" => "会话不存在",
-        "no-terminal" or "no-terminal-match" => "没找到该会话的终端",
-        "foreground-mismatch" => "没能切到目标窗口，已取消",
-        "foreground-lost" => "目标窗口失焦，已粘贴未提交",
-        "inject-error" => "注入出错，已取消",
-        "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop",
-        "clipboard-failed" => "剪贴板被占用，请重试",
-        _ => "发送失败"
+        "empty" => Loc.Get("Reply_Empty"),
+        "too long" => Loc.Get("Reply_TooLong"),
+        "no-session" => Loc.Get("Reply_NoSession"),
+        "no-terminal" or "no-terminal-match" => Loc.Get("Reply_NoTerminal"),
+        "foreground-mismatch" => Loc.Get("Reply_ForegroundMismatch"),
+        "foreground-lost" => Loc.Get("Reply_ForegroundLost"),
+        "inject-error" => Loc.Get("Reply_InjectError"),
+        "desktop-activate-failed" or "no-desktop-window" => Loc.Get("Reply_DesktopActivateFailed"),
+        "clipboard-failed" => Loc.Get("Reply_ClipboardFailed"),
+        _ => Loc.Get("Reply_SendFailed")
     };
 
 

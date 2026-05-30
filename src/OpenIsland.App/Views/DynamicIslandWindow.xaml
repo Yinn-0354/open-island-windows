@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:OpenIsland.App"
         xmlns:views="clr-namespace:OpenIsland.App.Views"
+        xmlns:svc="clr-namespace:OpenIsland.App.Services"
         Width="320"
         SizeToContent="Height"
         Background="Transparent"
@@ -317,7 +318,7 @@
                                         VerticalAlignment="Center"
                                         Cursor="Hand"
                                         FocusVisualStyle="{x:Null}"
-                                        ToolTip="提示音开 / 关">
+                                        ToolTip="{Binding [Island_Sound_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
                                             <Border x:Name="SndBd"
@@ -437,13 +438,13 @@
 
                                 <Button Grid.Column="0" Style="{StaticResource MediaBtn}"
                                         Command="{Binding MediaPrevCommand}"
-                                        Content="&#xE892;" ToolTip="上一首"/>
+                                        Content="&#xE892;" ToolTip="{Binding [Island_Prev], Source={x:Static svc:Loc.Instance}}"/>
                                 <Button Grid.Column="1" Style="{StaticResource MediaBtn}"
                                         Command="{Binding MediaPlayPauseCommand}"
-                                        Content="&#xE768;" FontSize="15" ToolTip="播放 / 暂停"/>
+                                        Content="&#xE768;" FontSize="15" ToolTip="{Binding [Island_PlayPause], Source={x:Static svc:Loc.Instance}}"/>
                                 <Button Grid.Column="2" Style="{StaticResource MediaBtn}"
                                         Command="{Binding MediaNextCommand}"
-                                        Content="&#xE893;" ToolTip="下一首"/>
+                                        Content="&#xE893;" ToolTip="{Binding [Island_Next], Source={x:Static svc:Loc.Instance}}"/>
 
                                 <TextBlock Grid.Column="3" Text="&#xE767;"
                                            FontFamily="Segoe MDL2 Assets"
@@ -453,7 +454,7 @@
                                 <Slider Grid.Column="4" Style="{StaticResource VolSlider}"
                                         Value="{Binding Volume, Mode=TwoWay}"
                                         Margin="0,0,4,0"
-                                        ToolTip="系统音量"/>
+                                        ToolTip="{Binding [Island_Volume], Source={x:Static svc:Loc.Instance}}"/>
                             </Grid>
                         </Border>
 
@@ -473,7 +474,7 @@
                                             <Border x:Name="Bd" Background="#252320" BorderBrush="#3A3631"
                                                     BorderThickness="1" CornerRadius="8" Padding="12,5">
                                                 <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="切换模型" Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding [Island_SwitchModel], Source={x:Static svc:Loc.Instance}}" Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
                                                     <Path Margin="7,2,0,0" VerticalAlignment="Center" Fill="#CC785C" Data="M0,0 L4,4 L8,0 Z"/>
                                                 </StackPanel>
                                             </Border>
@@ -524,7 +525,7 @@
                                 <!-- 清理任务：显式清空已结束/空闲的任务卡片（保留正在跑的）；与切换模型同款暖深色风格 -->
                                 <Button x:Name="ClearTasksBtn" Grid.Column="1" Cursor="Hand" Margin="8,0,0,0"
                                         FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
-                                        Command="{Binding ClearTasksCommand}" ToolTip="清理任务卡片（保留正在运行的会话）">
+                                        Command="{Binding ClearTasksCommand}" ToolTip="{Binding [Island_ClearTasks_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
                                             <Border x:Name="Cb" Background="#252320" BorderBrush="#3A3631"
@@ -532,7 +533,7 @@
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"
                                                                Foreground="#CC785C" FontSize="11" VerticalAlignment="Center"/>
-                                                    <TextBlock Text="清理任务" Foreground="#FAF9F5" FontSize="12"
+                                                    <TextBlock Text="{Binding [Island_ClearTasks], Source={x:Static svc:Loc.Instance}}" Foreground="#FAF9F5" FontSize="12"
                                                                VerticalAlignment="Center" Margin="6,0,0,0"/>
                                                 </StackPanel>
                                             </Border>
@@ -640,7 +641,7 @@
                                     <Button Grid.Column="3" Cursor="Hand" Margin="8,0,0,0"
                                             FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
                                             Command="{Binding RefreshUsageCommand}"
-                                            ToolTip="立即刷新 5 小时余额">
+                                            ToolTip="{Binding [Island_Refresh_Tip], Source={x:Static svc:Loc.Instance}}">
                                         <Button.Template>
                                             <ControlTemplate TargetType="Button">
                                                 <Border x:Name="Rb" Background="Transparent" CornerRadius="5" Padding="4,2">
@@ -804,7 +805,7 @@
                                                     <!-- 快捷回复：点开/收起输入框（E8BD = 评论字形） -->
                                                     <Button Style="{StaticResource CardIconBtn}"
                                                             Command="{Binding ToggleQuickReplyCommand}"
-                                                            ToolTip="快捷回复（敲字回车发送）">
+                                                            ToolTip="{Binding [Island_Reply_Tip], Source={x:Static svc:Loc.Instance}}">
                                                         <TextBlock Text="&#xE8BD;"
                                                                    FontFamily="Segoe MDL2 Assets"
                                                                    FontSize="11"
@@ -818,7 +819,7 @@
                                                             VerticalAlignment="Center"
                                                             Margin="6,0,0,0"
                                                             Cursor="Hand"
-                                                            ToolTip="暂时收起（再次活动时自动出现）">
+                                                            ToolTip="{Binding [Island_Dismiss_Tip], Source={x:Static svc:Loc.Instance}}">
                                                         <Button.Template>
                                                             <ControlTemplate TargetType="Button">
                                                                 <Border x:Name="XBd"
@@ -864,7 +865,7 @@
                                                                         <KeyBinding Key="Enter" Command="{Binding SendQuickReplyCommand}"/>
                                                                     </TextBox.InputBindings>
                                                                 </TextBox>
-                                                                <TextBlock Text="回复… 回车发送" Foreground="#555555" FontSize="11"
+                                                                <TextBlock Text="{Binding [Island_Reply_Placeholder], Source={x:Static svc:Loc.Instance}}" Foreground="#555555" FontSize="11"
                                                                            Margin="8,0,0,0" IsHitTestVisible="False" VerticalAlignment="Center">
                                                                     <TextBlock.Style>
                                                                         <Style TargetType="TextBlock">
@@ -879,7 +880,7 @@
                                                                 </TextBlock>
                                                             </Grid>
                                                             <Button Grid.Column="1" Command="{Binding SendQuickReplyCommand}"
-                                                                    Margin="6,0,0,0" Cursor="Hand" ToolTip="发送（回车）"
+                                                                    Margin="6,0,0,0" Cursor="Hand" ToolTip="{Binding [Island_Send_Tip], Source={x:Static svc:Loc.Instance}}"
                                                                     FocusVisualStyle="{x:Null}" local:Anim.PressScale="True">
                                                                 <Button.Template>
                                                                     <ControlTemplate TargetType="Button">
