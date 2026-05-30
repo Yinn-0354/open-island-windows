@@ -178,6 +178,23 @@ public sealed class PlanUsageService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 手动刷新（灵动岛刷新按钮）：绕过 5min 节流，立即探一次真实用量并把最新快照推给 UI。
+    /// 保留不重入保护（已有探针在跑就只等它，不重复发）。即时刷新余额与重置时间。
+    /// </summary>
+    public async Task RefreshNowAsync()
+    {
+        if (!FeatureEnabled) return;
+        if (!_probeRunning)
+        {
+            _probeRunning = true;
+            try { await ProbeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Diag($"manual probe error: {ex.Message}"); }
+            finally { _lastProbeUtc = DateTime.UtcNow; _probeRunning = false; }
+        }
+        Sample(); // 用最新探针结果立刻发一帧快照（余额 + 重置时间）
+    }
+
     /// <summary>5min 节流 + 不重入地后台探一次真实用量。</summary>
     private void MaybeProbe()
     {

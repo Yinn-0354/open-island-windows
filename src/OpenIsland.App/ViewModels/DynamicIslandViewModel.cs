@@ -257,6 +257,20 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         return $"{bytesPerSec / (1024.0 * 1024.0):0.0}M";
     }
 
+    /// <summary>刷新按钮转圈中（也用于防连点：进行中禁用按钮）。</summary>
+    [ObservableProperty] private bool _isRefreshingUsage;
+
+    /// <summary>5h 余额行的刷新按钮：立即重新探一次真实用量，刷新余额与重置时间。</summary>
+    [RelayCommand]
+    private async Task RefreshUsage()
+    {
+        if (IsRefreshingUsage) return;
+        IsRefreshingUsage = true;
+        try { await _planUsage.RefreshNowAsync(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RefreshUsage failed: {ex.Message}"); }
+        finally { IsRefreshingUsage = false; }
+    }
+
     /// <summary>
     /// Plan usage 快照 → UI 文本/进度条。marshal 到 UI 线程方式与 OnSystemStatsUpdated 一致。
     /// API 模式只显示 token 数；Plan 模式显示百分比 + 进度条 + 重置倒计时，
