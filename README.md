@@ -16,9 +16,9 @@
 
 <br/><br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island — running state" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island — idle state" width="380"/>
+<img src="docs/screenshots/island-0.3.png" alt="Open Island — pixel sprite, stats bar, model switch, and 5-hour usage balance" width="340"/>
 
-<sub>The header sprite is a pixel-art animation bound to session phase — blue &amp; bouncing while Claude works, red &amp; resting when idle/done. Live CPU·RAM·GPU·net bar and media controls sit right below.</sub>
+<sub>The header sprite is a pixel-art animation bound to session phase — blue &amp; bouncing while Claude works, red &amp; resting when idle/done. Below it: a live CPU·RAM·GPU·net bar, media controls, a one-click model switcher, and your Claude subscription's 5-hour usage balance (remaining % + reset countdown).</sub>
 
 </div>
 
@@ -48,9 +48,6 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 - **Language switch (中文 / English)** — toggle the UI language from the tray right-click menu or the Control Center; defaults to your Windows system language and is remembered after you change it
 - **Pin sessions** — a pin button on each card keeps that session from being removed by **Clear Tasks**
 - **Free memory** — click the CPU% / RAM% to trim every process's working set (RAM-cleaner style); RAM% drops afterward
-
-  <img src="docs/screenshots/island-0.3.png" alt="Open Island — model switch, 5-hour balance, pinned sessions" width="340"/>
-
 - **Pixel status sprite** — the header indicator is a pixel-art sprite (Aseprite sheet, nearest-neighbor + integer scaling so it stays crisp at 125% / 150% DPI) bound to `SessionPhase`:
   - **Running** → continuous loop + a gentle up-and-down bounce
   - **Idle / Completed** → holds the last frame, then every 30s randomly picks one of several idle variants (`idle.png` / `idle2.png` / `idle3.png` … auto-discovered, drop a file in to add one) and plays it once

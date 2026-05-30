@@ -16,9 +16,9 @@
 
 <br/><br/>
 
-<img src="docs/screenshots/dynamic-island.png" alt="Open Island 运行态" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="Open Island 空闲态" width="380"/>
+<img src="docs/screenshots/island-0.3.png" alt="Open Island —— 像素精灵、状态栏、切换模型、5 小时余量" width="340"/>
 
-<sub>头部状态点是绑定会话阶段的像素动画 —— Claude 工作时蓝色上下跳动，空闲/完成时红色休息。下方是实时 CPU·内存·GPU·网速栏和媒体控制。</sub>
+<sub>头部状态点是绑定会话阶段的像素动画 —— Claude 工作时蓝色上下跳动，空闲/完成时红色休息。下方依次是实时 CPU·内存·GPU·网速栏、媒体控制、一键切换模型，以及 Claude 订阅的 5 小时用量余额（剩余 % + 重置倒计时）。</sub>
 
 </div>
 
@@ -48,9 +48,6 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 - **中英文界面切换** —— 托盘右键 / 控制中心切换 中文 / English，默认跟随 Windows 系统语言，切换后持久化
 - **图钉固定会话** —— 会话卡右侧图钉按钮，被固定的会话"清理任务"不会清掉它
 - **点击 CPU% / RAM% 释放内存** —— 清理各进程工作集（类 RAM 清理工具），RAM% 随后下降
-
-  <img src="docs/screenshots/island-0.3.png" alt="Open Island —— 切换模型、5 小时余量、图钉会话" width="340"/>
-
 - **像素状态精灵** —— 头部指示器是像素动画（Aseprite sprite sheet，NearestNeighbor + 整数倍缩放，125% / 150% DPI 不糊），绑 `SessionPhase`：
   - **Running** → 连续循环 + 整体上下跳动
   - **Idle / Completed** → 停在最后一帧，每 30s 从多个空闲变体（`idle.png` / `idle2.png` / `idle3.png` … 自动发现，加图不改代码）里随机挑一个完整播一遍
