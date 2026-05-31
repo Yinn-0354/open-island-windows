@@ -51,7 +51,7 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
   - **Idle** → 每约 3 分钟随机切换四个默认动画之一（眨眼两下 / wink / 睡觉打 `zz` 吐泡泡 / 喝可乐）
   - **Completed** → 放烟花 🎉；**需关注** → 头顶冒出 `?`
   
-  <img src="docs/screenshots/dynamic-island.png" alt="运行态精灵" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="空闲态精灵" width="380"/>
+  <img src="docs/screenshots/island-demo.gif" alt="整个灵动岛动态演示 —— 头部小宠物敲键盘的同时，CPU/内存/GPU/网速栏实时刷新" width="320"/>
 
 - **系统状态栏** —— 头部与会话列表之间一行 CPU / 内存 / GPU / 网速，1 秒刷新（`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine 计数器 / `NetworkInterface`）。GPU 利用率改用 PDH **英文计数器** API（`PdhAddEnglishCounterW`）读取，与系统语言无关，非英文 Windows 也显示真实 %；列宽固定，CPU/RAM/GPU 不随网速文本宽度变化抖位
 - **提示音** —— 会话从 Running → Idle/Completed（任务完成）以及进入需关注状态（橙色权限 / 红色待答）时各响一声；系统状态栏的喇叭按钮静音/取消静音（持久化）

@@ -51,7 +51,7 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
   - **Idle** → randomly cycles one of four default animations every ~3 minutes (blinks twice / wink / sleeping with `zz` + a bubble / sipping a soda)
   - **Completed** → fireworks 🎉; **Needs attention** → a `?` pops over its head
 
-  <img src="docs/screenshots/dynamic-island.png" alt="running sprite" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="idle sprite" width="380"/>
+  <img src="docs/screenshots/island-demo.gif" alt="The whole Open Island, live — the pet types away in the header while the CPU/RAM/GPU/net bar updates in real time" width="320"/>
 
 - **System stats bar** — a row of CPU / RAM / GPU / network speed between the header and the session list, refreshed every second (`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine counters / `NetworkInterface`). GPU utilization is read via the PDH **English-counter** API (`PdhAddEnglishCounterW`), so it reports a real % even on non-English Windows. Column widths are fixed so CPU/RAM/GPU don't jitter as the network text changes width
 - **Sound notifications** — the island plays a chime when a session goes Running → Idle/Completed (task done) and when it enters a needs-attention state (orange permission / red awaiting answer). A speaker toggle in the system stats bar mutes/unmutes (persisted)
