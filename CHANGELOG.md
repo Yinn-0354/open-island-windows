@@ -6,6 +6,13 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-31
+
+### Changed
+
+- **"工作中"动画改为忙碌敲键盘** —— 头部 Running 精灵从"戴眼镜思考"改成在键盘上敲字；去掉连接两眼的镜框，改为两只独立眼睛**一大一小、交替眨眼**
+- **README 配图更新** —— 首图与 Features 说明图换成新的灵动岛截图（橙色 Claude 宠物 + 截图按钮 + 七天柱状图等），精灵说明图同步换成"敲键盘 / 喝可乐"
+
 ## [0.4.0] - 2026-05-31
 
 ### Added

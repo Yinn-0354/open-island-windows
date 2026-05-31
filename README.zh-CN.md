@@ -12,11 +12,7 @@
 
 <br/>
 
-<img src="docs/screenshots/open-island.gif" alt="Open Island 演示" width="760"/>
-
-<br/><br/>
-
-<img src="docs/screenshots/island-0.3.png" alt="Open Island —— 像素精灵、状态栏、切换模型、5 小时余量" width="340"/>
+<img src="docs/screenshots/island-0.4.png" alt="Open Island —— 橙色 Claude 宠物、状态栏、媒体控制、切换模型、区域截图按钮、5 小时余量（点一下翻成七天柱状图）" width="340"/>
 
 <sub>头部精灵是橙色 <strong>Claude 小宠物</strong> —— 绑定会话阶段的像素动画（工作 / 需关注 / 完成 / 空闲）。下方依次是实时 CPU·内存·GPU·网速栏、媒体控制、一键切换模型、区域截图按钮，以及 Claude 订阅的 5 小时用量余额 —— 点一下即可翻成最近七天 token 用量柱状图。</sub>
 
@@ -51,8 +47,9 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 - **图钉固定会话** —— 会话卡右侧图钉按钮，被固定的会话"清理任务"不会清掉它
 - **点击 CPU% / RAM% 释放内存** —— 清理各进程工作集（类 RAM 清理工具），RAM% 随后下降
 - **像素状态精灵** —— 头部指示器是像素动画（Aseprite sprite sheet，NearestNeighbor + 整数倍缩放，125% / 150% DPI 不糊），绑 `SessionPhase`：
-  - **Running** → 连续循环 + 整体上下跳动
-  - **Idle / Completed** → 停在最后一帧，每 30s 从多个空闲变体（`idle.png` / `idle2.png` / `idle3.png` … 自动发现，加图不改代码）里随机挑一个完整播一遍
+  - **Running** → 小宠物在忙碌敲键盘（两只眼睛一大一小、会眨眼）
+  - **Idle** → 每约 3 分钟随机切换四个默认动画之一（眨眼两下 / wink / 睡觉打 `zz` 吐泡泡 / 喝可乐）
+  - **Completed** → 放烟花 🎉；**需关注** → 头顶冒出 `?`
   
   <img src="docs/screenshots/dynamic-island.png" alt="运行态精灵" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="空闲态精灵" width="380"/>
 

@@ -12,11 +12,7 @@
 
 <br/>
 
-<img src="docs/screenshots/open-island.gif" alt="Open Island demo" width="760"/>
-
-<br/><br/>
-
-<img src="docs/screenshots/island-0.3.png" alt="Open Island — pixel sprite, stats bar, model switch, and 5-hour usage balance" width="340"/>
+<img src="docs/screenshots/island-0.4.png" alt="Open Island — orange Claude pet, stats bar, media controls, model switch, region-screenshot button, and 5-hour usage balance (click to flip to a 7-day chart)" width="340"/>
 
 <sub>The header sprite is the orange <strong>Claude pet</strong> — a pixel-art animation bound to session phase (working / needs-you / done / idle). Below it: a live CPU·RAM·GPU·net bar, media controls, a one-click model switcher, a region-screenshot button, and your Claude subscription's 5-hour usage balance — click it to flip into a 7-day token-usage chart.</sub>
 
@@ -51,8 +47,9 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 - **Pin sessions** — a pin button on each card keeps that session from being removed by **Clear Tasks**
 - **Free memory** — click the CPU% / RAM% to trim every process's working set (RAM-cleaner style); RAM% drops afterward
 - **Pixel status sprite** — the header indicator is a pixel-art sprite (Aseprite sheet, nearest-neighbor + integer scaling so it stays crisp at 125% / 150% DPI) bound to `SessionPhase`:
-  - **Running** → continuous loop + a gentle up-and-down bounce
-  - **Idle / Completed** → holds the last frame, then every 30s randomly picks one of several idle variants (`idle.png` / `idle2.png` / `idle3.png` … auto-discovered, drop a file in to add one) and plays it once
+  - **Running** → the pet busily types on a keyboard (two eyes, one big one small, blinking)
+  - **Idle** → randomly cycles one of four default animations every ~3 minutes (blinks twice / wink / sleeping with `zz` + a bubble / sipping a soda)
+  - **Completed** → fireworks 🎉; **Needs attention** → a `?` pops over its head
 
   <img src="docs/screenshots/dynamic-island.png" alt="running sprite" width="380"/>&nbsp;&nbsp;<img src="docs/screenshots/dynamic-island-idle.png" alt="idle sprite" width="380"/>
 
