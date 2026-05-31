@@ -18,7 +18,7 @@
 
 <img src="docs/screenshots/island-0.3.png" alt="Open Island —— 像素精灵、状态栏、切换模型、5 小时余量" width="340"/>
 
-<sub>头部状态点是绑定会话阶段的像素动画 —— Claude 工作时蓝色上下跳动，空闲/完成时红色休息。下方依次是实时 CPU·内存·GPU·网速栏、媒体控制、一键切换模型，以及 Claude 订阅的 5 小时用量余额（剩余 % + 重置倒计时）。</sub>
+<sub>头部精灵是橙色 <strong>Claude 小宠物</strong> —— 绑定会话阶段的像素动画（工作 / 需关注 / 完成 / 空闲）。下方依次是实时 CPU·内存·GPU·网速栏、媒体控制、一键切换模型、区域截图按钮，以及 Claude 订阅的 5 小时用量余额 —— 点一下即可翻成最近七天 token 用量柱状图。</sub>
 
 </div>
 
@@ -43,6 +43,8 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 
 ## ✨ Features
 
+- **区域截图** —— "清理任务"旁边一个截图按钮，外加全局快捷键（默认 **Ctrl+Q**，控制中心可改）：微信式拖拽框选一个矩形，松手自动复制到剪贴板，随处粘贴
+- **七天用量柱状图** —— 点击 5 小时余额行，翻成**最近七天 token 用量柱状图**（用量越多绿色越深越高，右侧只显示总量），再点切回余额。下次启动灵动岛记住关闭时的状态
 - **切换模型** —— 音量栏下方"切换模型"按钮，点开弹出模型列表即切换。控制中心可添加第三方模型（参考 cc-switch 预设 —— DeepSeek / 智谱 GLM / Kimi / 通义千问 / OpenRouter / 硅基流动 / Novita / ModelScope / 小米 MiMo … 预填地址，只需填 API Key）。官方 Claude 档客户端 + CLI 都生效；第三方档写 `~/.claude/settings.json` 的 env、对新 CLI 会话生效。API Key 以 Windows DPAPI 加密落盘
 - **订阅 5 小时余量** —— 音量栏下方一行显示 Claude 订阅"5 小时滚动窗口"剩余额度（绿色余额条 + "余 XX%" + 重置倒计时），数据来自 `/api/oauth/usage`（与 `/usage` 同源，零 token 开销），5 分钟自动刷新，行尾刷新按钮可手动立即刷新
 - **中英文界面切换** —— 托盘右键 / 控制中心切换 中文 / English，默认跟随 Windows 系统语言，切换后持久化
@@ -72,7 +74,22 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 - **Stop hook 触发任务完成** —— Claude Code 真正 `end_turn` 时桌面响铃 + 灵动岛绿灯闪
 - **CLI / 桌面端区分** —— 点击会话卡自动判断 entrypoint（取转录文件**最新**一行的值，会话从桌面端 `--resume` 到 CLI 后也判得对），并且只在"终端宿主"的 `claude.exe` 里找终端（排除桌面端常驻派生的大量子进程）：CLI 会话**激活已有终端**（终端已关才开新 tab 跑 `claude --resume`），桌面端会话激活客户端窗口
 
+## 🎭 表情
+
+头部精灵是橙色 **Claude 小宠物**，它的小动画一眼告诉你灵动岛当前状态（都是极小的循环动图）：
+
+| | 状态 | | 状态 |
+|:--:|---|:--:|---|
+| <img src="docs/emotes/running.gif" width="40"/> | **工作中** —— Claude 戴眼镜思考 | <img src="docs/emotes/attention.gif" width="40"/> | **需关注** —— 等你确认 / 回答（头顶 `?`） |
+| <img src="docs/emotes/completed.gif" width="40"/> | **完成** —— 任务结束 🎉 放烟花 | <img src="docs/emotes/idle-sleep.gif" width="40"/> | **空闲** —— 休息中，每隔几分钟随机切换下面四个之一 |
+| <img src="docs/emotes/idle-blink.gif" width="40"/> | 空闲 · 眨眼两下 | <img src="docs/emotes/idle-wink.gif" width="40"/> | 空闲 · wink |
+| <img src="docs/emotes/idle-sleep.gif" width="40"/> | 空闲 · 睡觉（`zz`、吐泡泡） | <img src="docs/emotes/idle-coke.gif" width="40"/> | 空闲 · 喝可乐 |
+| <img src="docs/emotes/headphones.gif" width="40"/> | **媒体** —— 调音量 / 切歌时播放 | <img src="docs/emotes/kamehameha.gif" width="40"/> | **彩蛋** —— 点一下小宠物 |
+| <img src="docs/emotes/byebye.gif" width="40"/> | **关闭** —— 点关机键隐藏灵动岛 | | |
+
 ## 📦 安装
+
+> **自包含** —— 已打包 .NET 8 运行时，无需额外安装任何依赖，只要 Windows 10/11（x64）。
 
 从 [Releases](../../releases) 下载，二选一：
 

@@ -109,6 +109,18 @@
                     <ComboBoxItem Tag="en" Content="{Binding [Lang_En], Source={x:Static svc:Loc.Instance}}"/>
                 </ComboBox>
 
+                <!-- ── 区域截图快捷键 / Screenshot hotkey ── -->
+                <TextBlock Text="{Binding [Settings_Screenshot], Source={x:Static svc:Loc.Instance}}"
+                           FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,22,0,0"/>
+                <TextBlock Margin="0,4,0,8" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
+                           Text="{Binding [Settings_Screenshot_Desc], Source={x:Static svc:Loc.Instance}}"/>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding [Settings_Screenshot_Hotkey], Source={x:Static svc:Loc.Instance}}"
+                               Foreground="#C7C7CC" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Button x:Name="HotkeyBox" Width="180" HorizontalAlignment="Left"
+                            Click="HotkeyBox_Click" PreviewKeyDown="HotkeyBox_PreviewKeyDown"/>
+                </StackPanel>
+
                 <!-- ── 工作区目录 ── -->
                 <TextBlock Text="{Binding [Settings_Workspaces], Source={x:Static svc:Loc.Instance}}"
                            FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,22,0,0"/>

@@ -14,15 +14,17 @@ public class TrayIconService : IDisposable
     private readonly PopupWindowService _popupService;
     private readonly SessionManager _sessionManager;
     private readonly WorkspaceSettings _settings;
+    private readonly DynamicIslandWindow _island;
     private TaskbarIcon? _trayIcon;
     private System.Windows.Controls.MenuItem? _countMenuItem;
     private Icon? _faceIcon; // face.ico 加载一次缓存，三种状态共用
 
-    public TrayIconService(PopupWindowService popupService, SessionManager sessionManager, WorkspaceSettings settings)
+    public TrayIconService(PopupWindowService popupService, SessionManager sessionManager, WorkspaceSettings settings, DynamicIslandWindow island)
     {
         _popupService = popupService;
         _sessionManager = sessionManager;
         _settings = settings;
+        _island = island;
         _sessionManager.SessionsChanged += OnSessionsChanged;
         // 语言切换后重建菜单与图标提示（文案随之变中/英）
         Loc.Instance.LanguageChanged += () => Application.Current?.Dispatcher.BeginInvoke(() =>
@@ -149,6 +151,14 @@ public class TrayIconService : IDisposable
         };
         menu.Items.Add(_countMenuItem);
         menu.Items.Add(new System.Windows.Controls.Separator());
+
+        // 显示灵动岛（圆形关闭按钮隐藏后，从这里再叫出来）
+        var showItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_ShowIsland") };
+        showItem.Click += (_, _) => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            try { _island.Show(); _island.Activate(); } catch { }
+        });
+        menu.Items.Add(showItem);
 
         // 打开控制中心
         var openItem = new System.Windows.Controls.MenuItem { Header = Loc.Get("Tray_Open") };

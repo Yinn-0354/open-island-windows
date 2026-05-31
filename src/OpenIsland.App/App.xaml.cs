@@ -15,6 +15,7 @@ public partial class App : Application
     /// <summary>给 ViewModel 等需要打开 transient Window（如 SettingsWindow）的入口取用。</summary>
     public IServiceProvider? ServiceProvider => _serviceProvider;
     private TrayIconService? _trayIcon;
+    private HotkeyService? _hotkeyService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -36,6 +37,10 @@ public partial class App : Application
         // 显示 Dynamic Island 悬浮窗
         var dynamicIsland = _serviceProvider.GetRequiredService<DynamicIslandWindow>();
         dynamicIsland.Show();
+
+        // 注册全局截图快捷键（默认 Ctrl+Q，设置中心可改）。需在 UI 线程、有消息循环后启动。
+        _hotkeyService = _serviceProvider.GetRequiredService<HotkeyService>();
+        _hotkeyService.Start();
 
         // 提示音由 hook 子进程（open-island-hooks.exe 见到 Stop 事件就 PlayBeep）单独负责，
         // 主进程不再订阅 TaskCompleted 播声 —— 用户明确要求只保留 hook 端那个声音，
@@ -70,6 +75,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _hotkeyService?.Dispose();
         _trayIcon?.Dispose();
 
         if (_serviceProvider is IDisposable disposable)
@@ -100,6 +106,8 @@ public partial class App : Application
         // UI服务
         services.AddSingleton<TrayIconService>();
         services.AddSingleton<PopupWindowService>();
+        services.AddSingleton<ScreenshotService>();
+        services.AddSingleton<HotkeyService>();
 
         // ViewModels
         services.AddSingleton<MainViewModel>();

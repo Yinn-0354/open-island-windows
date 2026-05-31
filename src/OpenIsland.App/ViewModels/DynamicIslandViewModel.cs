@@ -28,6 +28,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     private readonly SystemStatsService _systemStats;
     private readonly PlanUsageService _planUsage;
     private readonly WorkspaceSettings _settings;
+    private readonly ScreenshotService _screenshot;
     private readonly System.Timers.Timer _greenStatusTimer;
     private bool _justCompletedTask = false;
 
@@ -88,6 +89,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         // 程序化从系统同步过来的不回写（防自激）；只有 UI 拖动才写 CoreAudio
         if (_suppressVolumeWriteback) return;
         _media.SetVolume((float)(value / 100.0));
+        PlaySprite?.Invoke("headphones"); // 拖音量 = 在听歌，章鱼戴耳机
     }
 
     /// <summary>从系统主音量拉一次填到滑块（启动 + 定时同步），不触发回写。</summary>
@@ -100,9 +102,77 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _suppressVolumeWriteback = false;
     }
 
-    [RelayCommand] private void MediaPlayPause() => _media.PlayPause();
-    [RelayCommand] private void MediaPrev() => _media.Previous();
-    [RelayCommand] private void MediaNext() => _media.Next();
+    /// <summary>请求头部小章鱼播放一次某动画（headphones / kamehameha / byebye）。
+    /// View 的 code-behind 订阅，调 PixelStatusSprite.PlayOnce。</summary>
+    public event Action<string>? PlaySprite;
+
+    /// <summary>VM 内触发小章鱼一次性动画的便捷入口。</summary>
+    public void TriggerSprite(string name) => PlaySprite?.Invoke(name);
+
+    [RelayCommand] private void MediaPlayPause() { _media.PlayPause(); PlaySprite?.Invoke("headphones"); }
+    [RelayCommand] private void MediaPrev() { _media.Previous(); PlaySprite?.Invoke("headphones"); }
+    [RelayCommand] private void MediaNext() { _media.Next(); PlaySprite?.Invoke("headphones"); }
+
+    /// <summary>区域截图：唤起全屏框选覆盖层，松手裁剪并复制到剪贴板（亦可用全局快捷键触发）。</summary>
+    [RelayCommand] private void Screenshot() => _screenshot.Capture();
+
+    // ── 余额行 ↔ 最近七天 token 柱状图 切换 ──
+
+    /// <summary>false = 显示 5h 余额（默认）；true = 显示最近七天 token 柱状图。持久化，重启灵动岛恢复关闭时状态。</summary>
+    [ObservableProperty] private bool _showUsageChart;
+
+    /// <summary>七天柱状图的 7 根柱子（oldest→newest）。</summary>
+    public System.Collections.ObjectModel.ObservableCollection<UsageBar> UsageBars { get; } = new();
+
+    /// <summary>柱状图右侧只显示的"总量"数字（最近七天 token 合计）。</summary>
+    [ObservableProperty] private string _usageTotalText = "";
+
+    partial void OnShowUsageChartChanged(bool value)
+    {
+        if (value) RefreshUsageChart();
+    }
+
+    /// <summary>点余额行：在"余额"与"七天柱状图"之间切换，并落盘（下次启动恢复）。</summary>
+    [RelayCommand]
+    private void ToggleUsageView()
+    {
+        ShowUsageChart = !ShowUsageChart;     // OnShowUsageChartChanged 负责刷新柱子
+        _settings.SetShowUsageChart(ShowUsageChart);
+    }
+
+    /// <summary>重算最近七天每天 token 用量 → 柱高 + 颜色（用量越多绿色越深）+ 总量数字。</summary>
+    private void RefreshUsageChart()
+    {
+        var daily = DashboardStats.ComputeDailyTokens(_sessionManager.GetAllSessions(), 7);
+        ulong max = 0, total = 0;
+        foreach (var d in daily) { if (d.Tokens > max) max = d.Tokens; total += d.Tokens; }
+
+        UsageBars.Clear();
+        foreach (var d in daily)
+        {
+            double frac = max > 0 ? d.Tokens / (double)max : 0;
+            double h = d.Tokens > 0 ? Math.Max(3.0, frac * 22.0) : 1.5;
+            UsageBars.Add(new UsageBar
+            {
+                BarHeight = h,
+                Color = GreenForFraction(frac, d.Tokens > 0),
+                Tooltip = $"{d.Date:MM/dd}  {FormatTokens(d.Tokens)}"
+            });
+        }
+        UsageTotalText = FormatTokens(total);
+    }
+
+    /// <summary>用量占比 → 绿色深浅（占比越高越深）。无用量的日给极浅暗绿。</summary>
+    private static string GreenForFraction(double frac, bool hasUsage)
+    {
+        if (!hasUsage) return "#2A3A2E";
+        frac = Math.Clamp(frac, 0, 1);
+        int Lerp(int a, int b) => (int)Math.Round(a + (b - a) * frac);
+        int r = Lerp(0x66, 0x1B);   // 浅 #66BB6A → 深 #1B5E20
+        int g = Lerp(0xBB, 0x5E);
+        int b = Lerp(0x6A, 0x20);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
 
     // ── 提示音开关（#3）：状态栏里的小喇叭按钮绑这里 ──
     /// <summary>提示音是否开启。初值取自 WorkspaceSettings.SoundEnabled（构造时设）。
@@ -122,6 +192,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isExpanded;
     [ObservableProperty] private ObservableCollection<IslandSessionItem> _sessions = new();
     [ObservableProperty] private int _runningCount;
+
+    /// <summary>是否有多个会话同时在跑 —— 头部小章鱼据此切到"两只章鱼讨论"动画。</summary>
+    [ObservableProperty] private bool _hasMultipleAgents;
     [ObservableProperty] private int _attentionCount;
     [ObservableProperty] private bool _hasAttention;
     [ObservableProperty] private bool _hasAnySessions;
@@ -153,7 +226,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// 任一 Running→Running，否则 Idle。跟 StatusDotColor 同一处计算。</summary>
     [ObservableProperty] private SessionPhase _aggregatePhase = SessionPhase.Idle;
 
-    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings)
+    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings, ScreenshotService screenshot)
     {
         _sessionManager = sessionManager;
         _popupService = popupService;
@@ -161,6 +234,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _planUsage = planUsage;
         _media = media;
         _settings = settings;
+        _screenshot = screenshot;
 
         // 启动时把提示音开关对齐持久化值，并同步到 SoundService —— 否则 SoundService.Enabled
         // 默认 true，用户上次关了重启后仍会响一次才被纠正。
@@ -168,6 +242,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         // 构造期回写一遍 settings（值没变，没必要落盘）。
         _soundEnabled = settings.SoundEnabled;
         SoundService.Enabled = settings.SoundEnabled;
+
+        // 余额行显示模式对齐持久化值（写 backing field 不触发落盘）。下次启动恢复关闭时的状态。
+        _showUsageChart = settings.ShowUsageChart;
 
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
@@ -192,6 +269,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         Loc.Instance.LanguageChanged += OnLanguageChanged;
 
         RefreshSessions();
+        if (_showUsageChart) RefreshUsageChart(); // 启动即为柱状图模式时先把柱子算好
     }
 
     private void OnLanguageChanged()
@@ -464,7 +542,11 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
     private void OnSessionsChanged(object? sender, EventArgs e)
     {
-        System.Windows.Application.Current.Dispatcher.BeginInvoke(RefreshSessions);
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            RefreshSessions();
+            if (ShowUsageChart) RefreshUsageChart(); // 柱状图模式下随会话变化刷新用量
+        });
     }
 
     private void RefreshSessions()
@@ -560,6 +642,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         while (Sessions.Count > capped.Count) Sessions.RemoveAt(Sessions.Count - 1);
 
         RunningCount = runningProcesses.Count;
+        HasMultipleAgents = runningProcesses.Count >= 2; // 多会话 → 双章鱼讨论动画
         AttentionCount = _sessionManager.GetAttentionCount();
         HasAttention = AttentionCount > 0;
         HasAnySessions = Sessions.Count > 0;
@@ -734,6 +817,14 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _greenStatusTimer.Stop();
         _greenStatusTimer.Dispose();
     }
+}
+
+/// <summary>七天柱状图的一根柱子：高度(px) + 颜色(hex，用量越多绿色越深) + 悬浮提示。</summary>
+public sealed class UsageBar
+{
+    public double BarHeight { get; init; }
+    public string Color { get; init; } = "#4CAF50";
+    public string Tooltip { get; init; } = "";
 }
 
 public partial class IslandSessionItem : ObservableObject

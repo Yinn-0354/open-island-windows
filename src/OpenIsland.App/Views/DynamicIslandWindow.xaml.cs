@@ -32,7 +32,18 @@ public partial class DynamicIslandWindow : Window
         Width = NormalWidth;
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        // VM 请求播放一次小章鱼动画（媒体控制 → headphones 等）→ 转给精灵控件
+        _viewModel.PlaySprite += name => Dispatcher.BeginInvoke(() => StatusSprite.PlayOnce(name));
         Loaded += (_, _) => PositionAtTopCenter();
+    }
+
+    /// <summary>圆形关闭按钮：小章鱼挥手拜拜，约 3 秒后隐藏灵动岛（托盘菜单可再显示）。</summary>
+    private void CloseIsland_Click(object sender, RoutedEventArgs e)
+    {
+        StatusSprite.PlayOnce("byebye"); // 30 帧 ≈ 3s 的挥手告别
+        var t = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(3100) };
+        t.Tick += (_, _) => { t.Stop(); Hide(); };
+        t.Start();
     }
 
     private void PositionAtTopCenter()
@@ -123,7 +134,17 @@ public partial class DynamicIslandWindow : Window
             // A genuine tap (not a drag) on the "Open Island" header clears the session
             // list (active ones reappear on their own) and then toggles expand/collapse as
             // before — see DynamicIslandViewModel.OnHeaderTapped / ClearAllSessions.
-            _viewModel.OnHeaderTapped();
+            // 例外：点在最左的小章鱼上 → 放一次"龟派气功"彩蛋，不展开/收起。
+            // （Grid 在 MouseDown 抓了鼠标，MouseUp 总落到 Grid，小章鱼自己的事件收不到，
+            //   所以在这里按命中位置分流。）
+            var pOnSprite = e.GetPosition(StatusSprite);
+            bool onSprite = pOnSprite.X >= 0 && pOnSprite.Y >= 0
+                            && pOnSprite.X < StatusSprite.ActualWidth
+                            && pOnSprite.Y < StatusSprite.ActualHeight;
+            if (onSprite)
+                StatusSprite.PlayOnce("kamehameha");
+            else
+                _viewModel.OnHeaderTapped();
         }
         _isDragging = false;
         (sender as UIElement)?.ReleaseMouseCapture();

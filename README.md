@@ -18,7 +18,7 @@
 
 <img src="docs/screenshots/island-0.3.png" alt="Open Island — pixel sprite, stats bar, model switch, and 5-hour usage balance" width="340"/>
 
-<sub>The header sprite is a pixel-art animation bound to session phase — blue &amp; bouncing while Claude works, red &amp; resting when idle/done. Below it: a live CPU·RAM·GPU·net bar, media controls, a one-click model switcher, and your Claude subscription's 5-hour usage balance (remaining % + reset countdown).</sub>
+<sub>The header sprite is the orange <strong>Claude pet</strong> — a pixel-art animation bound to session phase (working / needs-you / done / idle). Below it: a live CPU·RAM·GPU·net bar, media controls, a one-click model switcher, a region-screenshot button, and your Claude subscription's 5-hour usage balance — click it to flip into a 7-day token-usage chart.</sub>
 
 </div>
 
@@ -43,6 +43,8 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 
 ## ✨ Features
 
+- **Region screenshot** — a screenshot button next to **Clear Tasks**, plus a global hotkey (default **Ctrl+Q**, changeable in the Control Center): drag a rectangle WeChat-style and it's auto-copied to the clipboard, ready to paste
+- **7-day usage chart** — click the 5-hour balance row to flip it into a **last-7-days token-usage bar chart** (greener/taller = heavier day, total shown on the right); click again to flip back. The choice is remembered the next time the island opens
 - **Model switch** — a **Switch Model** button below the volume row pops up a model list; pick one to switch. Add third-party models in the Control Center (cc-switch-style presets — DeepSeek / Zhipu GLM / Kimi / Qwen / OpenRouter / SiliconFlow / Novita / ModelScope / Xiaomi MiMo … base URLs pre-filled, just paste your API key). Official Claude profiles apply to both the desktop client and the CLI; third-party profiles write the `env` block in `~/.claude/settings.json` and take effect in a new CLI session. API keys are stored encrypted with Windows DPAPI
 - **5-hour usage balance** — a row below the volume control shows your Claude subscription's 5-hour rolling-window remaining quota (green balance bar + "XX% left" + reset countdown), from `/api/oauth/usage` (same source as `/usage`, zero token cost), auto-refreshed every 5 minutes with a manual refresh button
 - **Language switch (中文 / English)** — toggle the UI language from the tray right-click menu or the Control Center; defaults to your Windows system language and is remembered after you change it
@@ -74,9 +76,24 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
   - `cli` → activates the existing terminal where the session is running (only opens a new `claude --resume` tab if that terminal is gone)
   - `claude-desktop` → activates the Claude Desktop window
 
+## 🎭 Expressions
+
+The header sprite is the orange **Claude pet** — its little animation tells you the island's state at a glance (all tiny looping sprites):
+
+| | State | | State |
+|:--:|---|:--:|---|
+| <img src="docs/emotes/running.gif" width="40"/> | **Working** — Claude is thinking (glasses on) | <img src="docs/emotes/attention.gif" width="40"/> | **Needs you** — waiting for approval / answer (`?` overhead) |
+| <img src="docs/emotes/completed.gif" width="40"/> | **Done** — task finished 🎉 fireworks | <img src="docs/emotes/idle-sleep.gif" width="40"/> | **Idle** — resting; every few minutes randomly cycles one of the four below |
+| <img src="docs/emotes/idle-blink.gif" width="40"/> | Idle · blinks twice | <img src="docs/emotes/idle-wink.gif" width="40"/> | Idle · wink |
+| <img src="docs/emotes/idle-sleep.gif" width="40"/> | Idle · sleeping (`zz`, bubble) | <img src="docs/emotes/idle-coke.gif" width="40"/> | Idle · sips a soda |
+| <img src="docs/emotes/headphones.gif" width="40"/> | **Media** — plays when you change volume / track | <img src="docs/emotes/kamehameha.gif" width="40"/> | **Easter egg** — click the pet |
+| <img src="docs/emotes/byebye.gif" width="40"/> | **Closing** — click the power button to hide | | |
+
 ## 📦 Installation
 
 Grab a build from [Releases](../../releases). Two flavors:
+
+> **Self-contained** — the .NET 8 runtime is bundled, so you don't need to install anything else. Just Windows 10/11 (x64).
 
 - 🟢 **Recommended** — `OpenIsland-Setup-X.Y.Z-win-x64.exe` — standard installer; installs into `%LOCALAPPDATA%\OpenIsland` without admin, registers in Add/Remove Programs, optional auto-start at login
 - 🟦 **Portable** — `OpenIsland-vX.Y.Z-win-x64.zip` — extract anywhere and run; no registry writes

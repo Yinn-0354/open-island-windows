@@ -36,6 +36,14 @@ public class WorkspaceSettings
     /// <summary>界面语言： "auto"（跟随 Windows 系统语言）/ "zh" / "en"。默认 auto。json key = "language"。</summary>
     public string Language { get; private set; } = "auto";
 
+    /// <summary>区域截图全局快捷键（如 "Ctrl+Q"）。默认 Ctrl+Q。json key = "screenshotHotkey"。
+    /// 由 HotkeyService 注册为系统级热键；在设置中心可改。</summary>
+    public string ScreenshotHotkey { get; private set; } = "Ctrl+Q";
+
+    /// <summary>余额行显示模式：false = 5h 余额（默认），true = 最近七天 token 柱状图。
+    /// 点余额行切换并落盘，下次启动灵动岛恢复关闭时的状态。json key = "showUsageChart"。</summary>
+    public bool ShowUsageChart { get; private set; }
+
     public event EventHandler? Changed;
 
     public WorkspaceSettings()
@@ -77,6 +85,22 @@ public class WorkspaceSettings
     public void SetLanguage(string lang)
     {
         Language = lang is "zh" or "en" ? lang : "auto";
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置区域截图快捷键（如 "Ctrl+Q"）+ 持久化 + 通知监听者（HotkeyService 据此重新注册）。</summary>
+    public void SetScreenshotHotkey(string hotkey)
+    {
+        ScreenshotHotkey = string.IsNullOrWhiteSpace(hotkey) ? "Ctrl+Q" : hotkey.Trim();
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置余额行显示模式（false=余额 / true=七天柱状图）+ 持久化。</summary>
+    public void SetShowUsageChart(bool v)
+    {
+        ShowUsageChart = v;
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -181,6 +205,17 @@ public class WorkspaceSettings
                 var v = lng.GetString();
                 Language = v is "zh" or "en" ? v : "auto";
             }
+            if (doc.RootElement.TryGetProperty("screenshotHotkey", out var hk)
+                && hk.ValueKind == JsonValueKind.String)
+            {
+                var v = hk.GetString();
+                if (!string.IsNullOrWhiteSpace(v)) ScreenshotHotkey = v!.Trim();
+            }
+            if (doc.RootElement.TryGetProperty("showUsageChart", out var suc)
+                && (suc.ValueKind == JsonValueKind.True || suc.ValueKind == JsonValueKind.False))
+            {
+                ShowUsageChart = suc.GetBoolean();
+            }
         }
         catch (Exception ex)
         {
@@ -210,7 +245,9 @@ public class WorkspaceSettings
                     soundEnabled = SoundEnabled,
                     modelProfiles = profilesForDisk,
                     activeModelProfileId = ActiveModelProfileId,
-                    language = Language
+                    language = Language,
+                    screenshotHotkey = ScreenshotHotkey,
+                    showUsageChart = ShowUsageChart
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。

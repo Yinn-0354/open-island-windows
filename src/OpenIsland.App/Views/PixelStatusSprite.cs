@@ -41,8 +41,27 @@ public class PixelStatusSprite : Image
     /// <summary>显示放大倍数：原生帧 × Scale。必须整数，保持像素清晰。</summary>
     public int Scale { get; set; } = 2;
 
-    /// <summary>Idle/Completed：每隔这么久随机挑一个变体完整播一遍，其余时间停第 1 帧。</summary>
-    public static readonly TimeSpan IdleCycleInterval = TimeSpan.FromSeconds(30);
+    /// <summary>多 agent（同时多个会话在跑）：为 true 且处于 Running 时，改播"两只章鱼讨论"(multiagent.png)。</summary>
+    public static readonly DependencyProperty MultiAgentProperty =
+        DependencyProperty.Register(nameof(MultiAgent), typeof(bool), typeof(PixelStatusSprite),
+            new PropertyMetadata(false, OnMultiAgentChanged));
+
+    // MultiAgent 变更：用当前 Phase 重新 Apply（不能用 OnPhaseChanged —— 那会把 bool 强转 SessionPhase 崩）
+    private static void OnMultiAgentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var s = (PixelStatusSprite)d;
+        if (s._oneShot) return; // 同上：一次性动画播放中不打断
+        s.Apply(s.Phase);
+    }
+
+    public bool MultiAgent
+    {
+        get => (bool)GetValue(MultiAgentProperty);
+        set => SetValue(MultiAgentProperty, value);
+    }
+
+    /// <summary>Idle 默认动画：每隔这么久随机切换到另一个默认动画（站立眨眼/wink/睡觉吐泡泡/喝可乐）。</summary>
+    public static readonly TimeSpan IdleCycleInterval = TimeSpan.FromMinutes(3);
 
     private readonly DispatcherTimer _timer;      // 10fps 帧推进
     private readonly DispatcherTimer _idleCycle;  // idle/completed 周期触发
@@ -52,7 +71,9 @@ public class PixelStatusSprite : Image
     private readonly List<CroppedBitmap[]> _variants = new();        // idle/completed 的所有变体
     private int _frame;
     private bool _loop;   // Running/Attention 连续循环
-    private bool _burst;  // idle/completed 周期触发的"播一遍"进行中
+    private bool _burst;  // completed 完成庆祝"播一遍停末帧"进行中
+    private bool _oneShot;// 点击小人 / 媒体控制 / 关闭 触发的一次性播放进行中
+    private int _lastIdleIdx = -1; // 上一个 idle 默认动画下标，切换时尽量不连播同一个
 
     // Running 状态叠加的垂直上下跳动（保留旧占位图的弹跳手感，跟帧动画独立）
     private readonly TranslateTransform _bounce = new();
@@ -68,13 +89,17 @@ public class PixelStatusSprite : Image
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _timer.Tick += (_, _) => Advance();
         _idleCycle = new DispatcherTimer { Interval = IdleCycleInterval };
-        _idleCycle.Tick += (_, _) => StartBurst();
+        _idleCycle.Tick += (_, _) => PlayRandomIdleLoop();
         Loaded += (_, _) => Apply(Phase);
         Unloaded += (_, _) => { _timer.Stop(); _idleCycle.Stop(); };
     }
 
     private static void OnPhaseChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-        => ((PixelStatusSprite)d).Apply((SessionPhase)e.NewValue);
+    {
+        var s = (PixelStatusSprite)d;
+        if (s._oneShot) return; // 一次性动画(点击/媒体/关闭)播放中，不被状态刷新打断；播完自会回到最新状态
+        s.Apply((SessionPhase)e.NewValue);
+    }
 
     private void Apply(SessionPhase phase)
     {
@@ -85,6 +110,8 @@ public class PixelStatusSprite : Image
         _variants.Clear();
         StopBounce(); // 离开 Running 先把跳动复位（其它状态不跳）
 
+        _oneShot = false;
+
         var name = phase switch
         {
             SessionPhase.Running => "running",
@@ -92,6 +119,8 @@ public class PixelStatusSprite : Image
             SessionPhase.Completed => "completed",
             _ => "idle",
         };
+        // 多 agent 专属动画已取消：Running 一律播正常动画。multiagent.png 资源暂保留备用。
+        // （MultiAgent 依赖属性仍保留绑定，仅不再切换动画，避免改 XAML。）
 
         bool busy = phase is SessionPhase.Running
             or SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer;
@@ -112,10 +141,25 @@ public class PixelStatusSprite : Image
             return;
         }
 
-        // Idle / Completed：收集所有变体（name.png, name2.png, name3.png ...）
+        // Completed：完成庆祝动画播一遍，停在最后一帧（不循环）。
+        if (phase == SessionPhase.Completed)
+        {
+            var sheet = LoadSheet("completed");
+            if (sheet == null) { Source = null; return; }
+            _frames = Slice(sheet);
+            _frame = 0;
+            Width = sheet.PixelHeight * Scale;
+            Height = sheet.PixelHeight * Scale;
+            Source = _frames[0];
+            if (_frames.Length > 1) { _burst = true; _timer.Start(); }
+            return;
+        }
+
+        // Idle（默认/启动状态）：收集默认动画变体 idle.png / idle2.png / idle3.png / idle4.png ...
+        // 随机挑一个 *连续循环* 播放，每 IdleCycleInterval(3 分钟) 再随机切换到另一个。
         for (int i = 0; ; i++)
         {
-            var n = i == 0 ? name : name + (i + 1);
+            var n = i == 0 ? "idle" : "idle" + (i + 1);
             var sheet = LoadSheet(n);
             if (sheet == null)
             {
@@ -131,29 +175,63 @@ public class PixelStatusSprite : Image
             if (i >= 11) break; // 上限保护
         }
 
-        // 平时停在第 1 个变体的第 1 帧；每 IdleCycleInterval 随机挑一个播一遍
-        _frames = _variants[0];
-        _frame = 0;
-        Source = _frames[0];
-        if (_variants.Any(v => v.Length > 1) || _variants.Count > 1)
-            _idleCycle.Start();
+        PlayRandomIdleLoop();   // 立即随机挑一个循环播放（启动即默认动画）
+        if (_variants.Count > 1) _idleCycle.Start(); // 多于一个才需要 3 分钟切换
     }
 
-    /// <summary>周期触发：从所有变体里随机挑一个，从头完整播一遍。</summary>
-    private void StartBurst()
+    /// <summary>随机挑一个默认动画连续循环播放（每 IdleCycleInterval 由 _idleCycle 触发切换）。</summary>
+    private void PlayRandomIdleLoop()
     {
         if (_variants.Count == 0) return;
-        _frames = _variants[_rng.Next(_variants.Count)];
+        int idx = _rng.Next(_variants.Count);
+        if (_variants.Count > 1 && idx == _lastIdleIdx) idx = (idx + 1) % _variants.Count; // 尽量不连播同一个
+        _lastIdleIdx = idx;
+        _frames = _variants[idx];
         _frame = 0;
+        _loop = true;            // 连续循环（动画自身含站立停顿/眨眼等）
         Source = _frames[0];
-        if (_frames.Length <= 1) return; // 单帧变体无需播放
-        _burst = true;
-        _timer.Start();
+        if (_frames.Length > 1) _timer.Start();
+    }
+
+    /// <summary>
+    /// 一次性播放某个动画表(name.png)一遍，播完自动回到当前 Phase 的常态动画。
+    /// 用于：点击小章鱼(kamehameha)、媒体控制(headphones)、关闭按钮(byebye)。
+    /// </summary>
+    public void PlayOnce(string name)
+    {
+        var sheet = LoadSheet(name);
+        if (sheet == null) return;
+        _timer.Stop();
+        _idleCycle.Stop();
+        _burst = false;
+        _loop = false;
+        StopBounce();
+        _oneShot = true;
+        _frames = Slice(sheet);
+        _frame = 0;
+        Width = sheet.PixelHeight * Scale;
+        Height = sheet.PixelHeight * Scale;
+        Source = _frames[0];
+        if (_frames.Length > 1) _timer.Start(); // 多帧才需要推进；单帧直接停在这一帧
     }
 
     private void Advance()
     {
         if (_frames.Length == 0) return;
+
+        if (_oneShot)
+        {
+            _frame++;
+            if (_frame >= _frames.Length)
+            {
+                _timer.Stop();
+                _oneShot = false;
+                Apply(Phase); // 一次性动画播完，回到当前状态的常态动画
+                return;
+            }
+            Source = _frames[_frame];
+            return;
+        }
 
         if (_loop)
         {

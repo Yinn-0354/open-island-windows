@@ -198,10 +198,14 @@
 
                         <!-- 像素状态精灵：绑聚合 phase，Running/Attention 动、Idle/Completed 静。
                              32px 原生 ×1 显示（缩小一倍），NearestNeighbor 不糊。 -->
-                        <views:PixelStatusSprite Phase="{Binding AggregatePhase}"
+                        <views:PixelStatusSprite x:Name="StatusSprite"
+                                                 Phase="{Binding AggregatePhase}"
+                                                 MultiAgent="{Binding HasMultipleAgents}"
                                                  Scale="1"
                                                  Margin="0,0,9,0"
-                                                 VerticalAlignment="Center"/>
+                                                 VerticalAlignment="Center"
+                                                 Cursor="Hand"
+                                                 ToolTip="点我一下试试 / Click me"/>
 
                         <TextBlock Text="Open Island"
                                    Foreground="#E0E0E0"
@@ -243,6 +247,35 @@
                                 <RotateTransform x:Name="ChevronRotate" Angle="90"/>
                             </TextBlock.RenderTransform>
                         </TextBlock>
+
+                        <!-- 圆形关闭按钮：点击 → 小人挥手拜拜 → 隐藏灵动岛（托盘可再显示）。
+                             图标为「关机键」电源符号(圆环留顶部缺口 + 竖线)，矢量 Path 绘制不依赖字体。
+                             风格与现有 UI 一致：暗底圆形，hover 变红(#C0392B，同需关注角标色)，图标转白。 -->
+                        <Button x:Name="CloseBtn" Click="CloseIsland_Click" Cursor="Hand"
+                                Margin="10,0,0,0" VerticalAlignment="Center"
+                                FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                ToolTip="关闭灵动岛 / Close">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="Cc" Width="18" Height="18" CornerRadius="9"
+                                            Background="#2A2A2A">
+                                        <!-- 用 Canvas 绝对坐标在 18x18 空间里画电源符号：环心精确落在圆心 (9,9)，
+                                             竖线从顶部缺口穿入。避免 Path bbox 对齐导致的偏下偏移。 -->
+                                        <Canvas Width="18" Height="18">
+                                            <Path x:Name="PwrIcon" Stroke="#9AA0A6" StrokeThickness="1.4"
+                                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                  Data="M 11.22,5.44 A 4.2,4.2 0 1 1 6.78,5.44 M 9,3.2 L 9,8.6"/>
+                                        </Canvas>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Cc" Property="Background" Value="#C0392B"/>
+                                            <Setter TargetName="PwrIcon" Property="Stroke" Value="#FFFFFF"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
                     </StackPanel>
                 </Grid>
 
@@ -535,8 +568,32 @@
                                     </Border>
                                 </Popup>
 
+                                <!-- 截图按钮 + 清理任务：放在同一横排（Grid 第 1 列）。 -->
+                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+
+                                <!-- 区域截图：微信式拖拽框选 → 复制到剪贴板。快捷键默认 Ctrl+Q（设置中心可改）。 -->
+                                <Button x:Name="ScreenshotBtn" Cursor="Hand" Margin="8,0,0,0"
+                                        FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                        Command="{Binding ScreenshotCommand}" ToolTip="{Binding [Island_Screenshot_Tip], Source={x:Static svc:Loc.Instance}}">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Sb" Background="#252320" BorderBrush="#3A3631"
+                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                                <TextBlock Text="&#xE924;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Sb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Sb" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+
                                 <!-- 清理任务：显式清空已结束/空闲的任务卡片（保留正在跑的）；与切换模型同款暖深色风格 -->
-                                <Button x:Name="ClearTasksBtn" Grid.Column="1" Cursor="Hand" Margin="8,0,0,0"
+                                <Button x:Name="ClearTasksBtn" Cursor="Hand" Margin="8,0,0,0"
                                         FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
                                         Command="{Binding ClearTasksCommand}" ToolTip="{Binding [Island_ClearTasks_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
@@ -560,6 +617,8 @@
                                     </Button.Template>
                                 </Button>
 
+                                </StackPanel>
+
                                 <TextBlock Grid.Column="2" Text="{Binding GlobalModelStatus}"
                                            Foreground="#777777" FontSize="10" VerticalAlignment="Center"
                                            Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
@@ -574,7 +633,13 @@
                         <Border Background="#111111"
                                 CornerRadius="10"
                                 Margin="8,0,8,2"
-                                Padding="10,8">
+                                Padding="10,8"
+                                Cursor="Hand"
+                                ToolTip="{Binding [Island_UsageToggle_Tip], Source={x:Static svc:Loc.Instance}}">
+                            <Border.InputBindings>
+                                <!-- 点余额行：在"5h 余额"与"最近七天 token 柱状图"之间切换（落盘，下次启动恢复）。 -->
+                                <MouseBinding Gesture="LeftClick" Command="{Binding ToggleUsageViewCommand}"/>
+                            </Border.InputBindings>
                             <Border.Resources>
                                 <!-- 扁平进度条：无边框、圆角细条，Foreground 绑 PlanBarColor，
                                      轨道 #26FFFFFF，高度 6。无 code-behind，纯模板实现 -->
@@ -604,6 +669,8 @@
                                 </Style>
                             </Border.Resources>
                             <Grid>
+                            <!-- ① 余额视图（默认）：5h 进度条 + 余额% + 重置；ShowUsageChart=true 时隐藏 -->
+                            <Grid Visibility="{Binding ShowUsageChart, Converter={StaticResource InvBoolToVis}}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
@@ -686,6 +753,40 @@
                                     <Run Text="·" Foreground="#7C8A9A"/>
                                     <Run Text="{Binding PlanValueText}"/>
                                 </TextBlock>
+                            </Grid>
+
+                            <!-- ② 七天 token 柱状图视图：ShowUsageChart=true 时显示，再次点击切回余额。
+                                 柱子用量越多绿色越深；右侧只显示七天总量数字。 -->
+                            <Grid Visibility="{Binding ShowUsageChart, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="7天" Foreground="#9AA0A6" FontSize="11"
+                                           FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ItemsControl Grid.Column="1" ItemsSource="{Binding UsageBars}"
+                                              VerticalAlignment="Center" HorizontalAlignment="Left">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Width="12" Height="24" Margin="0,0,3,0"
+                                                    Background="Transparent" ToolTip="{Binding Tooltip}">
+                                                <Border VerticalAlignment="Bottom" Height="{Binding BarHeight}"
+                                                        CornerRadius="2"
+                                                        Background="{Binding Color, Converter={StaticResource StrToBrush}}"/>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Grid.Column="2" Text="{Binding UsageTotalText}" Foreground="#7CC47F"
+                                           FontSize="11" FontWeight="SemiBold"
+                                           FontFamily="Consolas, Cascadia Code, Segoe UI"
+                                           VerticalAlignment="Center" Margin="8,0,0,0"/>
+                            </Grid>
                             </Grid>
                         </Border>
 

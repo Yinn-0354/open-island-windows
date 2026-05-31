@@ -89,6 +89,36 @@ public record DashboardStats
         catch { return null; }
     }
 
+    /// <summary>
+    /// 最近 <paramref name="days"/> 天每天的 token 用量（会话粒度：把每个 ClaudeCode 会话的
+    /// TotalTokens 归到它的活动日）。返回 oldest→newest，无活动的日补 0。供灵动岛"七天柱状图"用。
+    /// </summary>
+    public static IReadOnlyList<DailyTokens> ComputeDailyTokens(IEnumerable<AgentSession> all, int days)
+    {
+        if (days < 1) days = 1;
+        var todayLocal = DateTime.Now.Date;
+        var startLocal = todayLocal.AddDays(-(days - 1));
+        var perDay = new Dictionary<DateTime, ulong>();
+        for (int i = 0; i < days; i++) perDay[startLocal.AddDays(i)] = 0;
+
+        foreach (var s in all)
+        {
+            if (s.Tool != AgentTool.ClaudeCode) continue;
+            var act = (TryGetTranscriptMtime(s.ClaudeMetadata?.TranscriptPath) ?? s.UpdatedAt)
+                .ToLocalTime().Date;
+            if (act < startLocal || act > todayLocal) continue;
+            perDay[act] = perDay.GetValueOrDefault(act) + (s.ClaudeMetadata?.TotalTokens ?? 0u);
+        }
+
+        var result = new List<DailyTokens>(days);
+        for (int i = 0; i < days; i++)
+        {
+            var d = startLocal.AddDays(i);
+            result.Add(new DailyTokens(d, perDay[d]));
+        }
+        return result;
+    }
+
     /// <summary>session + 它的真实活动时间（transcript mtime 或 UpdatedAt 兜底）</summary>
     private sealed record SessionWithActivity(AgentSession Session, DateTime ActivityAt);
 
@@ -205,6 +235,9 @@ public record DashboardStats
 }
 
 public record DayActivity(DateTime Date, int Intensity);
+
+/// <summary>某一天的 token 用量（灵动岛七天柱状图）。</summary>
+public record DailyTokens(DateTime Date, ulong Tokens);
 
 public record ModelUsage(
     string Name,
