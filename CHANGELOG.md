@@ -6,6 +6,12 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-04
+
+### Fixed
+
+- **Claude 订阅 5h 余量在只用 Claude Desktop 的电脑上一直显示 "余 --"** —— 原因是 Claude Desktop 不把刷新后的 OAuth access token 写回 `~/.claude/.credentials.json`，导致 OpenIsland 探针长期用过期 token 调 `/api/oauth/usage` 一直 401。修法：探针检测到 token 过期或 401 时，自动调用本机 `claude` CLI 触发一次 OAuth 刷新（CLI 内置 refresh token 续命逻辑会把新 token 写回文件），刷新后立即重探一次 `/api/oauth/usage`；5 分钟节流，安全降级。装完即看到真实余额，不再需要用户手动开终端跑 `claude`
+
 ## [0.4.1] - 2026-05-31
 
 ### Changed
@@ -138,7 +144,8 @@ All notable changes to Open Island will be documented here.
 - Permission 面板按钮配色从 3 色改为 Apple 风 2 色（白底深字 = 主，深底浅字 = 次）
 - Token 百分比统一口径（分子分母都含 cache token，加和恒等于 100%）
 
-[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ludiwangfpga/open-island-windows/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.4.2
 [0.2.2]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ludiwangfpga/open-island-windows/releases/tag/v0.2.0

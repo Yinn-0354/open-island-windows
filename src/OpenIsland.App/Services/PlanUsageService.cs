@@ -46,8 +46,14 @@ public sealed class PlanUsageService : IDisposable
     private DateTime? _probeResetUtc;   // 5h 窗口绝对重置时刻 (UTC)
     private DateTime _lastProbeUtc = DateTime.MinValue;
 
+    /// <summary>最近一次"调用 claude CLI 刷 OAuth token"尝试的 UTC 时刻；4min 节流避免循环。</summary>
+    private DateTime _lastAutoRefreshAttemptUtc = DateTime.MinValue;
+
     /// <summary>探针最短间隔：5 分钟（/api/oauth/usage 对频繁轮询会 429；用量本来也是慢变量）。</summary>
     private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(5);
+
+    /// <summary>自动刷 token 节流：4 分钟内只尝试一次（防止 CLI 坏了导致紧循环）。</summary>
+    private static readonly TimeSpan AutoRefreshMinInterval = TimeSpan.FromMinutes(4);
 
     private static readonly string CredentialsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", ".credentials.json");
@@ -213,30 +219,56 @@ public sealed class PlanUsageService : IDisposable
     /// 读 OAuth token，向 Anthropic 发一个最小请求，解析 `anthropic-ratelimit-unified-*`
     /// 响应头算出真实 5h 利用率 + 精确重置时刻。所有限流头落 openisland-usage.log 以便对照/收窄。
     /// 绝不打印 token 本身。
+    ///
+    /// v0.4.2 起：检测到 .credentials.json 里的 accessToken 已过期，或 /api/oauth/usage 返回 401
+    /// 时，自动 shell out 调一次本机 `claude` CLI（CLI 内置 refresh token 续命逻辑会把新 token
+    /// 写回文件），刷新后立即重探一次。4min 节流防 CLI 坏掉打死循环。Claude Desktop 本身不刷
+    /// .credentials.json，所以只用桌面端的用户装完即看到余额，不用先开终端跑 claude。
     /// </summary>
     private async Task ProbeAsync()
     {
-        string? token = null;
-        try
+        if (!TryReadCredentials(out var token, out var expiresAt))
+            return; // 内部已打日志
+
+        // 1) 本地检测：token 已过期 -> 直接走自动刷新流程，省一次注定 401 的请求
+        if (expiresAt is DateTime exp && exp <= DateTime.UtcNow)
         {
-            if (!File.Exists(CredentialsPath)) { Diag("no .credentials.json -> fallback"); return; }
-            using var doc = JsonDocument.Parse(File.ReadAllText(CredentialsPath));
-            var root = doc.RootElement;
-            JsonElement oauth = root.TryGetProperty("claudeAiOauth", out var o) ? o : root;
-            if (oauth.TryGetProperty("accessToken", out var at)) token = at.GetString();
-            if (oauth.TryGetProperty("expiresAt", out var ea) && ea.TryGetInt64(out var expMs))
+            Diag($"oauth token expired (expiresAt={exp:u}) -> trying auto-refresh");
+            if (await TryAutoRefreshTokenAsync(exp).ConfigureAwait(false))
             {
-                var exp = DateTimeOffset.FromUnixTimeMilliseconds(expMs).UtcDateTime;
-                if (exp <= DateTime.UtcNow) { Diag("oauth token expired -> fallback"); return; }
+                if (!TryReadCredentials(out token, out _))
+                    return;
+            }
+            else
+            {
+                // 没刷成功（节流挡掉 / CLI 不存在 / CLI 失败）-> 这一轮放弃，保持 Indeterminate
+                return;
             }
         }
-        catch (Exception ex) { Diag($"cred parse failed: {ex.Message} -> fallback"); return; }
+
         if (string.IsNullOrEmpty(token)) { Diag("no accessToken -> fallback"); return; }
 
         // 取数：优先用系统自带 curl.exe。实测 .NET HttpClient（Framework 与 .NET 8 都试过）在
         // 本环境会"连上后挂死到超时"，而 curl 0.5s 返回 200（TLS/HTTP2/代理/IPv6 它自己处理好）。
         // curl 缺失（极老 Windows，<1803）才退回 HttpClient。
-        var body = await FetchUsageBodyAsync(token).ConfigureAwait(false);
+        var (code, body) = await FetchUsageAsync(token).ConfigureAwait(false);
+
+        // 2) 服务端兜底：本地以为没过期但服务端给 401（可能 token 被远端撤销 / 本地时钟漂移）
+        if (code == 401)
+        {
+            Diag("usage returned 401 -> trying auto-refresh");
+            if (await TryAutoRefreshTokenAsync(expiresAt).ConfigureAwait(false))
+            {
+                if (!TryReadCredentials(out token, out _) || string.IsNullOrEmpty(token))
+                    return;
+                (code, body) = await FetchUsageAsync(token).ConfigureAwait(false);
+            }
+            else
+            {
+                return; // 节流 / 不可恢复 -> 这一轮放弃
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(body))
         {
             Diag("-> no usage body -> keep fallback");
@@ -255,20 +287,128 @@ public sealed class PlanUsageService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 读 ~/.claude/.credentials.json 取 accessToken + expiresAt。文件不存在 / 解析失败 / 没字段
+    /// 都返回 false 并打日志（绝不打印 token）。
+    /// </summary>
+    private static bool TryReadCredentials(out string? token, out DateTime? expiresAt)
+    {
+        token = null; expiresAt = null;
+        try
+        {
+            if (!File.Exists(CredentialsPath)) { Diag("no .credentials.json -> fallback"); return false; }
+            using var doc = JsonDocument.Parse(File.ReadAllText(CredentialsPath));
+            var root = doc.RootElement;
+            JsonElement oauth = root.TryGetProperty("claudeAiOauth", out var o) ? o : root;
+            if (oauth.TryGetProperty("accessToken", out var at)) token = at.GetString();
+            if (oauth.TryGetProperty("expiresAt", out var ea) && ea.TryGetInt64(out var expMs))
+                expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(expMs).UtcDateTime;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Diag($"cred parse failed: {ex.Message} -> fallback");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// shell out 到本机 `claude` CLI，跑一个 trivial prompt 强制它做一次 OAuth 认证调用，
+    /// 从而触发 CLI 的 refresh-token 续命并把新 access token 写回 .credentials.json。
+    /// 4min 节流（防 CLI 坏掉死循环）。CLI 不存在 / 失败 / 没续上，全部返回 false 让上游保持 Indeterminate。
+    /// 绝不打印 token，只打 expiresAt 与高层结果。
+    /// </summary>
+    private async Task<bool> TryAutoRefreshTokenAsync(DateTime? oldExpiresAt)
+    {
+        var now = DateTime.UtcNow;
+        if (now - _lastAutoRefreshAttemptUtc < AutoRefreshMinInterval)
+        {
+            Diag($"auto-refresh: skipped (last attempt {(now - _lastAutoRefreshAttemptUtc).TotalSeconds:F0}s ago < {AutoRefreshMinInterval.TotalMinutes:F0}min)");
+            return false;
+        }
+        _lastAutoRefreshAttemptUtc = now;
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "claude",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add("ping");
+
+        System.Diagnostics.Process? proc;
+        try { proc = System.Diagnostics.Process.Start(psi); }
+        catch (Exception ex)
+        {
+            Diag($"auto-refresh: claude CLI not found on PATH ({ex.Message})");
+            return false;
+        }
+        if (proc == null) { Diag("auto-refresh: process start returned null"); return false; }
+
+        Diag("auto-refresh: invoking claude CLI");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            // 关 stdin 让 CLI 不挂在等输入上（--print 单轮模式拿到 prompt 后就走）
+            try { proc.StandardInput.Close(); } catch { }
+
+            // 排空 stdout/stderr 防小 pipe 撑满阻塞子进程
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            {
+                try { await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException)
+                {
+                    try { proc.Kill(true); } catch { }
+                    Diag($"auto-refresh: claude CLI timed out after {sw.Elapsed.TotalSeconds:F1}s");
+                    return false;
+                }
+            }
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            sw.Stop();
+            Diag($"auto-refresh: claude exit={proc.ExitCode} took={sw.Elapsed.TotalSeconds:F1}s");
+        }
+        finally
+        {
+            try { proc.Dispose(); } catch { }
+        }
+
+        // 重读 expiresAt 确认续上了
+        if (!TryReadCredentials(out _, out var newExpiresAt))
+            return false;
+
+        if (newExpiresAt is DateTime ne && ne > DateTime.UtcNow)
+        {
+            var oldStr = oldExpiresAt?.ToString("u") ?? "n/a";
+            Diag($"auto-refresh: expiresAt advanced from {oldStr} to {ne:u}");
+            return true;
+        }
+
+        Diag($"auto-refresh: still expired after invocation (expiresAt={(newExpiresAt?.ToString("u") ?? "n/a")})");
+        return false;
+    }
+
     private const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
 
-    /// <summary>取订阅用量 JSON：curl.exe 优先（可靠），缺失才退回 HttpClient。绝不打印 token。</summary>
-    private async Task<string?> FetchUsageBodyAsync(string token)
+    /// <summary>取订阅用量 JSON：curl.exe 优先（可靠），缺失才退回 HttpClient。绝不打印 token。
+    /// 返回 (HTTP 状态码, body)。状态码用于上游判 401 触发自动刷新；网络层失败 code=0。</summary>
+    private async Task<(int code, string? body)> FetchUsageAsync(string token)
     {
         var curl = ResolveCurlPath();
         if (curl != null)
         {
             // curl 存在就只用 curl —— 不再退回 HttpClient（后者在本环境会挂死 ~12s）。
             try { return await FetchViaCurlAsync(curl, token).ConfigureAwait(false); }
-            catch (Exception ex) { Diag($"curl fetch failed: {ex.Message}"); return null; }
+            catch (Exception ex) { Diag($"curl fetch failed: {ex.Message}"); return (0, null); }
         }
         try { return await FetchViaHttpClientAsync(token).ConfigureAwait(false); }
-        catch (Exception ex) { Diag($"httpclient fetch failed: {ex.Message}"); return null; }
+        catch (Exception ex) { Diag($"httpclient fetch failed: {ex.Message}"); return (0, null); }
     }
 
     private static string? ResolveCurlPath()
@@ -280,9 +420,9 @@ public sealed class PlanUsageService : IDisposable
 
     /// <summary>
     /// 用 curl.exe 拉用量。url + header（含 token）写进临时 -K 配置文件，避免 token 出现在
-    /// 命令行被其它进程窥见；用完即删。返回 200 时的 body，否则 null。
+    /// 命令行被其它进程窥见；用完即删。返回 (status code, body)，200 时 body 真实，否则 body=null。
     /// </summary>
-    private async Task<string?> FetchViaCurlAsync(string curlPath, string token)
+    private async Task<(int code, string? body)> FetchViaCurlAsync(string curlPath, string token)
     {
         var cfg = Path.Combine(Path.GetTempPath(), "oi-usage-" + Guid.NewGuid().ToString("N") + ".cfg");
         try
@@ -308,12 +448,12 @@ public sealed class PlanUsageService : IDisposable
             psi.ArgumentList.Add("-K"); psi.ArgumentList.Add(cfg);
 
             using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc == null) { Diag("curl: process start returned null"); return null; }
+            if (proc == null) { Diag("curl: process start returned null"); return (0, null); }
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
             {
                 try { await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { try { proc.Kill(true); } catch { } Diag("curl: timed out"); return null; }
+                catch (OperationCanceledException) { try { proc.Kill(true); } catch { } Diag("curl: timed out"); return (0, null); }
             }
             var raw = await stdoutTask.ConfigureAwait(false);
 
@@ -325,7 +465,7 @@ public sealed class PlanUsageService : IDisposable
                 int.TryParse(raw.Substring(marker + 8).Trim(), out code);
             }
             Diag($"curl usage HTTP {code}: {Trunc(bodyText, 400)}");
-            return code == 200 ? bodyText : null;
+            return (code, code == 200 ? bodyText : null);
         }
         finally
         {
@@ -334,7 +474,7 @@ public sealed class PlanUsageService : IDisposable
     }
 
     /// <summary>退路：HttpClient（部分环境会挂死，仅在 curl 缺失时用）。</summary>
-    private async Task<string?> FetchViaHttpClientAsync(string token)
+    private async Task<(int code, string? body)> FetchViaHttpClientAsync(string token)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -344,7 +484,7 @@ public sealed class PlanUsageService : IDisposable
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         Diag($"httpclient usage HTTP {(int)resp.StatusCode}: {Trunc(body, 400)}");
-        return resp.IsSuccessStatusCode ? body : null;
+        return ((int)resp.StatusCode, resp.IsSuccessStatusCode ? body : null);
     }
 
     private static DateTime? TryGetMtime(string? path)
