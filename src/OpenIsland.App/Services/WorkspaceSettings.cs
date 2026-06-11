@@ -44,12 +44,6 @@ public class WorkspaceSettings
     /// 点余额行切换并落盘，下次启动灵动岛恢复关闭时的状态。json key = "showUsageChart"。</summary>
     public bool ShowUsageChart { get; private set; }
 
-    /// <summary>Apple 风毛玻璃（acrylic）开关。默认 false（保持纯色背景）。json key = "glassEnabled"。</summary>
-    public bool GlassEnabled { get; private set; }
-
-    /// <summary>毛玻璃开启时岛背景的不透明度百分比（20-100，越低越透）。默认 60。json key = "glassOpacity"。</summary>
-    public int GlassOpacity { get; private set; } = 60;
-
     public event EventHandler? Changed;
 
     private System.Threading.Timer? _pollTimer;
@@ -137,22 +131,6 @@ public class WorkspaceSettings
     public void SetShowUsageChart(bool v)
     {
         ShowUsageChart = v;
-        Save();
-        Changed?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>设置毛玻璃开关 + 持久化 + 通知（DynamicIslandWindow 据此实时重应用）。</summary>
-    public void SetGlassEnabled(bool v)
-    {
-        GlassEnabled = v;
-        Save();
-        Changed?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>设置毛玻璃背景不透明度（clamp 到 20-100）+ 持久化 + 通知。</summary>
-    public void SetGlassOpacity(int v)
-    {
-        GlassOpacity = Math.Clamp(v, 20, 100);
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -268,18 +246,8 @@ public class WorkspaceSettings
             {
                 ShowUsageChart = suc.GetBoolean();
             }
-            // glassEnabled / glassOpacity 缺失 → 保持默认（关、60），旧 settings.json 无感升级
-            if (doc.RootElement.TryGetProperty("glassEnabled", out var ge)
-                && (ge.ValueKind == JsonValueKind.True || ge.ValueKind == JsonValueKind.False))
-            {
-                GlassEnabled = ge.GetBoolean();
-            }
-            if (doc.RootElement.TryGetProperty("glassOpacity", out var go)
-                && go.ValueKind == JsonValueKind.Number
-                && go.TryGetInt32(out var gov))
-            {
-                GlassOpacity = Math.Clamp(gov, 20, 100); // 手改 json 越界也兜回合法区间
-            }
+            // 旧版的 glassEnabled / glassOpacity 字段不再读取（毛玻璃功能已移除），
+            // 残留在 settings.json 里也无害，下次 Save 自然消失。
         }
         catch (Exception ex)
         {
@@ -312,9 +280,7 @@ public class WorkspaceSettings
                     activeModelProfileId = ActiveModelProfileId,
                     language = Language,
                     screenshotHotkey = ScreenshotHotkey,
-                    showUsageChart = ShowUsageChart,
-                    glassEnabled = GlassEnabled,
-                    glassOpacity = GlassOpacity
+                    showUsageChart = ShowUsageChart
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。

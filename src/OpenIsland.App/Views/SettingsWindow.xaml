@@ -121,24 +121,6 @@
                             Click="HotkeyBox_Click" PreviewKeyDown="HotkeyBox_PreviewKeyDown"/>
                 </StackPanel>
 
-                <!-- ── 毛玻璃 / Acrylic glass ── -->
-                <TextBlock Text="{Binding [Settings_Glass], Source={x:Static svc:Loc.Instance}}"
-                           FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,22,0,0"/>
-                <TextBlock Margin="0,4,0,8" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
-                           Text="{Binding [Settings_Glass_Desc], Source={x:Static svc:Loc.Instance}}"/>
-                <CheckBox x:Name="GlassCheck" Foreground="#C7C7CC"
-                          Content="{Binding [Settings_Glass_Enable], Source={x:Static svc:Loc.Instance}}"
-                          Checked="Glass_Changed" Unchecked="Glass_Changed"/>
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                    <TextBlock Text="{Binding [Settings_Glass_Opacity], Source={x:Static svc:Loc.Instance}}"
-                               Foreground="#C7C7CC" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <Slider x:Name="GlassSlider" Width="200" Minimum="20" Maximum="100"
-                            IsSnapToTickEnabled="True" TickFrequency="5" VerticalAlignment="Center"
-                            ValueChanged="GlassSlider_Changed"/>
-                    <TextBlock x:Name="GlassVal" Foreground="#8E8E93"
-                               VerticalAlignment="Center" Margin="10,0,0,0"/>
-                </StackPanel>
-
                 <!-- ── 工作区目录 ── -->
                 <TextBlock Text="{Binding [Settings_Workspaces], Source={x:Static svc:Loc.Instance}}"
                            FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,22,0,0"/>

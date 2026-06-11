@@ -12,9 +12,6 @@ public partial class DynamicIslandWindow : Window
 {
     private readonly DynamicIslandViewModel _viewModel;
     private readonly WorkspaceSettings _settings;
-    // 岛主背景（MainBorder）的原始纯色 Brush（#0D0D0D）——
-    // 毛玻璃关闭时恢复用；开启时取它的 RGB 配上用户设的 alpha。
-    private readonly SolidColorBrush _originalIslandBrush;
     private bool _isDragging;
     private Point _dragStartPoint;
 
@@ -37,120 +34,11 @@ public partial class DynamicIslandWindow : Window
         DataContext = viewModel;
 
         Width = NormalWidth;
-        // 启动时记下原始背景，毛玻璃开/关都基于这份"出厂色"换算，避免反复叠 alpha 跑偏
-        _originalIslandBrush = (SolidColorBrush)MainBorder.Background;
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         // VM 请求播放一次小章鱼动画（媒体控制 → headphones 等）→ 转给精灵控件
         _viewModel.PlaySprite += name => Dispatcher.BeginInvoke(() => StatusSprite.PlayOnce(name));
         Loaded += (_, _) => PositionAtTopCenter();
-
-        // 毛玻璃：设置变化 → 实时重应用；岛移动/变形 → 立即重采一帧背景（不等下个 tick）。
-        SourceInitialized += (_, _) => ApplyGlass();
-        _settings.Changed += (_, _) => Dispatcher.BeginInvoke(ApplyGlass);
-        LocationChanged += (_, _) => UpdateGlassFrame();
-        SizeChanged += (_, _) => UpdateGlassFrame();
-        MainBorder.SizeChanged += (_, _) => UpdateGlassFrame();
-    }
-
-    // ── Apple 风毛玻璃（自绘）──
-    // 为什么不用 DWM accent（SetWindowCompositionAttribute）：accent 背板永远铺满整个
-    // 矩形 hwnd，而岛是 ULW 分层窗口、SetWindowRgn 裁不掉（实测），圆角外会露出
-    // 难看的直角磨砂板。自绘方案：定时把岛背后的屏幕截下来 → 缩小（=模糊）→ 按用户
-    // 不透明度叠深色 tint → 设为 MainBorder 的背景刷。背景刷被 Border 的 CornerRadius
-    // 天然裁剪，胶囊形状/阴影边距完整保留，展开后的圆角同样干净。
-    // 自捕获问题：截屏会把岛自己拍进去（反馈回路越叠越黑）—— 截图瞬间给窗口挂
-    // WDA_EXCLUDEFROMCAPTURE（Win10 2004+）把自己从捕获里剔除，拍完立刻恢复。
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
-    private static extern bool DeleteObject(IntPtr hObject);
-    private const uint WDA_NONE = 0x0, WDA_EXCLUDEFROMCAPTURE = 0x11;
-
-    private System.Windows.Threading.DispatcherTimer? _glassTimer;
-
-    /// <summary>按设置开/关毛玻璃：开 → 启动 150ms 重采定时器并立即出第一帧；关 → 恢复纯色。</summary>
-    private void ApplyGlass()
-    {
-        if (_settings.GlassEnabled)
-        {
-            if (_glassTimer == null)
-            {
-                _glassTimer = new System.Windows.Threading.DispatcherTimer
-                { Interval = TimeSpan.FromMilliseconds(150) };
-                _glassTimer.Tick += (_, _) => UpdateGlassFrame();
-            }
-            _glassTimer.Start();
-            UpdateGlassFrame();
-        }
-        else
-        {
-            _glassTimer?.Stop();
-            MainBorder.Background = _originalIslandBrush;
-        }
-    }
-
-    /// <summary>截一帧岛背后的屏幕 → 1/10 缩小（即模糊）→ 叠 tint → 设为岛背景。全程 try/catch，失败保持上一帧。</summary>
-    private void UpdateGlassFrame()
-    {
-        if (!_settings.GlassEnabled || !IsVisible || MainBorder.ActualWidth < 4) return;
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (hwnd == IntPtr.Zero) return;
-
-        try
-        {
-            var src = PresentationSource.FromVisual(this);
-            double sx = src?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-            double sy = src?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-            var origin = MainBorder.PointToScreen(new Point(0, 0)); // 物理像素
-            int w = (int)Math.Round(MainBorder.ActualWidth * sx);
-            int h = (int)Math.Round(MainBorder.ActualHeight * sy);
-            if (w < 4 || h < 4) return;
-
-            using var shot = new System.Drawing.Bitmap(w, h);
-            // 截图瞬间把自己从屏幕捕获里剔除（窗口在屏幕上仍正常显示，只影响捕获）
-            SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
-            try
-            {
-                using var g = System.Drawing.Graphics.FromImage(shot);
-                g.CopyFromScreen((int)origin.X, (int)origin.Y, 0, 0,
-                    new System.Drawing.Size(w, h));
-            }
-            finally
-            {
-                SetWindowDisplayAffinity(hwnd, WDA_NONE);
-            }
-
-            // 1/10 双线性缩小，再由 ImageBrush 拉伸回去 = 强力箱式模糊；小图上直接叠 tint
-            int bw = Math.Max(2, w / 10), bh = Math.Max(2, h / 10);
-            using var small = new System.Drawing.Bitmap(bw, bh);
-            using (var g2 = System.Drawing.Graphics.FromImage(small))
-            {
-                g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
-                g2.DrawImage(shot, 0, 0, bw, bh);
-                byte a = (byte)Math.Round(_settings.GlassOpacity * 2.55);
-                var c = _originalIslandBrush.Color;
-                using var tint = new System.Drawing.SolidBrush(
-                    System.Drawing.Color.FromArgb(a, c.R, c.G, c.B));
-                g2.FillRectangle(tint, 0, 0, bw, bh);
-            }
-
-            var hbmp = small.GetHbitmap();
-            try
-            {
-                var bs = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
-                    hbmp, IntPtr.Zero, Int32Rect.Empty,
-                    System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
-                bs.Freeze();
-                MainBorder.Background = new ImageBrush(bs) { Stretch = Stretch.Fill };
-            }
-            finally { DeleteObject(hbmp); }
-        }
-        catch
-        {
-            // 截屏/转换偶发失败（锁屏、显示切换等）：保持上一帧，下个 tick 再试
-            try { SetWindowDisplayAffinity(hwnd, WDA_NONE); } catch { }
-        }
     }
 
     /// <summary>圆形关闭按钮：小章鱼挥手拜拜，约 3 秒后隐藏灵动岛（托盘菜单可再显示）。</summary>
