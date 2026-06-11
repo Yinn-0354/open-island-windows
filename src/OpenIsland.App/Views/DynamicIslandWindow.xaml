@@ -713,6 +713,39 @@
                                     </Border>
                                 </Popup>
 
+                                <!-- 会话来源筛选：三态循环 全部(▦)→仅终端(⌨)→仅客户端(🖥)。
+                                     依据 ClaudeMetadata.Entrypoint 区分终端 / Claude Desktop 会话。 -->
+                                <Button x:Name="SrcFilterBtn" Cursor="Hand" Margin="6,0,0,0"
+                                        FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                        Command="{Binding CycleSourceFilterCommand}"
+                                        ToolTip="{Binding SourceFilterTip}">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Fb" Background="#252320" BorderBrush="#3A3631"
+                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                                <TextBlock x:Name="FbIco" Text="&#xE71D;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Fb" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                                <!-- 1=仅终端：命令行字形；高亮边框提示"筛选生效中" -->
+                                                <DataTrigger Binding="{Binding SourceFilter}" Value="1">
+                                                    <Setter TargetName="FbIco" Property="Text" Value="&#xE756;"/>
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
+                                                </DataTrigger>
+                                                <!-- 2=仅客户端：显示器字形 -->
+                                                <DataTrigger Binding="{Binding SourceFilter}" Value="2">
+                                                    <Setter TargetName="FbIco" Property="Text" Value="&#xE7F4;"/>
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
+                                                </DataTrigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+
                                 </StackPanel>
 
                                 <TextBlock Grid.Column="2" Text="{Binding GlobalModelStatus}"

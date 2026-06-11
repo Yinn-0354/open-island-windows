@@ -10,6 +10,7 @@ All notable changes to Open Island will be documented here.
 
 - **网页功能栏** —— 每张会话卡输入框上方新增功能栏：模型下拉（全系 Claude 档，选中即注入 `/model` 实时切换）；输入 `/` 弹出命令自动补全面板（如 `/r` 列出 resume/review/rewind，点击选用，与 Claude Code 客户端一致）；页面右上角日/夜主题切换（localStorage 记住）
 - **hook PID 绑定** —— hook 子进程沿父链上报 claude.exe 祖先 PID（payload 注入 `open_island_ppid`），岛端维护 session↔进程绑定：网页回复/快捷回复/切模型注入时**最优先**用绑定精确定位终端，彻底解决"同目录多会话"定位歧义；resume 换进程后下一个 hook 事件自动刷新
+- **会话来源筛选** —— 命令栏新增三态按钮：全部 → 仅终端(CLI) → 仅客户端(Claude Desktop) 循环切换（依据 `ClaudeMetadata.Entrypoint`），筛选生效时按钮高亮并切换对应字形，悬停提示当前模式
 
 ### Fixed
 

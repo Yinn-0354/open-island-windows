@@ -118,6 +118,38 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>区域截图：唤起全屏框选覆盖层，松手裁剪并复制到剪贴板（亦可用全局快捷键触发）。</summary>
     [RelayCommand] private void Screenshot() => _screenshot.Capture();
 
+    // ── 会话来源筛选（命令栏按钮，三态循环）──
+    // 0=全部，1=仅终端(CLI)，2=仅客户端(Claude Desktop)。依据 ClaudeMetadata.Entrypoint
+    //（"claude-desktop" 为客户端，其余/缺失按终端算）。仅内存态，不持久化。
+    [ObservableProperty] private int _sourceFilter;
+
+    /// <summary>筛选按钮 ToolTip（随状态/语言重建）。</summary>
+    [ObservableProperty] private string _sourceFilterTip = "";
+
+    partial void OnSourceFilterChanged(int value)
+    {
+        SourceFilterTip = Loc.Get(value switch
+        {
+            1 => "Island_SrcFilter_Cli",
+            2 => "Island_SrcFilter_Desktop",
+            _ => "Island_SrcFilter_All",
+        });
+        RefreshSessions();
+    }
+
+    /// <summary>命令栏来源筛选按钮：全部 → 仅终端 → 仅客户端 → 全部 循环。</summary>
+    [RelayCommand]
+    private void CycleSourceFilter() => SourceFilter = (SourceFilter + 1) % 3;
+
+    /// <summary>该会话是否通过当前来源筛选（session 为 null 的占位卡按终端算）。</summary>
+    private bool PassesSourceFilter(AgentSession? session)
+    {
+        if (SourceFilter == 0) return true;
+        var isDesktop = string.Equals(session?.ClaudeMetadata?.Entrypoint, "claude-desktop",
+            StringComparison.OrdinalIgnoreCase);
+        return SourceFilter == 2 ? isDesktop : !isDesktop;
+    }
+
     // ── 余额行 ↔ 最近七天 token 柱状图 切换 ──
 
     /// <summary>false = 显示 5h 余额（默认）；true = 显示最近七天 token 柱状图。持久化，重启灵动岛恢复关闭时状态。</summary>
@@ -292,6 +324,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
         // 网页同步默认关，ToolTip 先放使用说明（开启后换成访问地址）
         WebSyncTip = Loc.Get("Web_Off_Tip");
+        SourceFilterTip = Loc.Get("Island_SrcFilter_All");
 
         // 启动时把提示音开关对齐持久化值，并同步到 SoundService —— 否则 SoundService.Enabled
         // 默认 true，用户上次关了重启后仍会响一次才被纠正。
@@ -337,6 +370,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             // 地球按钮 ToolTip 是代码侧动态文案，语言切换时按新语言重建
             //（开启失败的 "⚠ " 一次性错误提示被覆盖成默认说明可接受）。
             WebSyncTip = WebSyncOn ? Loc.Format("Web_On", _webSync.GetUrl()) : Loc.Get("Web_Off_Tip");
+            // 来源筛选按钮 ToolTip 同理
+            SourceFilterTip = Loc.Get(SourceFilter switch
+            { 1 => "Island_SrcFilter_Cli", 2 => "Island_SrcFilter_Desktop", _ => "Island_SrcFilter_All" });
         });
     }
 
@@ -652,11 +688,13 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             {
                 assignedIds.Add(session.Id);
                 if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
+                if (!PassesSourceFilter(session)) continue; // 来源筛选（全部/终端/客户端）
                 desired.Add((session.Id, session, null));
             }
             else
             {
                 if (IsHiddenByDismiss(r.SessionId, null)) continue;
+                if (!PassesSourceFilter(null)) continue;    // 占位卡按终端算
                 desired.Add((r.SessionId, null, r));
             }
         }

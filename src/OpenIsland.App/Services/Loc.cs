@@ -168,6 +168,9 @@ public sealed class Loc : INotifyPropertyChanged
         ["Web_Off_Tip"] = "网页同步：手机/平板实时查看并回复 CLI 与客户端会话（点击开启，本机局域网可访问）",
         ["Web_On"] = "已开启 {0} —— 链接已复制到剪贴板，点击关闭",
         ["Island_DotSync_Tip"] = "在网页只显示此对话（可多选并行展示；再点一次取消选中）",
+        ["Island_SrcFilter_All"] = "显示全部对话（点击切换：仅终端 → 仅客户端）",
+        ["Island_SrcFilter_Cli"] = "仅显示终端 (CLI) 对话（点击切换：仅客户端）",
+        ["Island_SrcFilter_Desktop"] = "仅显示客户端 (Claude Desktop) 对话（点击切换：全部）",
     };
 
     // ── 英文表 ──────────────────────────────────────────────────────────────
@@ -274,5 +277,8 @@ public sealed class Loc : INotifyPropertyChanged
         ["Web_Off_Tip"] = "Web sync: view & reply to CLI / desktop sessions from your phone or tablet (click to start; LAN access)",
         ["Web_On"] = "Running at {0} — URL copied to clipboard; click to stop",
         ["Island_DotSync_Tip"] = "Show only this conversation on the web page (multi-select for side-by-side; click again to deselect)",
+        ["Island_SrcFilter_All"] = "Showing all conversations (click: terminal only → desktop only)",
+        ["Island_SrcFilter_Cli"] = "Terminal (CLI) conversations only (click: desktop only)",
+        ["Island_SrcFilter_Desktop"] = "Claude Desktop conversations only (click: show all)",
     };
 }
