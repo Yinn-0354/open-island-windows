@@ -41,6 +41,18 @@ public class PixelStatusSprite : Image
     /// <summary>显示放大倍数：原生帧 × Scale。必须整数，保持像素清晰。</summary>
     public int Scale { get; set; } = 2;
 
+    /// <summary>
+    /// 视觉缩放（RenderTransform 级），不占额外布局空间 —— 头部行高固定 44px 放不下
+    /// Scale=2 的 64px，又嫌 32px 太小时用它微调（如 1.3）。非整数倍会有轻微像素不均，
+    /// 小尺寸下可接受；与弹跳平移组合在同一个 TransformGroup 里互不干扰。
+    /// </summary>
+    public double Zoom
+    {
+        get => _zoom.ScaleX;
+        set { _zoom.ScaleX = value; _zoom.ScaleY = value; }
+    }
+    private readonly ScaleTransform _zoom = new(1, 1);
+
     /// <summary>多 agent（同时多个会话在跑）：为 true 且处于 Running 时，改播"两只章鱼讨论"(multiagent.png)。</summary>
     public static readonly DependencyProperty MultiAgentProperty =
         DependencyProperty.Register(nameof(MultiAgent), typeof(bool), typeof(PixelStatusSprite),
@@ -85,7 +97,9 @@ public class PixelStatusSprite : Image
         UseLayoutRounding = true;
         SnapsToDevicePixels = true;
         Stretch = Stretch.Fill;
-        RenderTransform = _bounce;
+        // Zoom（中心缩放）在前、弹跳平移在后 —— 平移量不被缩放影响，动画手感不变
+        RenderTransformOrigin = new Point(0.5, 0.5);
+        RenderTransform = new TransformGroup { Children = { _zoom, _bounce } };
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _timer.Tick += (_, _) => Advance();
         _idleCycle = new DispatcherTimer { Interval = IdleCycleInterval };
