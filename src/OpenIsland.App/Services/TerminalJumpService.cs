@@ -1125,6 +1125,19 @@ public partial class TerminalJumpService
     }
 
     /// <summary>
+    /// 读取承载该 claude pid 的终端窗口标题（沿父链找宿主窗口）。找不到返回 null。
+    /// 用途：同 cwd 多会话时按"窗口标题 ↔ 会话标题"做唯一去歧义（Claude CLI 会把
+    /// 会话摘要写进终端 tab/窗口标题）。注意 WT 单窗多 tab 时窗口标题只反映活动 tab。
+    /// </summary>
+    public string? GetTerminalTitleByPidChain(int claudePid)
+    {
+        var hwnd = FindTerminalHwndByPidChain(claudePid);
+        if (hwnd == IntPtr.Zero) return null;
+        var sb = new StringBuilder(512);
+        return GetWindowText(hwnd, sb, 512) > 0 ? sb.ToString() : null;
+    }
+
+    /// <summary>
     /// 末位兜底：父链 / AttachConsole 都没拿到 claude 对应的终端时，根据可见窗口的
     /// 标题给所有终端宿主窗口打分，挑分数最高的激活。
     ///

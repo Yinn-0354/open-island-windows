@@ -4,6 +4,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using OpenIsland.Core;
 using OpenIsland.Core.Models;
 
 namespace OpenIsland.App.Services;
@@ -209,6 +210,8 @@ public sealed class WebSyncService : IDisposable
                     WriteResponse(stream, "200 OK", "text/html; charset=utf-8", IndexHtml);
                 else if (method == "GET" && (path == "/api/sessions" || path.StartsWith("/api/sessions?")))
                     WriteResponse(stream, "200 OK", "application/json; charset=utf-8", BuildSessionsJson());
+                else if (method == "GET" && path == "/api/models")
+                    WriteResponse(stream, "200 OK", "application/json; charset=utf-8", BuildModelsJson());
                 else if (method == "POST" && path == "/api/send")
                     WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSend(body));
                 else
@@ -247,12 +250,46 @@ public sealed class WebSyncService : IDisposable
             //（Task 的延续跑在 UI Dispatcher 上，与这里的阻塞互不相干，无死锁）。
             var task = app.Dispatcher.Invoke(() => _sessionManager.SendQuickReplyAsync(id!, text!));
             var result = task.GetAwaiter().GetResult();
-            return JsonSerializer.Serialize(new { ok = result.Ok, reason = result.Reason ?? "" });
+            return JsonSerializer.Serialize(new
+            {
+                ok = result.Ok,
+                reason = result.Reason ?? "",
+                reasonText = result.Ok ? "" : ReasonText(result.Reason)
+            });
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { ok = false, reason = ex.Message });
+            return JsonSerializer.Serialize(new { ok = false, reason = ex.Message, reasonText = ex.Message });
         }
+    }
+
+    /// <summary>注入失败原因 → 网页上能看懂的人话（与灵动岛 QuickReplyReasonText 同一套原因码）。</summary>
+    private static string ReasonText(string? reason) => reason switch
+    {
+        "empty" => "内容为空",
+        "too long" => "内容过长",
+        "no-session" => "会话不存在",
+        "no-terminal" or "no-terminal-match" => "没找到该会话的终端（同目录开了多个会话且无法用标题区分时，为安全起见不发送）",
+        "foreground-mismatch" => "没能把终端切到前台，请在电脑上重试",
+        "foreground-lost" => "终端失焦，文字已粘贴但未提交",
+        "inject-error" => "注入出错，已取消",
+        "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop 窗口",
+        "clipboard-failed" => "电脑剪贴板被占用，请重试",
+        _ => "发送失败"
+    };
+
+    /// <summary>GET /api/models：内置 Claude 模型档（带 /model 可用的 slug），网页功能栏的模型下拉用。</summary>
+    private static string BuildModelsJson()
+    {
+        try
+        {
+            var items = ModelPresets.BuiltInClaude
+                .Where(p => !string.IsNullOrEmpty(p.ClaudeModelSlug))
+                .Select(p => new { name = p.Name, slug = p.ClaudeModelSlug })
+                .ToList();
+            return JsonSerializer.Serialize(items);
+        }
+        catch { return "[]"; }
     }
 
     /// <summary>写一个完整的 HTTP/1.1 响应（Content-Length 必须是 UTF8 字节数，不是字符数）。</summary>
@@ -414,9 +451,11 @@ public sealed class WebSyncService : IDisposable
                  font-family:-apple-system,'Segoe UI',Roboto,sans-serif; }
           .wrap { max-width:760px; margin:0 auto; }
           .wrap.wide { max-width:1560px; }   /* 多选并行时放宽页面 */
-          h1 { font-size:18px; margin:0 0 2px 0; }
+          .topbar { display:flex; align-items:center; }
+          h1 { font-size:18px; margin:0 0 2px 0; flex:1; }
+          .themebtn { background:#1c1c1f; border:1px solid #2a2a2e; color:#e7e7ea;
+                      border-radius:10px; padding:6px 12px; font-size:14px; cursor:pointer; }
           .sub { font-size:12px; color:#8a8a90; margin-bottom:14px; }
-          /* 多选并行：grid 自动分列（手机仍单列堆叠，平板/桌面并排） */
           #list.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
                        gap:12px; align-items:start; }
           #list.grid .card { margin-bottom:0; }
@@ -438,20 +477,50 @@ public sealed class WebSyncService : IDisposable
           .user { align-self:flex-end; background:#3a2a1f; }
           .assistant { align-self:flex-start; background:#26262b; }
           .empty { color:#6e6e74; font-size:12px; }
-          .composer { display:flex; gap:8px; margin-top:10px; }
+          /* 功能栏：输入栏上方（模型切换下拉等） */
+          .toolbar { display:flex; gap:8px; margin-top:10px; }
+          .toolbar select { background:#101013; color:#9aa0a6; border:1px solid #2a2a2e;
+                  border-radius:8px; padding:5px 8px; font-size:12px; }
+          .composer { display:flex; gap:8px; margin-top:8px; position:relative; }
           .composer input { flex:1; background:#101013; color:#e7e7ea; font-size:14px;
                   border:1px solid #2a2a2e; border-radius:10px; padding:9px 12px; outline:none; }
           .composer input:focus { border-color:#CC785C; }
           .composer button { background:#CC785C; color:#fff; border:none; border-radius:10px;
-                  padding:9px 16px; font-size:13px; flex:none; }
+                  padding:9px 16px; font-size:13px; flex:none; cursor:pointer; }
           .composer button:disabled { opacity:.5; }
+          /* / 命令自动补全面板（悬浮在输入框上方） */
+          .acmenu { display:none; position:absolute; bottom:100%; left:0; margin-bottom:6px;
+                    min-width:260px; max-height:230px; overflow:auto; z-index:9;
+                    background:#1c1c1f; border:1px solid #3a3a3e; border-radius:10px; }
+          .acmenu div { padding:7px 11px; font-size:13px; cursor:pointer; }
+          .acmenu div:hover { background:#26262b; }
+          .acmenu b { color:#CC785C; font-weight:600; }
+          .acmenu span { color:#8a8a90; margin-left:8px; font-size:12px; }
           .sendmsg { font-size:11px; color:#9aa0a6; margin-top:5px; min-height:14px; }
           .sendmsg.err { color:#e07a6a; }
+          /* ── 白天模式 ── */
+          body.light { background:#f2f3f5; color:#1c1c1f; }
+          .light .card { background:#ffffff; border-color:#e1e2e6; }
+          .light .card.featured { border-color:#CC785C; }
+          .light .themebtn { background:#ffffff; border-color:#d8dade; color:#1c1c1f; }
+          .light .badge { background:#eceef1; color:#5a5f66; }
+          .light .star { background:#f7e8df; }
+          .light .msg.assistant { background:#eef0f3; }
+          .light .msg.user { background:#f7e3d6; }
+          .light .toolbar select { background:#fff; color:#5a5f66; border-color:#d8dade; }
+          .light .composer input { background:#fff; color:#1c1c1f; border-color:#d8dade; }
+          .light .acmenu { background:#fff; border-color:#d8dade; }
+          .light .acmenu div:hover { background:#f0f1f4; }
+          .light .sub { color:#7a7f87; }
+          .light .time { color:#9aa0a6; }
         </style>
         </head>
         <body>
         <div class="wrap">
-          <h1>Open Island · Web Sync</h1>
+          <div class="topbar">
+            <h1>Open Island · Web Sync</h1>
+            <button class="themebtn" id="themeBtn" onclick="toggleTheme()">&#127769;</button>
+          </div>
           <div class="sub">自动刷新，可直接回复 · 在灵动岛点会话圆点 → 只显示选中的对话（可多选并行）</div>
           <div id="list"><div class="empty">Loading…</div></div>
         </div>
@@ -464,10 +533,77 @@ public sealed class WebSyncService : IDisposable
           if(p==='Completed')return '#9E9E9E';
           return '#4CAF50';
         }
-        // 输入框聚焦/有内容时跳过整页重绘，避免打字被轮询打断
+        // ── 主题：localStorage 记住日/夜模式 ──
+        function applyTheme(){
+          const light=localStorage.getItem('oi-theme')==='light';
+          document.body.classList.toggle('light',light);
+          document.getElementById('themeBtn').innerHTML=light?'&#9728;&#65039;':'&#127769;';
+        }
+        function toggleTheme(){
+          const light=localStorage.getItem('oi-theme')==='light';
+          localStorage.setItem('oi-theme',light?'dark':'light');
+          applyTheme();
+        }
+        // ── 模型列表（功能栏下拉），启动时取一次 ──
+        let MODEL_OPTS='';
+        async function loadModels(){
+          try{
+            const r=await fetch('/api/models');
+            const ms=await r.json();
+            MODEL_OPTS=ms.map(m=>'<option value="'+esc(m.slug)+'">'+esc(m.name)+'</option>').join('');
+          }catch(e){}
+        }
+        function modelChange(sel){
+          const slug=sel.value;
+          if(!slug)return;
+          sel.value='';
+          sendText(sel.getAttribute('data-id'),'/model '+slug);
+        }
+        // ── / 命令自动补全（与 Claude Code 客户端一致的体验：/r 出 r 开头命令，点击选用） ──
+        const SLASH=[
+          ['/add-dir','添加工作目录'],['/agents','管理子代理'],['/clear','清空对话'],
+          ['/compact','压缩上下文'],['/config','打开设置'],['/context','上下文占用'],
+          ['/cost','本次花费'],['/doctor','诊断安装'],['/exit','退出'],
+          ['/export','导出对话'],['/help','帮助'],['/hooks','管理 hooks'],
+          ['/ide','连接 IDE'],['/init','生成 CLAUDE.md'],['/login','登录'],
+          ['/logout','登出'],['/mcp','管理 MCP'],['/memory','编辑记忆'],
+          ['/model','切换模型'],['/output-style','输出风格'],['/permissions','权限设置'],
+          ['/pr-comments','PR 评论'],['/resume','恢复会话'],['/review','代码评审'],
+          ['/rewind','回退检查点'],['/status','状态'],['/statusline','状态栏设置'],
+          ['/terminal-setup','终端回车设置'],['/todos','待办列表'],['/usage','用量'],
+          ['/vim','Vim 模式']
+        ];
+        function onType(input){
+          const menu=input.parentElement.querySelector('.acmenu');
+          const v=input.value;
+          if(v.startsWith('/')&&!v.includes(' ')){
+            const hits=SLASH.filter(c=>c[0].startsWith(v)).slice(0,9);
+            if(hits.length){
+              menu.innerHTML=hits.map(c=>
+                '<div onmousedown="pick(event,this)" data-cmd="'+c[0]+'"><b>'+c[0]+'</b><span>'+c[1]+'</span></div>').join('');
+              menu.style.display='block';
+              return;
+            }
+          }
+          menu.style.display='none';
+        }
+        function pick(ev,item){
+          ev.preventDefault(); // mousedown 抢在 blur 前；阻止默认避免输入框失焦
+          const menu=item.parentElement;
+          const input=menu.parentElement.querySelector('input');
+          input.value=item.getAttribute('data-cmd')+' ';
+          menu.style.display='none';
+          input.focus();
+        }
+        function hideAc(input){
+          // blur 稍等一拍再收 —— 让 acmenu 的 mousedown 先处理
+          setTimeout(()=>{const m=input.parentElement.querySelector('.acmenu');
+            if(m)m.style.display='none';},150);
+        }
+        // ── 刷新与发送 ──
         function anyComposerBusy(){
           const a=document.activeElement;
-          if(a&&a.tagName==='INPUT')return true;
+          if(a&&(a.tagName==='INPUT'||a.tagName==='SELECT'))return true;
           for(const i of document.querySelectorAll('.composer input'))
             if(i.value)return true;
           return false;
@@ -477,7 +613,6 @@ public sealed class WebSyncService : IDisposable
           try{
             const r=await fetch('/api/sessions');
             const data=await r.json();
-            // 选中模式（服务端只回选中的会话，featured=true）：多于一张时并行分列展示
             const selMode=data.length>0&&data[0].featured;
             const multi=selMode&&data.length>1;
             document.querySelector('.wrap').classList.toggle('wide',multi);
@@ -499,10 +634,16 @@ public sealed class WebSyncService : IDisposable
                 +'<div class="time">'+esc(s.updated)+'</div>'
                 +'</div>'
                 +'<div class="msgs">'+msgs+'</div>'
+                +'<div class="toolbar">'
+                +'<select class="mdl" data-id="'+esc(s.id)+'" onchange="modelChange(this)">'
+                +'<option value="">&#9881; 切换模型…</option>'+MODEL_OPTS+'</select>'
+                +'</div>'
                 +'<div class="composer">'
-                +'<input type="text" placeholder="回复… / Reply…" data-id="'+esc(s.id)+'"'
+                +'<div class="acmenu"></div>'
+                +'<input type="text" placeholder="回复… 输入 / 出命令" data-id="'+esc(s.id)+'"'
+                +' oninput="onType(this)" onblur="hideAc(this)"'
                 +' onkeydown="if(event.key===&quot;Enter&quot;)sendMsg(this)">'
-                +'<button onclick="sendMsg(this.previousElementSibling)">发送</button>'
+                +'<button onclick="sendMsg(this.parentElement.querySelector(&quot;input&quot;))">发送</button>'
                 +'</div>'
                 +'<div class="sendmsg" id="sm-'+esc(s.id)+'"></div>'
                 +'</div>';
@@ -511,31 +652,33 @@ public sealed class WebSyncService : IDisposable
               ||'<div class="empty">No sessions</div>';
           }catch(e){/* 服务端刚关 / 网络抖动 —— 下个 tick 再试 */}
         }
-        async function sendMsg(input){
-          const id=input.getAttribute('data-id');
-          const text=input.value.trim();
-          if(!text)return;
-          const btn=input.parentElement.querySelector('button');
+        async function sendText(id,text,inputToClear){
           const sm=document.getElementById('sm-'+id);
-          btn.disabled=true; if(sm){sm.textContent='发送中… sending';sm.className='sendmsg';}
+          if(sm){sm.textContent='发送中… sending';sm.className='sendmsg';}
           try{
             const r=await fetch('/api/send',{method:'POST',
               headers:{'Content-Type':'application/json'},
               body:JSON.stringify({id:id,text:text})});
             const res=await r.json();
             if(res.ok){
-              input.value='';
-              if(sm)sm.textContent='已发送 ✓ sent';
-              setTimeout(refresh,1200);
+              if(inputToClear)inputToClear.value='';
+              if(sm)sm.textContent='已发送 &#10003; sent';
+              if(sm)sm.innerHTML='已发送 ✓ sent';
+              setTimeout(refresh,1500);
             }else{
-              if(sm){sm.textContent='失败 failed: '+(res.reason||'');sm.className='sendmsg err';}
+              if(sm){sm.textContent='失败：'+(res.reasonText||res.reason||'');sm.className='sendmsg err';}
             }
           }catch(e){
             if(sm){sm.textContent='网络错误 network error';sm.className='sendmsg err';}
           }
-          btn.disabled=false;
         }
-        refresh();
+        function sendMsg(input){
+          const text=input.value.trim();
+          if(!text)return;
+          sendText(input.getAttribute('data-id'),text,input);
+        }
+        applyTheme();
+        loadModels().then(refresh);
         setInterval(refresh,2500);
         </script>
         </body>

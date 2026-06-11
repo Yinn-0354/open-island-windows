@@ -426,6 +426,24 @@ public class SessionManager : IDisposable
                     // 归一化 event name（删 underscore + lowercase）以兼容 Claude Code 实际的 PascalCase
                     var eventName = claudePayload?.HookEventName?.Replace("_", "").ToLowerInvariant();
 
+                    // hook 子进程上报的 claude.exe 祖先 PID（open_island_ppid，见 Hooks/Program.cs）——
+                    // session↔终端进程的最硬绑定，供注入（网页回复/快捷回复/切模型）在同 cwd
+                    // 多会话歧义时精确定位。每个 hook 事件都刷新（resume 换进程后自动跟上）。
+                    if (claudePayload?.SessionId is { Length: > 0 } bindSid
+                        && eventData.TryGetProperty("open_island_ppid", out var ppidEl)
+                        && ppidEl.ValueKind == System.Text.Json.JsonValueKind.Number
+                        && ppidEl.TryGetInt32(out var hookClaudePid) && hookClaudePid > 0)
+                    {
+                        lock (_pidBindLock)
+                        {
+                            if (!_sessionClaudePid.TryGetValue(bindSid, out var old) || old != hookClaudePid)
+                            {
+                                _sessionClaudePid[bindSid] = hookClaudePid;
+                                TerminalJumpService.InjectDiag($"bind: session={bindSid} claudePid={hookClaudePid}");
+                            }
+                        }
+                    }
+
                     // PostToolUse 是"终端镜像反馈"信号 —— 用户在 Claude 终端按 1/2 同意后 tool 跑完触发，
                     // 此时灵动岛上原 PreToolUse 拉起的橙色卡片仍在等用户点（hook 还没收到 directive）。
                     // 见到 PostToolUse 就把卡片当用户已同意 resolve 掉，UI 立刻清。
@@ -1152,9 +1170,26 @@ public class SessionManager : IDisposable
     /// 给注入类操作（快捷回复 / 后续 /model 切换）解析终端 PID：仅 cwd / sessionId 正向匹配，
     /// 刻意不用 ResolveClaudeProcessId 的"唯一 claude 兜底"——盲发到错误会话危害更大（review #7）。
     /// </summary>
+    // session.Id → 该会话所在 claude.exe 的 PID（来自 hook 的 open_island_ppid 上报）。
+    // 内存态：app 重启后清空，会话一有 hook 活动就重新绑上。
+    private readonly object _pidBindLock = new();
+    private readonly Dictionary<string, int> _sessionClaudePid = new(StringComparer.Ordinal);
+
     private int? ResolveTerminalPidForInjection(AgentSession session)
     {
         var running = _processMonitor.GetRunningSessions().ToList();
+
+        // 0) 最硬信号：hook 上报过的 session↔claudePid 绑定（进程还活着才用）。
+        //    同 cwd 多会话也能精确命中，且 resume 换进程后下一个 hook 事件即刷新。
+        lock (_pidBindLock)
+        {
+            if (_sessionClaudePid.TryGetValue(session.Id, out var bound)
+                && running.Any(r => r.ProcessId == bound))
+            {
+                TerminalJumpService.InjectDiag($"resolve: -> hook-bound pid={bound}");
+                return bound;
+            }
+        }
 
         // 只保留"终端宿主"的 claude（父进程是 shell/终端）——排除 Claude 桌面端主进程及其派生的
         // 大量子 claude.exe（它们不是 CLI 终端，会把候选池搅乱、让 cwd 匹配歧义/单候选兜底失效，
@@ -1171,7 +1206,36 @@ public class SessionManager : IDisposable
         var candidates = pool
             .Select(r => new TerminalCandidate(r.ProcessId, r.WorkingDirectory, r.SessionId))
             .ToList();
-        return TerminalTargeting.ResolvePid(wantCwd, session.Id, candidates);
+        var resolved = TerminalTargeting.ResolvePid(wantCwd, session.Id, candidates);
+        if (resolved != null) return resolved;
+
+        // cwd 歧义（同目录多会话）/ cwd 不可读时的安全兜底：按"终端窗口标题 ↔ 会话标题"
+        // 做 *唯一* 匹配 —— Claude CLI 会把会话摘要写进终端 tab/窗口标题，这正是人眼区分
+        // 同目录多会话的依据。仍坚持唯一才发：WT 单窗多 tab 时窗口标题只反映活动 tab，
+        // 命中 0 个或多个就继续拒绝（注入到错误会话的危害大于发不出去）。
+        var needle = session.Title?.Trim();
+        if (!string.IsNullOrEmpty(needle))
+        {
+            if (needle.Length > 24) needle = needle[..24]; // 标题可能被终端截断，取前缀匹配
+            if (needle.Length >= 4)
+            {
+                var hits = new List<int>();
+                foreach (var r in pool)
+                {
+                    var t = _terminalJumpService.GetTerminalTitleByPidChain(r.ProcessId);
+                    TerminalJumpService.InjectDiag($"resolve: title pid={r.ProcessId} title={t ?? "(none)"}");
+                    if (!string.IsNullOrEmpty(t) && t.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                        hits.Add(r.ProcessId);
+                }
+                if (hits.Count == 1)
+                {
+                    TerminalJumpService.InjectDiag($"resolve: -> title-unique pid={hits[0]}");
+                    return hits[0];
+                }
+                TerminalJumpService.InjectDiag($"resolve: title hits={hits.Count} (非唯一，拒绝)");
+            }
+        }
+        return null;
     }
 
     private static readonly HashSet<string> _terminalHostNames = new(StringComparer.OrdinalIgnoreCase)

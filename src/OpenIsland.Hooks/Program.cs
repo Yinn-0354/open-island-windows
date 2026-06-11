@@ -89,6 +89,24 @@ public class Program
                 return 0;
             }
 
+            // 把派生本 hook 的 claude.exe 祖先 PID 注入 payload（open_island_ppid）——
+            // 岛端据此把 session 精确绑定到终端进程，解决"同目录多会话"时注入（网页回复 /
+            // 快捷回复 / 切模型）定位歧义的问题。hook 可能经 cmd/sh 间接派生，沿父链上溯找。
+            try
+            {
+                if (payload.ValueKind == JsonValueKind.Object)
+                {
+                    var claudePid = FindClaudeAncestorPid();
+                    if (claudePid > 0)
+                    {
+                        var obj = System.Text.Json.Nodes.JsonObject.Create(payload)!;
+                        obj["open_island_ppid"] = claudePid;
+                        payload = JsonSerializer.SerializeToElement(obj);
+                    }
+                }
+            }
+            catch { /* 拿不到就不带，岛端回退旧的 cwd/标题匹配 */ }
+
             // 检测是否为交互式hook（需要长时间等待用户响应）
             bool isInteractive = IsInteractiveHook(source, payload);
 
@@ -312,6 +330,64 @@ public class Program
             return v == "stop";
         }
         return false;
+    }
+
+    // ── 沿父进程链找 claude.exe 祖先（Toolhelp 快照，几 ms）──
+    // hook 由 claude 派生但中间可能隔一层 cmd/sh，所以最多上溯 6 级、按进程名匹配。
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool Process32FirstW(IntPtr snap, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool Process32NextW(IntPtr snap, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
+    private static int FindClaudeAncestorPid()
+    {
+        const uint TH32CS_SNAPPROCESS = 0x2;
+        var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return 0;
+        try
+        {
+            // 一次快照建 pid → (ppid, exe) 表
+            var map = new Dictionary<uint, (uint Ppid, string Exe)>();
+            var entry = new ProcessEntry32 { dwSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessEntry32>() };
+            if (Process32FirstW(snap, ref entry))
+            {
+                do { map[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile); }
+                while (Process32NextW(snap, ref entry));
+            }
+
+            uint pid = (uint)Environment.ProcessId;
+            for (int i = 0; i < 6; i++)
+            {
+                if (!map.TryGetValue(pid, out var info) || info.Ppid == 0) return 0;
+                pid = info.Ppid;
+                if (!map.TryGetValue(pid, out var parent)) return 0;
+                // claude.exe（含自更新改名的 claude.exe.old.<ts>）
+                if (parent.Exe.StartsWith("claude", StringComparison.OrdinalIgnoreCase))
+                    return (int)pid;
+            }
+            return 0;
+        }
+        finally { CloseHandle(snap); }
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
