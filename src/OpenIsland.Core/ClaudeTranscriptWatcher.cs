@@ -106,7 +106,44 @@ public class ClaudeTranscriptWatcher : IDisposable
         // 静默检测 timer：每秒 tick，对超过阈值没写入的 transcript emit Idle
         _idleTickTimer = new Timer(_ => OnIdleTick(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
+        // FSW 兜底轮询（3s）：FileSystemWatcher 缓冲溢出（多会话狂写大 jsonl 时 64KB 很容易爆，
+        // OnError 只能记日志、事件已丢）或个别机器 FSW 根本不投递事件（实测存在）时，丢失的
+        // 更新无人补 —— 旧的"SessionManager 5s 补扫"迁移到本 watcher 时已移除。这里按 mtime
+        // 扫描全部 *.jsonl，有变化走与 OnChanged 同一条去抖处理路径。枚举几百个文件仅几 ms。
+        _pollTimer = new Timer(_ => PollTick(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+
         _logger?.LogInformation("ClaudeTranscriptWatcher started on {Dir}", dir);
+    }
+
+    private Timer? _pollTimer;
+    private readonly ConcurrentDictionary<string, DateTime> _polledMtimes = new();
+
+    /// <summary>mtime 轮询兜底：发现新文件/mtime 变化 → 走 OnChanged 的去抖处理。首轮只记账不触发
+    ///（启动全量扫描已经 emit 过，避免开机重复解析几百个文件）。</summary>
+    private void PollTick()
+    {
+        if (_disposed) return;
+        try
+        {
+            var dir = _discovery.ProjectsDirectory;
+            if (!Directory.Exists(dir)) return;
+            bool seeding = _polledMtimes.IsEmpty;
+            foreach (var path in Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories))
+            {
+                if (ClaudeTranscriptDiscovery.IsAgentSession(path)) continue;
+                DateTime m;
+                try { m = File.GetLastWriteTimeUtc(path); } catch { continue; }
+                if (_polledMtimes.TryGetValue(path, out var prev) && prev == m) continue;
+                _polledMtimes[path] = m;
+                if (seeding) continue;
+                OnChanged(this, new FileSystemEventArgs(
+                    WatcherChangeTypes.Changed, Path.GetDirectoryName(path)!, Path.GetFileName(path)));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Transcript poll tick failed");
+        }
     }
 
     /// <summary>
@@ -169,6 +206,8 @@ public class ClaudeTranscriptWatcher : IDisposable
         _debounceTimers.Clear();
         _idleTickTimer?.Dispose();
         _idleTickTimer = null;
+        _pollTimer?.Dispose();
+        _pollTimer = null;
     }
 
     public void Dispose()

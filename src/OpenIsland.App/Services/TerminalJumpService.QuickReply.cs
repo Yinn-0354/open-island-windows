@@ -228,14 +228,17 @@ public partial class TerminalJumpService
     {
         var app = System.Windows.Application.Current;
         if (app?.Dispatcher == null) return false;
-        // 剪贴板是全局独占资源，别的进程瞬间占用时 SetText 会抛 CLIPBRD_E_CANT_OPEN。
-        // 重试若干次（每次短暂退避）——这是注入前最后一步，失败=整条消息发不出去，值得多试几次。
+        // 剪贴板是全局独占资源：剪贴板历史(Win+V)/微信/输入法等会在每次变更后瞬间抢占，
+        // SetText(=SetDataObject copy:true) 还要做 OleFlushClipboard —— 正是
+        // CLIPBRD_E_CANT_OPEN 的高发点。改用 copy:false（不 flush，数据由本进程持有，
+        // 我们随后立刻粘贴，无需为"进程退出后保留"付出 flush 代价），并把重试窗口拉长到
+        // ~1.2s（16×75ms），足以骑过剪贴板监听者的短暂占用。
         return app.Dispatcher.Invoke(() =>
         {
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < 16; i++)
             {
-                try { System.Windows.Clipboard.SetText(text); return true; }
-                catch { System.Threading.Thread.Sleep(40); }
+                try { System.Windows.Clipboard.SetDataObject(text, false); return true; }
+                catch { System.Threading.Thread.Sleep(75); }
             }
             return false;
         });
@@ -249,12 +252,21 @@ public partial class TerminalJumpService
             if (app?.Dispatcher == null) return;
             app.Dispatcher.Invoke(() =>
             {
-                if (saved != null)
-                    System.Windows.Clipboard.SetText(saved);
-                else
-                    // 原内容非文本（图片/文件），SetText 时已被覆盖、无法完美还原；
-                    // 至少清掉我们注入的文字，不让回复内容残留在用户剪贴板里。
-                    System.Windows.Clipboard.Clear();
+                // 还原也做几次重试（非致命，尽力而为）
+                for (int i = 0; i < 4; i++)
+                {
+                    try
+                    {
+                        if (saved != null)
+                            System.Windows.Clipboard.SetText(saved);
+                        else
+                            // 原内容非文本（图片/文件），SetText 时已被覆盖、无法完美还原；
+                            // 至少清掉我们注入的文字，不让回复内容残留在用户剪贴板里。
+                            System.Windows.Clipboard.Clear();
+                        return;
+                    }
+                    catch { System.Threading.Thread.Sleep(50); }
+                }
             });
         }
         catch { }

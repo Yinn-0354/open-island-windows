@@ -14,6 +14,8 @@ All notable changes to Open Island will be documented here.
 ### Fixed
 
 - **网页发送失败（no-terminal-match）** —— 同 cwd 多会话时注入定位歧义被安全拒绝导致网页无法回复。三层修复：① hook PID 绑定（上）；② 绑定缺失时按"终端窗口标题 ↔ 会话标题"做唯一匹配兜底；③ 仍无法定位时网页显示人话原因（不再是裸代码）
+- **新会话卡片不出现 / 显示卡死** —— ClaudeTranscriptWatcher 完全依赖 FileSystemWatcher，多会话狂写大 jsonl 时 64KB 缓冲溢出丢事件（OnError 只能记日志），且个别机器 FSW 根本不投递事件（实测），而旧的"5s 补扫"迁移时已移除 → 丢失的更新无人兜底。新增 3s mtime 轮询兜底，走与 FSW 相同的去抖处理路径（实测合成新转录 8s 内上卡）
+- **发送提示"剪贴板被占用"** —— 注入写剪贴板从 SetText（带 OleFlushClipboard，CLIPBRD_E_CANT_OPEN 高发）改为 SetDataObject(copy:false) 并把重试窗口拉长到 ~1.2s，骑过剪贴板历史/微信/输入法的瞬间抢占；还原剪贴板也加重试
 
 - **安装 Skill** —— 模型命令栏新增"安装 Skill"按钮：粘贴 `claude plugin` 命令（支持连写 / `&&` / 换行）或 `owner/repo` 简写，后台 PowerShell 静默调用 claude CLI 安装，面板内实时显示进度与 CLI 真实输出。严格白名单校验防命令注入；任一命令不合法整体拒绝，绝不部分执行
 - **Apple 风毛玻璃** —— 设置中心新增"毛玻璃效果"开关 + 背景不透明度滑块（20-100%，250ms 去抖落盘），开关实时生效并持久化。自绘模糊方案：150ms 重采岛后方屏幕（截图瞬间用 WDA_EXCLUDEFROMCAPTURE 把岛自身剔出捕获，防反馈回路）→ 1/10 缩小即模糊 → 叠 tint 设为岛背景刷，被 Border 圆角天然裁剪 —— 胶囊形状/阴影完整保留，无 DWM accent 的矩形板伪影
