@@ -222,9 +222,22 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         else
         {
             _webSync.Stop();
+            _webSync.FeaturedSessionId = null; // 关同步 = 取消置顶
             WebSyncOn = false;
             WebSyncTip = Loc.Get("Web_Off_Tip");
+            foreach (var s in Sessions) s.IsWebFeatured = false;
         }
+    }
+
+    /// <summary>
+    /// 卡片状态圆点被点（仅网页同步开启时圆点可点）：把该会话置顶同步到网页 ——
+    /// 网页上排第一、带 ⭐、携带更长历史（60 条）；再点同一个圆点取消置顶。
+    /// </summary>
+    private void SyncSessionToWeb(string id)
+    {
+        if (string.IsNullOrEmpty(id) || !WebSyncOn) return;
+        _webSync.FeaturedSessionId = _webSync.FeaturedSessionId == id ? null : id;
+        foreach (var s in Sessions) s.IsWebFeatured = s.Id == _webSync.FeaturedSessionId;
     }
 
     [ObservableProperty] private bool _isExpanded;
@@ -288,8 +301,6 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
         // 余额行显示模式对齐持久化值（写 backing field 不触发落盘）。下次启动恢复关闭时的状态。
         _showUsageChart = settings.ShowUsageChart;
-        // 毛玻璃开关镜像（驱动外层 Border 的 Margin DataTrigger）
-        _glassOn = settings.GlassEnabled;
 
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
@@ -345,16 +356,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         await SwitchGlobalModelAsync(profile);
     }
 
-    /// <summary>毛玻璃是否开启（镜像 WorkspaceSettings.GlassEnabled）。外层 Border 的 Margin
-    /// DataTrigger 绑它 —— 玻璃开时收掉外边距，让 accent 模糊背板不在岛外露出。</summary>
-    [ObservableProperty] private bool _glassOn;
-
     private void OnSettingsChangedForModels(object? sender, EventArgs e)
-        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            OnPropertyChanged(nameof(ModelChoices));
-            GlassOn = _settings.GlassEnabled;
-        });
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(ModelChoices)));
 
     private async Task SwitchGlobalModelAsync(ModelProfile profile)
     {
@@ -684,6 +687,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                     ? new IslandSessionItem(session, _sessionManager, DismissSession, _settings, TogglePinSession)
                     : new IslandSessionItem(info!, _sessionManager, DismissSession, _settings, TogglePinSession);
                 item.IsPinned = _pinned.Contains(key);
+                item.SetSyncWeb(SyncSessionToWeb);
+                item.IsWebFeatured = WebSyncOn && _webSync.FeaturedSessionId == key;
                 Sessions.Insert(i, item); // 前 i 项已就位，i <= Count，安全
             }
             else
@@ -691,6 +696,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 if (found != i) Sessions.Move(found, i);
                 if (session != null) Sessions[i].Update(session); else Sessions[i].Update(info!);
                 Sessions[i].IsPinned = _pinned.Contains(key); // 图钉状态以 VM 的 _pinned 为准
+                Sessions[i].SetSyncWeb(SyncSessionToWeb);
+                Sessions[i].IsWebFeatured = WebSyncOn && _webSync.FeaturedSessionId == key;
             }
         }
 
@@ -932,6 +939,11 @@ public partial class IslandSessionItem : ObservableObject
 
     /// <summary>是否被图钉固定（固定后"清理任务"不会清掉它）。由 VM 的 _pinned 集合驱动。</summary>
     [ObservableProperty] private bool _isPinned;
+
+    /// <summary>是否被"同步到网页"置顶（点状态圆点切换）。由 VM 按 WebSyncService.FeaturedSessionId 驱动，
+    /// 圆点外圈显示橙色描边。</summary>
+    [ObservableProperty] private bool _isWebFeatured;
+    private Action<string>? _onSyncWeb;
     private readonly WorkspaceSettings? _settings;
 
     public string Id => _session?.Id ?? _runningInfo?.SessionId ?? "";
@@ -1268,6 +1280,13 @@ public partial class IslandSessionItem : ObservableObject
 
     /// <summary>VM 在卡片复用时重置回调（构造时传的可能是首次的；复用走 Update 不重建，回调不变即可）。</summary>
     public void SetTogglePin(Action<string>? cb) => _onTogglePin = cb;
+
+    /// <summary>VM 接线"同步到网页"回调（卡片创建后调用）。</summary>
+    public void SetSyncWeb(Action<string>? cb) => _onSyncWeb = cb;
+
+    /// <summary>状态圆点按钮：把本会话置顶同步到网页（网页同步开启时圆点才可点；再点取消）。</summary>
+    [RelayCommand]
+    private void SyncWeb() => _onSyncWeb?.Invoke(Id);
 
     /// <summary>就地更新为新的 AgentSession 并刷新所有派生属性（卡片复用，动画只在真状态变化时触发）。</summary>
     public void Update(AgentSession session)

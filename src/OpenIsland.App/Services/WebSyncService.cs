@@ -10,12 +10,13 @@ namespace OpenIsland.App.Services;
 
 /// <summary>
 /// 网页同步服务 —— 手机/平板在同一局域网打开 http://本机IP:18686/ 即可实时查看
-/// CLI 与桌面端 Claude 会话（标题 / 状态 / 最近对话气泡，2.5s 轮询）。
+/// CLI 与桌面端 Claude 会话（标题 / 状态 / 最近对话气泡，2.5s 轮询），并能直接在
+/// 网页上回复：POST /api/send 复用灵动岛"快捷回复"的注入通道
+/// （SessionManager.SendQuickReplyAsync → 终端 SendInput / 桌面端 UIA）。
 ///
 /// 为什么用 TcpListener 手写迷你 HTTP 而不是 HttpListener：HttpListener 监听非
 /// localhost 前缀（http://+:18686/）需要 URL ACL（netsh http add urlacl）或管理员
 /// 权限，普通用户双击启动直接 Access Denied；TcpListener 直接绑端口没有这个限制。
-/// 只有 GET / 和 GET /api/sessions 两个只读路由，零依赖、零写操作，风险面极小。
 ///
 /// 注意：第一次 Start() 监听 0.0.0.0 时 Windows 防火墙可能弹"允许访问"对话框 ——
 /// 属正常行为，用户点允许后局域网设备才能连进来（仅本机访问则无需允许）。
@@ -29,6 +30,13 @@ public sealed class WebSyncService : IDisposable
     private CancellationTokenSource? _cts;
 
     public bool IsRunning { get; private set; }
+
+    /// <summary>
+    /// 被"置顶同步"的会话 Id（点灵动岛卡片状态圆点设置，再点取消）。网页上该会话
+    /// 排第一、带 ⭐ 标识、携带更长的历史（60 条 vs 普通 12 条）。null = 无置顶。
+    /// 读写都是引用赋值（原子），无需加锁。
+    /// </summary>
+    public string? FeaturedSessionId { get; set; }
 
     public WebSyncService(SessionManager sessionManager)
     {
@@ -126,8 +134,9 @@ public sealed class WebSyncService : IDisposable
     }
 
     /// <summary>
-    /// 处理单个客户端：读请求首行定路由，其余请求头读到空行丢弃（不解析）。
-    /// 整个方法 try/catch 全包 —— 手机锁屏断开 / 半截请求都静默关连接，不影响别人。
+    /// 处理单个客户端。头部按字节读到 \r\n\r\n（不能用带缓冲的 StreamReader —— 它会把
+    /// POST body 的字节也吞进自己的缓冲区，后续读 body 就缺数据），body 按 Content-Length
+    /// 精确读取。整个方法 try/catch 全包 —— 手机锁屏断开 / 半截请求都静默关连接，不影响别人。
     /// </summary>
     private void HandleClient(TcpClient client)
     {
@@ -139,24 +148,54 @@ public sealed class WebSyncService : IDisposable
                 stream.ReadTimeout = 5000;
                 stream.WriteTimeout = 5000;
 
-                // 首行形如 "GET /path HTTP/1.1"；后续头部全部丢弃。
-                // ASCII 足够（路径只有 / 和 /api/sessions，无中文）。
-                using var reader = new StreamReader(stream, Encoding.ASCII, false, 4096, leaveOpen: true);
-                var requestLine = reader.ReadLine();
-                if (string.IsNullOrEmpty(requestLine)) return;
-                while (true)
+                // 逐字节读头部直到空行（请求极小、每连接一次，性能无虞）
+                var headerBuf = new MemoryStream();
+                int state = 0; // \r\n\r\n 状态机
+                while (state < 4)
                 {
-                    var header = reader.ReadLine();
-                    if (string.IsNullOrEmpty(header)) break;
+                    int b = stream.ReadByte();
+                    if (b < 0) return;
+                    headerBuf.WriteByte((byte)b);
+                    state = b switch
+                    {
+                        '\r' when state == 0 || state == 2 => state + 1,
+                        '\n' when state == 1 || state == 3 => state + 1,
+                        _ => 0
+                    };
+                    if (headerBuf.Length > 16 * 1024) return; // 头部异常大，掐掉
+                }
+                var lines = Encoding.ASCII.GetString(headerBuf.ToArray()).Split("\r\n");
+                var parts = lines[0].Split(' ');
+                if (parts.Length < 2) return;
+                var method = parts[0];
+                var path = parts[1];
+
+                int contentLength = 0;
+                foreach (var hl in lines)
+                {
+                    if (hl.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(hl["Content-Length:".Length..].Trim(), out contentLength);
                 }
 
-                var parts = requestLine.Split(' ');
-                var path = parts.Length >= 2 ? parts[1] : "/";
+                byte[] body = Array.Empty<byte>();
+                if (contentLength > 0 && contentLength <= 64 * 1024)
+                {
+                    body = new byte[contentLength];
+                    int off = 0;
+                    while (off < contentLength)
+                    {
+                        int n = stream.Read(body, off, contentLength - off);
+                        if (n <= 0) break;
+                        off += n;
+                    }
+                }
 
-                if (path == "/" || path.StartsWith("/?"))
+                if (method == "GET" && (path == "/" || path.StartsWith("/?")))
                     WriteResponse(stream, "200 OK", "text/html; charset=utf-8", IndexHtml);
-                else if (path == "/api/sessions" || path.StartsWith("/api/sessions?"))
+                else if (method == "GET" && (path == "/api/sessions" || path.StartsWith("/api/sessions?")))
                     WriteResponse(stream, "200 OK", "application/json; charset=utf-8", BuildSessionsJson());
+                else if (method == "POST" && path == "/api/send")
+                    WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSend(body));
                 else
                     WriteResponse(stream, "404 Not Found", "text/plain; charset=utf-8", "Not Found");
             }
@@ -164,6 +203,40 @@ public sealed class WebSyncService : IDisposable
         catch
         {
             // 客户端中断 / 写失败 —— 静默关连接即可
+        }
+    }
+
+    /// <summary>
+    /// POST /api/send：{"id":"会话id","text":"消息"} → 复用灵动岛快捷回复的注入通道发给
+    /// 对应 CLI 终端 / Claude 桌面端（SessionManager.SendQuickReplyAsync）。注入要激活
+    /// 窗口/动剪贴板，必须在 UI 线程执行；本方法在 HTTP 线程上同步等结果（不阻塞 UI）。
+    /// </summary>
+    private string HandleSend(byte[] body)
+    {
+        try
+        {
+            if (body.Length == 0) return """{"ok":false,"reason":"empty body"}""";
+            using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(body));
+            var root = doc.RootElement;
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var text = root.TryGetProperty("text", out var tEl) ? tEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(text))
+                return """{"ok":false,"reason":"missing id or text"}""";
+            if (text.Length > 2000)
+                return """{"ok":false,"reason":"text too long"}""";
+
+            var app = System.Windows.Application.Current;
+            if (app == null) return """{"ok":false,"reason":"app shutting down"}""";
+
+            // Dispatcher.Invoke 返回 UI 线程上启动的 Task；在 HTTP 线程阻塞等它完成
+            //（Task 的延续跑在 UI Dispatcher 上，与这里的阻塞互不相干，无死锁）。
+            var task = app.Dispatcher.Invoke(() => _sessionManager.SendQuickReplyAsync(id!, text!));
+            var result = task.GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new { ok = result.Ok, reason = result.Reason ?? "" });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { ok = false, reason = ex.Message });
         }
     }
 
@@ -190,12 +263,14 @@ public sealed class WebSyncService : IDisposable
     {
         try
         {
+            var featuredId = FeaturedSessionId; // 快照一次，整个构建过程用同一个值
             var items = _sessionManager.GetAllSessions()
                 .Where(s => s.Tool == AgentTool.ClaudeCode
                             && !string.IsNullOrEmpty(s.ClaudeMetadata?.TranscriptPath))
                 .Select(s => new { Session = s, Path = s.ClaudeMetadata!.TranscriptPath! })
                 .Select(x => new { x.Session, x.Path, Mtime = File.GetLastWriteTimeUtc(x.Path) })
-                .OrderByDescending(x => x.Mtime)
+                .OrderByDescending(x => x.Session.Id == featuredId) // 置顶会话排第一
+                .ThenByDescending(x => x.Mtime)
                 .Take(8)
                 .Select(x => new
                 {
@@ -204,7 +279,9 @@ public sealed class WebSyncService : IDisposable
                     phase = x.Session.Phase.ToString(),
                     entry = x.Session.ClaudeMetadata?.Entrypoint ?? "",
                     updated = x.Mtime.ToLocalTime().ToString("HH:mm:ss"),
-                    messages = ReadTail(x.Path)
+                    featured = x.Session.Id == featuredId,
+                    // 置顶会话带更长历史（60 条），普通会话 12 条
+                    messages = ReadTail(x.Path, x.Session.Id == featuredId ? 60 : 12)
                 })
                 .ToList();
             return JsonSerializer.Serialize(items);
@@ -227,7 +304,7 @@ public sealed class WebSyncService : IDisposable
     /// FileShare.ReadWrite|Delete：Claude 正在写 / 轮转该文件时也能读，不互相阻塞。
     /// Seek 落点大概率在一行中间 —— 丢弃第一段不完整的行；坏行（写到一半的 JSON）逐行跳过。
     /// </summary>
-    private static List<TailMessage> ReadTail(string path)
+    private static List<TailMessage> ReadTail(string path, int maxMessages = 12)
     {
         var result = new List<TailMessage>();
         try
@@ -289,8 +366,8 @@ public sealed class WebSyncService : IDisposable
                 }
             }
 
-            // 只取最后 12 条（手机屏幕一屏左右，也控制 JSON 体积）
-            for (int i = Math.Max(0, collected.Count - 12); i < collected.Count; i++)
+            // 只取最后 maxMessages 条（普通 12 / 置顶 60，控制 JSON 体积）
+            for (int i = Math.Max(0, collected.Count - maxMessages); i < collected.Count; i++)
                 result.Add(collected[i]);
         }
         catch
@@ -319,12 +396,15 @@ public sealed class WebSyncService : IDisposable
           .sub { font-size:12px; color:#8a8a90; margin-bottom:14px; }
           .card { background:#1c1c1f; border:1px solid #2a2a2e; border-radius:14px;
                   padding:12px 14px; margin-bottom:12px; }
+          .card.featured { border-color:#CC785C; }
           .head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
           .dot { width:9px; height:9px; border-radius:50%; flex:none; }
           .title { font-size:14px; font-weight:600; overflow:hidden;
                    text-overflow:ellipsis; white-space:nowrap; }
           .badge { font-size:10px; color:#9aa0a6; background:#26262b;
                    border-radius:8px; padding:1px 7px; flex:none; }
+          .star { font-size:10px; color:#CC785C; background:#2e2118;
+                  border-radius:8px; padding:1px 7px; flex:none; }
           .time { font-size:11px; color:#6e6e74; margin-left:auto; flex:none; }
           .msgs { display:flex; flex-direction:column; gap:6px; }
           .msg { max-width:86%; padding:7px 10px; border-radius:11px; font-size:13px;
@@ -332,12 +412,21 @@ public sealed class WebSyncService : IDisposable
           .user { align-self:flex-end; background:#3a2a1f; }
           .assistant { align-self:flex-start; background:#26262b; }
           .empty { color:#6e6e74; font-size:12px; }
+          .composer { display:flex; gap:8px; margin-top:10px; }
+          .composer input { flex:1; background:#101013; color:#e7e7ea; font-size:14px;
+                  border:1px solid #2a2a2e; border-radius:10px; padding:9px 12px; outline:none; }
+          .composer input:focus { border-color:#CC785C; }
+          .composer button { background:#CC785C; color:#fff; border:none; border-radius:10px;
+                  padding:9px 16px; font-size:13px; flex:none; }
+          .composer button:disabled { opacity:.5; }
+          .sendmsg { font-size:11px; color:#9aa0a6; margin-top:5px; min-height:14px; }
+          .sendmsg.err { color:#e07a6a; }
         </style>
         </head>
         <body>
         <div class="wrap">
           <h1>Open Island · Web Sync</h1>
-          <div class="sub">自动刷新中 · auto-refreshing</div>
+          <div class="sub">自动刷新中，可直接回复对话 · auto-refreshing, reply inline</div>
           <div id="list"><div class="empty">Loading…</div></div>
         </div>
         <script>
@@ -349,7 +438,16 @@ public sealed class WebSyncService : IDisposable
           if(p==='Completed')return '#9E9E9E';
           return '#4CAF50';
         }
+        // 输入框聚焦/有内容时跳过整页重绘，避免打字被轮询打断
+        function anyComposerBusy(){
+          const a=document.activeElement;
+          if(a&&a.tagName==='INPUT')return true;
+          for(const i of document.querySelectorAll('.composer input'))
+            if(i.value)return true;
+          return false;
+        }
         async function refresh(){
+          if(anyComposerBusy())return;
           try{
             const r=await fetch('/api/sessions');
             const data=await r.json();
@@ -361,19 +459,50 @@ public sealed class WebSyncService : IDisposable
                      +esc(m.text)+'</div>';
               }
               if(!msgs)msgs='<div class="empty">(no messages)</div>';
-              html+='<div class="card">'
+              html+='<div class="card'+(s.featured?' featured':'')+'">'
                 +'<div class="head">'
                 +'<div class="dot" style="background:'+dotColor(s.phase)+'"></div>'
                 +'<div class="title">'+esc(s.title)+'</div>'
+                +(s.featured?'<div class="star">&#9733; synced</div>':'')
                 +(s.entry?'<div class="badge">'+esc(s.entry)+'</div>':'')
                 +'<div class="time">'+esc(s.updated)+'</div>'
                 +'</div>'
                 +'<div class="msgs">'+msgs+'</div>'
+                +'<div class="composer">'
+                +'<input type="text" placeholder="回复… / Reply…" data-id="'+esc(s.id)+'"'
+                +' onkeydown="if(event.key===&quot;Enter&quot;)sendMsg(this)">'
+                +'<button onclick="sendMsg(this.previousElementSibling)">发送</button>'
+                +'</div>'
+                +'<div class="sendmsg" id="sm-'+esc(s.id)+'"></div>'
                 +'</div>';
             }
             document.getElementById('list').innerHTML=html
               ||'<div class="empty">No sessions</div>';
           }catch(e){/* 服务端刚关 / 网络抖动 —— 下个 tick 再试 */}
+        }
+        async function sendMsg(input){
+          const id=input.getAttribute('data-id');
+          const text=input.value.trim();
+          if(!text)return;
+          const btn=input.parentElement.querySelector('button');
+          const sm=document.getElementById('sm-'+id);
+          btn.disabled=true; if(sm){sm.textContent='发送中… sending';sm.className='sendmsg';}
+          try{
+            const r=await fetch('/api/send',{method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id:id,text:text})});
+            const res=await r.json();
+            if(res.ok){
+              input.value='';
+              if(sm)sm.textContent='已发送 ✓ sent';
+              setTimeout(refresh,1200);
+            }else{
+              if(sm){sm.textContent='失败 failed: '+(res.reason||'');sm.className='sendmsg err';}
+            }
+          }catch(e){
+            if(sm){sm.textContent='网络错误 network error';sm.className='sendmsg err';}
+          }
+          btn.disabled=false;
         }
         refresh();
         setInterval(refresh,2500);

@@ -45,36 +45,111 @@ public partial class DynamicIslandWindow : Window
         _viewModel.PlaySprite += name => Dispatcher.BeginInvoke(() => StatusSprite.PlayOnce(name));
         Loaded += (_, _) => PositionAtTopCenter();
 
-        // 毛玻璃要 hwnd 才能挂 accent policy，SourceInitialized 时机刚好（早于 Loaded，
-        // 也在分层窗口首帧呈现之前 —— 实测呈现后再挂 accent 不渲染）。
-        // 设置中心改开关/不透明度 → WorkspaceSettings.Changed → 回 UI 线程实时重应用。
+        // 毛玻璃：设置变化 → 实时重应用；岛移动/变形 → 立即重采一帧背景（不等下个 tick）。
         SourceInitialized += (_, _) => ApplyGlass();
         _settings.Changed += (_, _) => Dispatcher.BeginInvoke(ApplyGlass);
+        LocationChanged += (_, _) => UpdateGlassFrame();
+        SizeChanged += (_, _) => UpdateGlassFrame();
+        MainBorder.SizeChanged += (_, _) => UpdateGlassFrame();
     }
 
-    /// <summary>
-    /// 按设置应用/撤掉 Apple 风毛玻璃：开启时把岛背景换成半透明（alpha = 用户百分比），
-    /// 同时给窗口挂 ACCENT_ENABLE_ACRYLICBLURBEHIND 让背后内容透出并模糊。
-    /// 已知问题：Win10 上拖动 acrylic 窗口可能跟手延迟（系统 accent 合成的老毛病），不影响功能。
-    /// </summary>
+    // ── Apple 风毛玻璃（自绘）──
+    // 为什么不用 DWM accent（SetWindowCompositionAttribute）：accent 背板永远铺满整个
+    // 矩形 hwnd，而岛是 ULW 分层窗口、SetWindowRgn 裁不掉（实测），圆角外会露出
+    // 难看的直角磨砂板。自绘方案：定时把岛背后的屏幕截下来 → 缩小（=模糊）→ 按用户
+    // 不透明度叠深色 tint → 设为 MainBorder 的背景刷。背景刷被 Border 的 CornerRadius
+    // 天然裁剪，胶囊形状/阴影边距完整保留，展开后的圆角同样干净。
+    // 自捕获问题：截屏会把岛自己拍进去（反馈回路越叠越黑）—— 截图瞬间给窗口挂
+    // WDA_EXCLUDEFROMCAPTURE（Win10 2004+）把自己从捕获里剔除，拍完立刻恢复。
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
+    private const uint WDA_NONE = 0x0, WDA_EXCLUDEFROMCAPTURE = 0x11;
+
+    private System.Windows.Threading.DispatcherTimer? _glassTimer;
+
+    /// <summary>按设置开/关毛玻璃：开 → 启动 150ms 重采定时器并立即出第一帧；关 → 恢复纯色。</summary>
     private void ApplyGlass()
     {
         if (_settings.GlassEnabled)
         {
-            byte a = (byte)Math.Round(_settings.GlassOpacity * 2.55);
-            var c = _originalIslandBrush.Color;
-            MainBorder.Background = new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B));
-            // accent 直接挂在岛窗口上（本机实测：accent 只在分层窗口上渲染，岛恰好是；
-            // 独立背板窗口的 6 种组合全部失败）。模糊背板会铺满整个矩形 hwnd ——
-            // 由 VM.GlassOn 驱动外层 Border 的 Margin→0，让岛体盖满窗口，只在四个
-            // 圆角弧外露出极小的磨砂弧片（视觉可接受）。
-            // tint alpha 封顶 200：tint 全不透明时模糊看不见，留余地保证"玻璃感"。
-            AcrylicHelper.Apply(this, true, (byte)Math.Min((byte)200, a));
+            if (_glassTimer == null)
+            {
+                _glassTimer = new System.Windows.Threading.DispatcherTimer
+                { Interval = TimeSpan.FromMilliseconds(150) };
+                _glassTimer.Tick += (_, _) => UpdateGlassFrame();
+            }
+            _glassTimer.Start();
+            UpdateGlassFrame();
         }
         else
         {
+            _glassTimer?.Stop();
             MainBorder.Background = _originalIslandBrush;
-            AcrylicHelper.Apply(this, false, 0);
+        }
+    }
+
+    /// <summary>截一帧岛背后的屏幕 → 1/10 缩小（即模糊）→ 叠 tint → 设为岛背景。全程 try/catch，失败保持上一帧。</summary>
+    private void UpdateGlassFrame()
+    {
+        if (!_settings.GlassEnabled || !IsVisible || MainBorder.ActualWidth < 4) return;
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+
+        try
+        {
+            var src = PresentationSource.FromVisual(this);
+            double sx = src?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+            double sy = src?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+            var origin = MainBorder.PointToScreen(new Point(0, 0)); // 物理像素
+            int w = (int)Math.Round(MainBorder.ActualWidth * sx);
+            int h = (int)Math.Round(MainBorder.ActualHeight * sy);
+            if (w < 4 || h < 4) return;
+
+            using var shot = new System.Drawing.Bitmap(w, h);
+            // 截图瞬间把自己从屏幕捕获里剔除（窗口在屏幕上仍正常显示，只影响捕获）
+            SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            try
+            {
+                using var g = System.Drawing.Graphics.FromImage(shot);
+                g.CopyFromScreen((int)origin.X, (int)origin.Y, 0, 0,
+                    new System.Drawing.Size(w, h));
+            }
+            finally
+            {
+                SetWindowDisplayAffinity(hwnd, WDA_NONE);
+            }
+
+            // 1/10 双线性缩小，再由 ImageBrush 拉伸回去 = 强力箱式模糊；小图上直接叠 tint
+            int bw = Math.Max(2, w / 10), bh = Math.Max(2, h / 10);
+            using var small = new System.Drawing.Bitmap(bw, bh);
+            using (var g2 = System.Drawing.Graphics.FromImage(small))
+            {
+                g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                g2.DrawImage(shot, 0, 0, bw, bh);
+                byte a = (byte)Math.Round(_settings.GlassOpacity * 2.55);
+                var c = _originalIslandBrush.Color;
+                using var tint = new System.Drawing.SolidBrush(
+                    System.Drawing.Color.FromArgb(a, c.R, c.G, c.B));
+                g2.FillRectangle(tint, 0, 0, bw, bh);
+            }
+
+            var hbmp = small.GetHbitmap();
+            try
+            {
+                var bs = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
+                    hbmp, IntPtr.Zero, Int32Rect.Empty,
+                    System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+                bs.Freeze();
+                MainBorder.Background = new ImageBrush(bs) { Stretch = Stretch.Fill };
+            }
+            finally { DeleteObject(hbmp); }
+        }
+        catch
+        {
+            // 截屏/转换偶发失败（锁屏、显示切换等）：保持上一帧，下个 tick 再试
+            try { SetWindowDisplayAffinity(hwnd, WDA_NONE); } catch { }
         }
     }
 

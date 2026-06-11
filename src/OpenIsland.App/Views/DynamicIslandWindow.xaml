@@ -161,11 +161,6 @@
                     <DataTrigger Binding="{Binding IsNotchMode}" Value="True">
                         <Setter Property="Margin" Value="0"/>
                     </DataTrigger>
-                    <!-- 毛玻璃模式：accent 模糊背板铺满整个矩形 hwnd（分层窗口上裁剪无效），
-                         收掉外边距让岛体盖满窗口，磨砂板就只在四个圆角弧外露出极小弧片。 -->
-                    <DataTrigger Binding="{Binding GlassOn}" Value="True">
-                        <Setter Property="Margin" Value="0"/>
-                    </DataTrigger>
                 </Style.Triggers>
             </Style>
         </Border.Style>
@@ -917,12 +912,27 @@
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
-                                                <Ellipse Grid.Column="0"
-                                                         Width="12" Height="12"
-                                                         VerticalAlignment="Center"
-                                                         Margin="3,0,13,0"
-                                                         local:Anim.FillColor="{Binding StatusColorValue}"
-                                                         local:Anim.Pulse="{Binding IsAttentionPhase}"/>
+                                                <!-- 状态圆点：网页同步开启时可点击 —— 把该会话置顶同步到网页
+                                                     （置顶时橙色外圈，再点取消）。同步关闭时按钮禁用、点击穿透
+                                                     到卡片本身的跳转。 -->
+                                                <Button Grid.Column="0" Margin="1,0,11,0" VerticalAlignment="Center"
+                                                        Command="{Binding SyncWebCommand}" Cursor="Hand"
+                                                        FocusVisualStyle="{x:Null}"
+                                                        IsEnabled="{Binding DataContext.WebSyncOn, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        ToolTip="{Binding [Island_DotSync_Tip], Source={x:Static svc:Loc.Instance}}">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Grid Background="Transparent" Width="16" Height="16">
+                                                                <Ellipse Width="16" Height="16"
+                                                                         Stroke="#CC785C" StrokeThickness="1.5"
+                                                                         Visibility="{Binding IsWebFeatured, Converter={StaticResource BoolToVis}}"/>
+                                                                <Ellipse Width="12" Height="12"
+                                                                         local:Anim.FillColor="{Binding StatusColorValue}"
+                                                                         local:Anim.Pulse="{Binding IsAttentionPhase}"/>
+                                                            </Grid>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
                                                 <StackPanel Grid.Column="1"
                                                             Orientation="Horizontal"
                                                             VerticalAlignment="Center">

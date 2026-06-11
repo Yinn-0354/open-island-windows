@@ -165,8 +165,9 @@ public sealed class Loc : INotifyPropertyChanged
         ["Reply_SendFailed"] = "发送失败",
         ["Reply_SendError"] = "发送出错",
         // 网页同步（头部地球按钮）
-        ["Web_Off_Tip"] = "网页同步：在手机/平板实时查看 CLI 与客户端会话（点击开启，本机局域网可访问）",
+        ["Web_Off_Tip"] = "网页同步：手机/平板实时查看并回复 CLI 与客户端会话（点击开启，本机局域网可访问）",
         ["Web_On"] = "已开启 {0} —— 链接已复制到剪贴板，点击关闭",
+        ["Island_DotSync_Tip"] = "同步此对话到网页：置顶 + 完整历史（再点一次取消）",
     };
 
     // ── 英文表 ──────────────────────────────────────────────────────────────
@@ -270,7 +271,8 @@ public sealed class Loc : INotifyPropertyChanged
         ["Reply_SendFailed"] = "Send failed",
         ["Reply_SendError"] = "Send error",
         // Web sync (globe button in the header)
-        ["Web_Off_Tip"] = "Web sync: view CLI & desktop sessions live from your phone/tablet (click to start; LAN access)",
+        ["Web_Off_Tip"] = "Web sync: view & reply to CLI / desktop sessions from your phone or tablet (click to start; LAN access)",
         ["Web_On"] = "Running at {0} — URL copied to clipboard; click to stop",
+        ["Island_DotSync_Tip"] = "Pin this conversation on the web page: top spot + longer history (click again to unpin)",
     };
 }
