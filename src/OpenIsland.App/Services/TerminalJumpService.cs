@@ -1611,11 +1611,18 @@ public partial class TerminalJumpService
         else
             ShowWindow(hWnd, SW_SHOW);
 
-        // 2) AttachThreadInput 绕开 SetForegroundWindow 12s 失活限制
+        // 2) AttachThreadInput 绕开 SetForegroundWindow 前台锁。
+        //    关键：除了目标窗口线程，还必须挂上**当前前台窗口**的线程 —— 前台锁的授权
+        //    跟着"最近接收输入的线程"走（用户在浏览器/手机网页发起时由浏览器持有），
+        //    只挂目标线程会被拒（实测：网页发送时 fg 纹丝不动 → foreground-mismatch）。
         uint currentThread = GetCurrentThreadId();
         uint windowThread = GetWindowThreadProcessId(hWnd, out _);
-        if (currentThread != windowThread)
-            AttachThreadInput(currentThread, windowThread, true);
+        var fgWnd = GetForegroundWindow();
+        uint fgThread = fgWnd != IntPtr.Zero ? GetWindowThreadProcessId(fgWnd, out _) : 0;
+        bool attachedTarget = currentThread != windowThread
+            && AttachThreadInput(currentThread, windowThread, true);
+        bool attachedFg = fgThread != 0 && fgThread != currentThread && fgThread != windowThread
+            && AttachThreadInput(currentThread, fgThread, true);
 
         BringWindowToTop(hWnd);
         SetForegroundWindow(hWnd);
@@ -1626,8 +1633,10 @@ public partial class TerminalJumpService
         SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
-        if (currentThread != windowThread)
+        if (attachedTarget)
             AttachThreadInput(currentThread, windowThread, false);
+        if (attachedFg)
+            AttachThreadInput(currentThread, fgThread, false);
     }
 
     #endregion
