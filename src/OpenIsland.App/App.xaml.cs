@@ -102,6 +102,8 @@ public partial class App : Application
         services.AddSingleton<SystemStatsService>();
         services.AddSingleton<MediaControlService>();
         services.AddSingleton<PlanUsageService>();
+        services.AddSingleton<SkillInstallService>();
+        services.AddSingleton<WebSyncService>();
 
         // UI服务
         services.AddSingleton<TrayIconService>();

@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
+using OpenIsland.App.Services;
 using OpenIsland.App.ViewModels;
 
 namespace OpenIsland.App.Views;
@@ -9,6 +11,10 @@ namespace OpenIsland.App.Views;
 public partial class DynamicIslandWindow : Window
 {
     private readonly DynamicIslandViewModel _viewModel;
+    private readonly WorkspaceSettings _settings;
+    // 岛主背景（MainBorder）的原始纯色 Brush（#0D0D0D）——
+    // 毛玻璃关闭时恢复用；开启时取它的 RGB 配上用户设的 alpha。
+    private readonly SolidColorBrush _originalIslandBrush;
     private bool _isDragging;
     private Point _dragStartPoint;
 
@@ -23,18 +29,53 @@ public partial class DynamicIslandWindow : Window
     private const double NotchSnapThreshold = 28;
     private const double NotchUnsnapThreshold = 48;
 
-    public DynamicIslandWindow(DynamicIslandViewModel viewModel)
+    public DynamicIslandWindow(DynamicIslandViewModel viewModel, WorkspaceSettings settings)
     {
         InitializeComponent();
         _viewModel = viewModel;
+        _settings = settings;
         DataContext = viewModel;
 
         Width = NormalWidth;
+        // 启动时记下原始背景，毛玻璃开/关都基于这份"出厂色"换算，避免反复叠 alpha 跑偏
+        _originalIslandBrush = (SolidColorBrush)MainBorder.Background;
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         // VM 请求播放一次小章鱼动画（媒体控制 → headphones 等）→ 转给精灵控件
         _viewModel.PlaySprite += name => Dispatcher.BeginInvoke(() => StatusSprite.PlayOnce(name));
         Loaded += (_, _) => PositionAtTopCenter();
+
+        // 毛玻璃要 hwnd 才能挂 accent policy，SourceInitialized 时机刚好（早于 Loaded，
+        // 也在分层窗口首帧呈现之前 —— 实测呈现后再挂 accent 不渲染）。
+        // 设置中心改开关/不透明度 → WorkspaceSettings.Changed → 回 UI 线程实时重应用。
+        SourceInitialized += (_, _) => ApplyGlass();
+        _settings.Changed += (_, _) => Dispatcher.BeginInvoke(ApplyGlass);
+    }
+
+    /// <summary>
+    /// 按设置应用/撤掉 Apple 风毛玻璃：开启时把岛背景换成半透明（alpha = 用户百分比），
+    /// 同时给窗口挂 ACCENT_ENABLE_ACRYLICBLURBEHIND 让背后内容透出并模糊。
+    /// 已知问题：Win10 上拖动 acrylic 窗口可能跟手延迟（系统 accent 合成的老毛病），不影响功能。
+    /// </summary>
+    private void ApplyGlass()
+    {
+        if (_settings.GlassEnabled)
+        {
+            byte a = (byte)Math.Round(_settings.GlassOpacity * 2.55);
+            var c = _originalIslandBrush.Color;
+            MainBorder.Background = new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B));
+            // accent 直接挂在岛窗口上（本机实测：accent 只在分层窗口上渲染，岛恰好是；
+            // 独立背板窗口的 6 种组合全部失败）。模糊背板会铺满整个矩形 hwnd ——
+            // 由 VM.GlassOn 驱动外层 Border 的 Margin→0，让岛体盖满窗口，只在四个
+            // 圆角弧外露出极小的磨砂弧片（视觉可接受）。
+            // tint alpha 封顶 200：tint 全不透明时模糊看不见，留余地保证"玻璃感"。
+            AcrylicHelper.Apply(this, true, (byte)Math.Min((byte)200, a));
+        }
+        else
+        {
+            MainBorder.Background = _originalIslandBrush;
+            AcrylicHelper.Apply(this, false, 0);
+        }
     }
 
     /// <summary>圆形关闭按钮：小章鱼挥手拜拜，约 3 秒后隐藏灵动岛（托盘菜单可再显示）。</summary>

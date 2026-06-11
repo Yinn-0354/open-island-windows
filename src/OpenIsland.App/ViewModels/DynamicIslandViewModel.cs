@@ -29,6 +29,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     private readonly PlanUsageService _planUsage;
     private readonly WorkspaceSettings _settings;
     private readonly ScreenshotService _screenshot;
+    private readonly SkillInstallService _skillInstall;
+    private readonly WebSyncService _webSync;
     private readonly System.Timers.Timer _greenStatusTimer;
     private bool _justCompletedTask = false;
 
@@ -189,6 +191,42 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>喇叭按钮命令：翻转开关（OnSoundEnabledChanged 负责落盘 + 同步）。</summary>
     [RelayCommand] private void ToggleSound() => SoundEnabled = !SoundEnabled;
 
+    // ── 网页同步（手机/平板访问）：头部地球按钮，手动开关 ──
+
+    /// <summary>网页同步是否开启（开 = 地球图标变绿）。刻意不持久化 —— 监听 0.0.0.0
+    /// 是个有暴露面的动作，每次都该由用户显式开启，重启应用默认回到关。</summary>
+    [ObservableProperty] private bool _webSyncOn;
+
+    /// <summary>地球按钮 ToolTip：关→功能说明；开→访问地址（已复制到剪贴板）。</summary>
+    [ObservableProperty] private string _webSyncTip = "";
+
+    /// <summary>地球按钮命令：开 ↔ 关。开启时把局域网地址复制进剪贴板方便发到手机。</summary>
+    [RelayCommand]
+    private void ToggleWebSync()
+    {
+        if (!WebSyncOn)
+        {
+            try { _webSync.Start(); }
+            catch (Exception ex)
+            {
+                // 端口被占用 / 防火墙策略拒绝等 —— 把原因直接挂在 ToolTip 上，不弹窗打断
+                WebSyncTip = "⚠ " + ex.Message;
+                return;
+            }
+            var url = _webSync.GetUrl();
+            // 剪贴板可能被其它进程短暂占用 —— 复制失败不影响服务本身已开启
+            try { System.Windows.Clipboard.SetText(url); } catch { }
+            WebSyncOn = true;
+            WebSyncTip = Loc.Format("Web_On", url);
+        }
+        else
+        {
+            _webSync.Stop();
+            WebSyncOn = false;
+            WebSyncTip = Loc.Get("Web_Off_Tip");
+        }
+    }
+
     [ObservableProperty] private bool _isExpanded;
     [ObservableProperty] private ObservableCollection<IslandSessionItem> _sessions = new();
     [ObservableProperty] private int _runningCount;
@@ -226,7 +264,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// 任一 Running→Running，否则 Idle。跟 StatusDotColor 同一处计算。</summary>
     [ObservableProperty] private SessionPhase _aggregatePhase = SessionPhase.Idle;
 
-    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings, ScreenshotService screenshot)
+    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings, ScreenshotService screenshot, SkillInstallService skillInstall, WebSyncService webSync)
     {
         _sessionManager = sessionManager;
         _popupService = popupService;
@@ -235,6 +273,11 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _media = media;
         _settings = settings;
         _screenshot = screenshot;
+        _skillInstall = skillInstall;
+        _webSync = webSync;
+
+        // 网页同步默认关，ToolTip 先放使用说明（开启后换成访问地址）
+        WebSyncTip = Loc.Get("Web_Off_Tip");
 
         // 启动时把提示音开关对齐持久化值，并同步到 SoundService —— 否则 SoundService.Enabled
         // 默认 true，用户上次关了重启后仍会响一次才被纠正。
@@ -245,6 +288,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
         // 余额行显示模式对齐持久化值（写 backing field 不触发落盘）。下次启动恢复关闭时的状态。
         _showUsageChart = settings.ShowUsageChart;
+        // 毛玻璃开关镜像（驱动外层 Border 的 Margin DataTrigger）
+        _glassOn = settings.GlassEnabled;
 
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
@@ -277,6 +322,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
             if (_lastPlan is { } s) OnPlanUsageUpdated(this, s);
+            // 地球按钮 ToolTip 是代码侧动态文案，语言切换时按新语言重建
+            //（开启失败的 "⚠ " 一次性错误提示被覆盖成默认说明可接受）。
+            WebSyncTip = WebSyncOn ? Loc.Format("Web_On", _webSync.GetUrl()) : Loc.Get("Web_Off_Tip");
         });
     }
 
@@ -297,8 +345,16 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         await SwitchGlobalModelAsync(profile);
     }
 
+    /// <summary>毛玻璃是否开启（镜像 WorkspaceSettings.GlassEnabled）。外层 Border 的 Margin
+    /// DataTrigger 绑它 —— 玻璃开时收掉外边距，让 accent 模糊背板不在岛外露出。</summary>
+    [ObservableProperty] private bool _glassOn;
+
     private void OnSettingsChangedForModels(object? sender, EventArgs e)
-        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(ModelChoices)));
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(ModelChoices));
+            GlassOn = _settings.GlassEnabled;
+        });
 
     private async Task SwitchGlobalModelAsync(ModelProfile profile)
     {
@@ -767,6 +823,45 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>模型栏"清理任务"按钮：显式清理任务卡片（沿用 ClearAllSessions：清已结束/空闲，保留活动中的）。</summary>
     [RelayCommand]
     private void ClearTasks() => ClearAllSessions();
+
+    // ── 安装 Skill：模型栏按钮弹出小面板，粘贴 claude plugin 命令 / owner/repo 后台安装 ──
+    [ObservableProperty] private bool _skillMenuOpen;
+    [ObservableProperty] private string _skillInstallInput = "";
+    [ObservableProperty] private string _skillInstallStatus = "";
+    private bool _isSkillInstalling;
+
+    /// <summary>
+    /// 解析输入 → 后台逐条跑 claude plugin 命令。安装过程中再点直接忽略（防并发重入）；
+    /// 进度回调来自后台线程，需经 Dispatcher 回 UI 线程；await 之后由 async 上下文
+    /// 自动回到 UI 线程，结果状态直接赋值即可。
+    /// </summary>
+    [RelayCommand]
+    private async Task InstallSkill()
+    {
+        if (_isSkillInstalling) return;
+
+        var cmds = SkillInstallService.ParseCommands(SkillInstallInput);
+        if (cmds.Count == 0)
+        {
+            SkillInstallStatus = Loc.Get("Skill_Invalid");
+            return;
+        }
+
+        _isSkillInstalling = true;
+        SkillInstallStatus = Loc.Get("Skill_Installing");
+        try
+        {
+            var (ok, output) = await _skillInstall.RunAsync(cmds,
+                p => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => SkillInstallStatus = p));
+            SkillInstallStatus = ok
+                ? Loc.Get("Skill_Done")
+                : Loc.Format("Skill_Failed", output.Length <= 300 ? output : output[^300..]);
+        }
+        finally
+        {
+            _isSkillInstalling = false;
+        }
+    }
 
     /// <summary>
     /// 返回 true = 这条 session 当前应保持隐藏（被收起且还没"再次活动"）。

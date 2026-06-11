@@ -161,6 +161,11 @@
                     <DataTrigger Binding="{Binding IsNotchMode}" Value="True">
                         <Setter Property="Margin" Value="0"/>
                     </DataTrigger>
+                    <!-- 毛玻璃模式：accent 模糊背板铺满整个矩形 hwnd（分层窗口上裁剪无效），
+                         收掉外边距让岛体盖满窗口，磨砂板就只在四个圆角弧外露出极小弧片。 -->
+                    <DataTrigger Binding="{Binding GlassOn}" Value="True">
+                        <Setter Property="Margin" Value="0"/>
+                    </DataTrigger>
                 </Style.Triggers>
             </Style>
         </Border.Style>
@@ -247,6 +252,36 @@
                                 <RotateTransform x:Name="ChevronRotate" Angle="90"/>
                             </TextBlock.RenderTransform>
                         </TextBlock>
+
+                        <!-- 网页同步按钮：MDL2 地球图标。点击开/关内置迷你 HTTP 服务（端口 18686），
+                             手机/平板在同一局域网打开链接（开启时已自动复制）即可实时查看会话。
+                             开 = 图标变绿 + 暗绿底；ToolTip 动态显示说明或访问地址。 -->
+                        <Button x:Name="WebSyncBtn" Command="{Binding ToggleWebSyncCommand}"
+                                ToolTip="{Binding WebSyncTip}" Cursor="Hand"
+                                Margin="10,0,0,0" VerticalAlignment="Center"
+                                FocusVisualStyle="{x:Null}" local:Anim.PressScale="True">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="Wc" Width="18" Height="18" CornerRadius="9"
+                                            Background="#2A2A2A">
+                                        <TextBlock x:Name="WebGlyph" Text="&#xE774;"
+                                                   FontFamily="Segoe MDL2 Assets"
+                                                   FontSize="10" Foreground="#9AA0A6"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Wc" Property="Background" Value="#3A3A3A"/>
+                                        </Trigger>
+                                        <DataTrigger Binding="{Binding WebSyncOn}" Value="True">
+                                            <Setter TargetName="WebGlyph" Property="Foreground" Value="#4CAF50"/>
+                                            <Setter TargetName="Wc" Property="Background" Value="#1E3A26"/>
+                                        </DataTrigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
 
                         <!-- 圆形关闭按钮：点击 → 小人挥手拜拜 → 隐藏灵动岛（托盘可再显示）。
                              图标为「关机键」电源符号(圆环留顶部缺口 + 竖线)，矢量 Path 绘制不依赖字体。
@@ -571,8 +606,10 @@
                                 <!-- 截图按钮 + 清理任务：放在同一横排（Grid 第 1 列）。 -->
                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
 
-                                <!-- 区域截图：微信式拖拽框选 → 复制到剪贴板。快捷键默认 Ctrl+Q（设置中心可改）。 -->
-                                <Button x:Name="ScreenshotBtn" Cursor="Hand" Margin="8,0,0,0"
+                                <!-- 区域截图：微信式拖拽框选 → 复制到剪贴板。快捷键默认 Ctrl+Q（设置中心可改）。
+                     注意：本行四个按钮（切换模型/截图/清理任务/安装Skill）合计宽度贴近 320 宽
+                     岛体的可用空间，间距/内边距都压过 —— 再加按钮前先量宽度。 -->
+                                <Button x:Name="ScreenshotBtn" Cursor="Hand" Margin="6,0,0,0"
                                         FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
                                         Command="{Binding ScreenshotCommand}" ToolTip="{Binding [Island_Screenshot_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
@@ -593,18 +630,18 @@
                                 </Button>
 
                                 <!-- 清理任务：显式清空已结束/空闲的任务卡片（保留正在跑的）；与切换模型同款暖深色风格 -->
-                                <Button x:Name="ClearTasksBtn" Cursor="Hand" Margin="8,0,0,0"
+                                <Button x:Name="ClearTasksBtn" Cursor="Hand" Margin="6,0,0,0"
                                         FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
                                         Command="{Binding ClearTasksCommand}" ToolTip="{Binding [Island_ClearTasks_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
                                             <Border x:Name="Cb" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"
                                                                Foreground="#CC785C" FontSize="11" VerticalAlignment="Center"/>
                                                     <TextBlock Text="{Binding [Island_ClearTasks], Source={x:Static svc:Loc.Instance}}" Foreground="#FAF9F5" FontSize="12"
-                                                               VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                                               VerticalAlignment="Center" Margin="4,0,0,0"/>
                                                 </StackPanel>
                                             </Border>
                                             <ControlTemplate.Triggers>
@@ -616,6 +653,70 @@
                                         </ControlTemplate>
                                     </Button.Template>
                                 </Button>
+
+                                <!-- 安装 Skill：点开小面板，粘贴 claude plugin 命令 / owner/repo → 后台 PowerShell 静默安装 -->
+                                <ToggleButton x:Name="SkillBtn" Cursor="Hand" Margin="6,0,0,0"
+                                              FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                              IsChecked="{Binding SkillMenuOpen, Mode=TwoWay}"
+                                              ToolTip="{Binding [Island_InstallSkill_Tip], Source={x:Static svc:Loc.Instance}}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="Kb" Background="#252320" BorderBrush="#3A3631"
+                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Kb" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Kb" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+
+                                <!-- 安装 Skill 弹出面板：输入框 + 安装按钮 + 状态行（写法对齐上面的模型列表 Popup） -->
+                                <Popup PlacementTarget="{Binding ElementName=SkillBtn}" Placement="Bottom"
+                                       VerticalOffset="4" IsOpen="{Binding SkillMenuOpen, Mode=TwoWay}"
+                                       StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                                    <Border Background="#252320" BorderBrush="#3A3631" BorderThickness="1"
+                                            CornerRadius="8" Padding="10" Width="300">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding [Island_InstallSkill], Source={x:Static svc:Loc.Instance}}"
+                                                       Foreground="#FAF9F5" FontSize="12"/>
+                                            <TextBox Text="{Binding SkillInstallInput, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="True" TextWrapping="Wrap" Height="52"
+                                                     Background="#2C2C2E" Foreground="#FAF9F5" BorderBrush="#3A3A3C"
+                                                     CaretBrush="#FAF9F5" FontSize="11" Margin="0,6,0,6"/>
+                                            <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                                    HorizontalAlignment="Left"
+                                                    Command="{Binding InstallSkillCommand}">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="Gb" Background="#252320" BorderBrush="#3A3631"
+                                                                BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                            <TextBlock Text="{Binding [Island_InstallSkill_Go], Source={x:Static svc:Loc.Instance}}"
+                                                                       Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Gb" Property="BorderBrush" Value="#CC785C"/>
+                                                                <Setter TargetName="Gb" Property="Background" Value="#2F2C28"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                            </Button>
+                                            <TextBlock Text="{Binding SkillInstallStatus}" Foreground="#9AA0A6"
+                                                       FontSize="11" TextWrapping="Wrap" MaxWidth="280" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Popup>
 
                                 </StackPanel>
 

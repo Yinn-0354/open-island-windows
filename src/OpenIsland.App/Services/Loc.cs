@@ -90,6 +90,10 @@ public sealed class Loc : INotifyPropertyChanged
         ["Settings_Screenshot_Hotkey"] = "截图快捷键",
         ["Settings_Screenshot_Press"] = "请按下组合键…",
         ["Settings_Screenshot_NeedMod"] = "需含 Ctrl/Alt/Shift/Win",
+        ["Settings_Glass"] = "毛玻璃效果",
+        ["Settings_Glass_Desc"] = "仿 Apple 毛玻璃：灵动岛背景实时模糊透出后面的内容。不透明度越低越透。开启后立即生效并记住。",
+        ["Settings_Glass_Enable"] = "启用毛玻璃",
+        ["Settings_Glass_Opacity"] = "背景不透明度",
         ["Settings_Workspaces"] = "工作区目录",
         ["Settings_Workspaces_Desc"] = "选定一个或多个项目根目录。Overview / Models 仅统计 cwd 落在这些目录下的会话。空列表 = 不过滤，全量统计。",
         ["Settings_AddDir"] = "添加目录…",
@@ -112,6 +116,13 @@ public sealed class Loc : INotifyPropertyChanged
         ["Island_ClearTasks"] = "清理任务",
         ["Island_ClearTasks_Tip"] = "清理任务卡片（保留正在运行的会话）",
         ["Island_Screenshot_Tip"] = "区域截图：拖拽框选 → 自动复制到剪贴板。快捷键在设置中心更改（默认 Ctrl+Q）",
+        ["Island_InstallSkill"] = "安装 Skill",
+        ["Island_InstallSkill_Tip"] = "安装 Skill：粘贴 claude plugin 命令或 owner/repo，后台自动安装",
+        ["Island_InstallSkill_Go"] = "安装",
+        ["Skill_Installing"] = "安装中…",
+        ["Skill_Done"] = "✅ 安装完成（新开 Claude 终端生效）",
+        ["Skill_Failed"] = "❌ 失败：{0}",
+        ["Skill_Invalid"] = "无法识别，请粘贴 claude plugin 命令或 owner/repo",
         ["Island_UsageToggle_Tip"] = "点击切换：5h 余额 ↔ 最近七天 token 用量柱状图",
         ["Island_Refresh_Tip"] = "立即刷新 5 小时余额",
         ["Island_Reply_Tip"] = "快捷回复（敲字回车发送）",
@@ -153,6 +164,9 @@ public sealed class Loc : INotifyPropertyChanged
         ["Reply_ClipboardFailed"] = "剪贴板被占用，请重试",
         ["Reply_SendFailed"] = "发送失败",
         ["Reply_SendError"] = "发送出错",
+        // 网页同步（头部地球按钮）
+        ["Web_Off_Tip"] = "网页同步：在手机/平板实时查看 CLI 与客户端会话（点击开启，本机局域网可访问）",
+        ["Web_On"] = "已开启 {0} —— 链接已复制到剪贴板，点击关闭",
     };
 
     // ── 英文表 ──────────────────────────────────────────────────────────────
@@ -181,6 +195,10 @@ public sealed class Loc : INotifyPropertyChanged
         ["Settings_Screenshot_Hotkey"] = "Capture hotkey",
         ["Settings_Screenshot_Press"] = "Press a key combo…",
         ["Settings_Screenshot_NeedMod"] = "Needs Ctrl/Alt/Shift/Win",
+        ["Settings_Glass"] = "Acrylic Glass",
+        ["Settings_Glass_Desc"] = "Apple-style acrylic: the island background blurs whatever is behind it. Lower opacity = more transparent. Applies instantly and is remembered.",
+        ["Settings_Glass_Enable"] = "Enable acrylic",
+        ["Settings_Glass_Opacity"] = "Background opacity",
         ["Settings_Workspaces"] = "Workspace Folders",
         ["Settings_Workspaces_Desc"] = "Pick one or more project root folders. Overview / Models only count sessions whose cwd is under these folders. Empty list = no filter, count everything.",
         ["Settings_AddDir"] = "Add folder…",
@@ -203,6 +221,13 @@ public sealed class Loc : INotifyPropertyChanged
         ["Island_ClearTasks"] = "Clear Tasks",
         ["Island_ClearTasks_Tip"] = "Clear task cards (keep running sessions)",
         ["Island_Screenshot_Tip"] = "Region screenshot: drag to select → auto-copied to clipboard. Change the hotkey in Settings (default Ctrl+Q)",
+        ["Island_InstallSkill"] = "Install Skill",
+        ["Island_InstallSkill_Tip"] = "Install a skill: paste claude plugin commands or owner/repo; installs in the background",
+        ["Island_InstallSkill_Go"] = "Install",
+        ["Skill_Installing"] = "Installing…",
+        ["Skill_Done"] = "✅ Installed (takes effect in a new Claude terminal)",
+        ["Skill_Failed"] = "❌ Failed: {0}",
+        ["Skill_Invalid"] = "Unrecognized — paste claude plugin commands or owner/repo",
         ["Island_UsageToggle_Tip"] = "Click to toggle: 5h balance ↔ last 7 days token usage chart",
         ["Island_Refresh_Tip"] = "Refresh 5-hour balance now",
         ["Island_Reply_Tip"] = "Quick reply (type, Enter to send)",
@@ -244,5 +269,8 @@ public sealed class Loc : INotifyPropertyChanged
         ["Reply_ClipboardFailed"] = "Clipboard busy, please retry",
         ["Reply_SendFailed"] = "Send failed",
         ["Reply_SendError"] = "Send error",
+        // Web sync (globe button in the header)
+        ["Web_Off_Tip"] = "Web sync: view CLI & desktop sessions live from your phone/tablet (click to start; LAN access)",
+        ["Web_On"] = "Running at {0} — URL copied to clipboard; click to stop",
     };
 }

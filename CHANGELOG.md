@@ -6,6 +6,13 @@ All notable changes to Open Island will be documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **安装 Skill** —— 模型命令栏新增"安装 Skill"按钮：粘贴 `claude plugin` 命令（支持连写 / `&&` / 换行）或 `owner/repo` 简写，后台 PowerShell 静默调用 claude CLI 安装，面板内实时显示进度与 CLI 真实输出。严格白名单校验防命令注入；任一命令不合法整体拒绝，绝不部分执行
+- **Apple 风毛玻璃** —— 设置中心新增"毛玻璃效果"开关 + 背景不透明度滑块（20-100%，250ms 去抖落盘）。真·亚克力背景模糊（SetWindowCompositionAttribute ACCENT_ENABLE_ACRYLICBLURBEHIND），开启时收起岛外边距让模糊背板贴合岛形；开关实时生效并持久化
+- **网页同步** —— 头部关机键左边新增地球按钮：点击在本机 18686 端口开启零依赖迷你 HTTP 服务（手动开关，绿色=开启），把 CLI 与 Claude 桌面端会话的标题/状态/最近消息同步到深色移动端友好网页，手机平板局域网即可访问；开启时访问地址自动复制到剪贴板
+- **settings.json 热重载** —— 外部编辑配置文件 2 秒内自动生效（mtime 轮询），毛玻璃/快捷键等订阅项无需重启
+
 ## [0.4.2] - 2026-06-04
 
 ### Fixed

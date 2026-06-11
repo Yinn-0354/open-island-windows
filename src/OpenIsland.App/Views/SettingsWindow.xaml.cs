@@ -33,7 +33,43 @@ public partial class SettingsWindow : Window
         // 语言下拉对齐当前设置（auto=0 / zh=1 / en=2）
         LanguageCombo.SelectedIndex = _settings.Language switch { "zh" => 1, "en" => 2, _ => 0 };
         HotkeyBox.Content = _settings.ScreenshotHotkey;
+        // 毛玻璃区块对齐当前设置（_initializing 保护中，赋值不会触发 Glass_Changed 重复落盘）
+        GlassCheck.IsChecked = _settings.GlassEnabled;
+        GlassSlider.Value = _settings.GlassOpacity;
+        GlassVal.Text = _settings.GlassOpacity + "%";
         _initializing = false;
+    }
+
+    /// <summary>毛玻璃开关变化：只动 glassEnabled（与滑块解耦 —— 每次 Set 都是一次完整落盘
+    /// + Changed 全量广播（热键重绑等），不能把没变的值也跟着写一遍）。</summary>
+    private void Glass_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializing) return;
+        var on = GlassCheck.IsChecked == true;
+        if (on != _settings.GlassEnabled) _settings.SetGlassEnabled(on);
+    }
+
+    /// <summary>不透明度滑块：标签即时跟手；落盘去抖 250ms —— 拖动会跨多个 tick，每个 tick
+    /// 直接 Save 会造成几十次 DPAPI 序列化落盘 + Changed 广播（热键反复解绑/重绑）。</summary>
+    private System.Windows.Threading.DispatcherTimer? _glassDebounce;
+    private void GlassSlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        var v = (int)GlassSlider.Value;
+        GlassVal.Text = v + "%";
+        if (_glassDebounce == null)
+        {
+            _glassDebounce = new System.Windows.Threading.DispatcherTimer
+            { Interval = TimeSpan.FromMilliseconds(250) };
+            _glassDebounce.Tick += (_, _) =>
+            {
+                _glassDebounce!.Stop();
+                var val = (int)GlassSlider.Value;
+                if (val != _settings.GlassOpacity) _settings.SetGlassOpacity(val);
+            };
+        }
+        _glassDebounce.Stop();
+        _glassDebounce.Start();
     }
 
     // ── 区域截图快捷键录制 ──
