@@ -37,7 +37,28 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 
 ---
 
+## 🗺 Feature Map
+
+| Area | Capabilities |
+|---|---|
+| **🏝 The Island** | Pixel pet status sprite · system stats bar (CPU / RAM / GPU / net) · media controls + volume slider · done / needs-attention chimes · region screenshot (global hotkey) · 5-hour balance ↔ 7-day usage chart · top-edge notch snap · bilingual UI |
+| **🗂 Session management** | Permission-prompt mirror (one-click 1/2/3) · AskUserQuestion option buttons · per-session permission-mode switch · quick reply · one-click jump back to terminal / desktop app · pin sessions · clear tasks (cards return only on new activity) · source filter (all / CLI / desktop) · one-click skill install |
+| **📱 Web Sync** | Phone / tablet access over LAN · SSE live push · chat-style replies + `/` command autocomplete · one-tap permission approval · answer questions by tapping options · switch model / permission mode · sound + title alerts · light/dark theme · add-to-home-screen |
+| **🤖 Models & stats** | One-click model switch (all official profiles + third-party presets, DPAPI-encrypted keys) · Control Center (Sessions / Overview / Models) · 84-day activity heatmap · workspace filter |
+
 ## ✨ Features
+
+- **📱 Web Sync (a remote workbench on your phone / tablet)** — the globe button in the header starts a tiny zero-dependency HTTP server on port 18686 (manual toggle; the URL is copied to your clipboard). Any phone or tablet on the same LAN gets a full mobile workbench:
+  - **Live** — SSE push (the page updates within a second of any session change), with automatic fallback to polling when the connection drops and back again when it recovers
+  - **Multi-session tabs** — switch sessions via top tabs; chat-style single-session view (bottom-anchored scroll, per-session drafts). Clicking a session's status dot on the island pins that conversation to the page (⭐ + 60-message history)
+  - **Chat** — reply straight into the terminal / desktop app from the composer (reusing the quick-reply injection channel), with `/` command autocomplete
+  - **Approve** — permission requests render as an orange card (tool name + command description) with Allow / Always / Deny buttons — approve from the couch
+  - **Answer questions** — when Claude asks via AskUserQuestion, the page renders **option buttons** (with description tooltips) plus Skip; tap to answer, or type freely
+  - **Switch mode / model** — two dropdowns in the tool row: permission mode (default / accept edits / plan / auto — computed from the hook-reported current mode, so the exact number of Shift+Tab presses lands on target) and model switch (injects `/model`)
+  - **Alerts** — two short beeps on new approvals (bell toggle, remembered) and a flashing tab title "● pending N" while the page is in the background
+  - **Comfortable** — fenced code blocks / diff line colors / inline code, long-message collapsing, relative timestamps, humanized token counts, the 5-hour balance row, light/dark theme, and a home-screen icon
+- **Skill install** — an "Install Skill" button in the command bar: paste `claude plugin` commands (multi-line / `&&` supported) or an `owner/repo` shorthand, and it installs via the claude CLI in the background with live output; strict whitelist validation prevents command injection
+- **Session source filter** — a tri-state command-bar button cycling All → CLI-only → Desktop-only (by `ClaudeMetadata.Entrypoint`), highlighted with a matching glyph while active
 
 - **Region screenshot** — a screenshot button next to **Clear Tasks**, plus a global hotkey (default **Ctrl+Q**, changeable in the Control Center): drag a rectangle WeChat-style and it's auto-copied to the clipboard, ready to paste
 - **7-day usage chart** — click the 5-hour balance row to flip it into a **last-7-days token-usage bar chart** (greener/taller = heavier day, total shown on the right); click again to flip back. The choice is remembered the next time the island opens
@@ -56,8 +77,8 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 - **System stats bar** — a row of CPU / RAM / GPU / network speed between the header and the session list, refreshed every second (`GetSystemTimes` / `GlobalMemoryStatusEx` / GPU Engine counters / `NetworkInterface`). GPU utilization is read via the PDH **English-counter** API (`PdhAddEnglishCounterW`), so it reports a real % even on non-English Windows. Column widths are fixed so CPU/RAM/GPU don't jitter as the network text changes width
 - **Sound notifications** — the island plays a chime when a session goes Running → Idle/Completed (task done) and when it enters a needs-attention state (orange permission / red awaiting answer). A speaker toggle in the system stats bar mutes/unmutes (persisted)
 - **Media controls** — prev / play-pause / next (system media keys, works with Spotify, browsers, any player) plus a system volume slider (CoreAudio `IAudioEndpointVolume`, two-way synced)
-- **Per-session quick-mode buttons** — each session card has small icon buttons (hover shows "accept edits" / "auto mode" / "plan mode") to quickly switch that Claude session's permission mode, plus a × to temporarily hide the card; a hidden card reappears on its next activity (a new Running round or an attention phase)
-- **Click the header to clear** — clicking the "Open Island" header clears the session list; sessions reappear automatically when they next become active
+- **Per-session quick-mode buttons** — each session card has small icon buttons (hover shows "accept edits" / "auto mode" / "plan mode") to quickly switch that Claude session's permission mode, plus a × to temporarily hide the card; a hidden card reappears only when its transcript **actually gets new content** (or a blocking question / permission pops)
+- **Clear Tasks** — the trash button in the command bar clears the session list (running / needs-attention / pinned cards are kept); cleared sessions come back only on **genuine new activity**, never because of process churn
 - **Dynamic Island** — floating top-screen indicator for active sessions, tagged by tool icon, project name, and a colored status dot
 - **Permission mirror** — Claude Code's `PreToolUse` permission prompts are mirrored to the island. The three buttons inject `1` / `2` / `3` keystrokes into the Claude terminal via `SendInput`, equivalent to typing them yourself
 
