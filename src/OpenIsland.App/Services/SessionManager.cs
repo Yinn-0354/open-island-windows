@@ -464,6 +464,15 @@ public class SessionManager : IDisposable
                         }
                     }
 
+                    // hook payload 自带 permission_mode（default/acceptEdits/plan/bypassPermissions）——
+                    // 这是"该会话当前处于什么模式"的唯一可靠来源（终端 Shift+Tab 循环对外不可见）。
+                    // 每个 hook 事件都刷新，供网页"精确切模式"算循环步数 + 卡片显示模式徽章。
+                    if (claudePayload?.SessionId is { Length: > 0 } pmSid
+                        && !string.IsNullOrWhiteSpace(claudePayload.PermissionMode))
+                    {
+                        UpdateSessionPermissionMode(pmSid, claudePayload.PermissionMode.Trim());
+                    }
+
                     // PostToolUse 是"终端镜像反馈"信号 —— 用户在 Claude 终端按 1/2 同意后 tool 跑完触发，
                     // 此时灵动岛上原 PreToolUse 拉起的橙色卡片仍在等用户点（hook 还没收到 directive）。
                     // 见到 PostToolUse 就把卡片当用户已同意 resolve 掉，UI 立刻清。
@@ -1142,6 +1151,94 @@ public class SessionManager : IDisposable
 
         // 注意：发的是 Shift+Tab *循环*，不是"设为 {kind}"——精确落点不保证（见上方注释）。
         return await _terminalJumpService.SendShiftTabToTerminalAsync(pid);
+    }
+
+    /// <summary>
+    /// 把 hook 上报的 permission_mode 写进会话（变化才写 + 通知）。
+    /// 特例：CLI 在 auto mode 下 hook 报的仍是 "default"（实测 v2.1.156：终端模式条
+    /// "auto mode on" 时 permission_mode=default）—— 内存值是 "auto"（我们切过去的）
+    /// 而 hook 报 "default" 时不覆盖，否则刚切到 auto 的状态立刻被踩回 default，
+    /// 步数计算全错。错位最多持续一次操作：下一个非 default 上报会重新锚定。
+    /// </summary>
+    private void UpdateSessionPermissionMode(string sessionId, string mode)
+    {
+        bool changed = false;
+        lock (_stateLock)
+        {
+            if (_state.SessionsById.TryGetValue(sessionId, out var session)
+                && !string.Equals(session.PermissionMode, mode, StringComparison.Ordinal)
+                && !(string.Equals(session.PermissionMode, "auto", StringComparison.Ordinal)
+                     && string.Equals(mode, "default", StringComparison.Ordinal)))
+            {
+                var sessions = _state.Sessions.ToList();
+                var idx = sessions.FindIndex(s => s.Id == sessionId);
+                if (idx >= 0)
+                {
+                    sessions[idx] = sessions[idx] with { PermissionMode = mode };
+                    _state = new SessionState(sessions);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) NotifySessionsChanged();
+    }
+
+    /// <summary>
+    /// Shift+Tab 循环顺序里的下标（实测 v2.1.156 四态环：
+    /// default → acceptEdits → plan → auto → 回到 default）。
+    /// bypassPermissions 不在常规循环里，返回 -1（不支持作为起点/目标）。
+    /// </summary>
+    private static int PermissionModeIndex(string? mode) => mode switch
+    {
+        "default" => 0,
+        "acceptEdits" => 1,
+        "plan" => 2,
+        "auto" => 3,
+        _ => -1
+    };
+
+    /// <summary>
+    /// 网页"权限模式"下拉 → **精确**切到目标模式：用 hook 上报的当前模式算循环距离，
+    /// 聚焦该会话终端连发 N 次 Shift+Tab。与 <see cref="SendModeSwitchAsync"/>（岛上
+    /// best-effort 循环一格）的区别：这里知道起点，能保证落点 —— 但前提是 hook 报过
+    /// 模式（会话至少有过一次交互），否则拒绝并给人话原因，绝不盲发。
+    /// 成功后乐观更新会话的 PermissionMode（UI 即时反馈），下个 hook 事件以真实值纠正。
+    /// </summary>
+    public async Task<(bool Ok, string Reason)> SetPermissionModeAsync(string sessionId, string targetMode)
+    {
+        var target = PermissionModeIndex(targetMode);
+        if (target < 0) return (false, "bad-mode");
+
+        var session = GetSession(sessionId);
+        if (session == null) return (false, "no-session");
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+            return (false, "desktop-unsupported");
+
+        // 权限/提问弹窗挂着时 Shift+Tab 的语义不可控（弹窗界面有自己的键位）—— 先处理再切
+        if (session.Phase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer)
+            return (false, "busy-prompt");
+
+        var cur = PermissionModeIndex(session.PermissionMode);
+        if (cur < 0)
+        {
+            return string.Equals(session.PermissionMode, "bypassPermissions", StringComparison.OrdinalIgnoreCase)
+                ? (false, "bypass-mode")
+                : (false, "unknown-mode");
+        }
+
+        var steps = (target - cur + 4) % 4;
+        if (steps == 0) return (true, "already");
+
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid) return (false, "no-terminal");
+
+        var sent = await _terminalJumpService.SendShiftTabToTerminalAsync(pid, steps);
+        if (!sent) return (false, "inject-failed");
+
+        UpdateSessionPermissionMode(sessionId, targetMode);
+        return (true, "");
     }
 
     /// <summary>

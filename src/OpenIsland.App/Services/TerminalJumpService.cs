@@ -1032,8 +1032,9 @@ public partial class TerminalJumpService
     /// 前台*，所以必须先把目标终端激活并校验前台 HWND 一致，否则 abort —— 绝不能把
     /// Shift+Tab 打到错误的应用（典型：用户点击时 Claude Desktop 在前台）。
     /// </summary>
-    public async Task<bool> SendShiftTabToTerminalAsync(int claudePid)
+    public async Task<bool> SendShiftTabToTerminalAsync(int claudePid, int count = 1)
     {
+        if (count < 1) return true;
         var targetHwnd = FindTerminalHwndByPidChain(claudePid);
         if (targetHwnd == IntPtr.Zero)
         {
@@ -1054,7 +1055,24 @@ public partial class TerminalJumpService
             return false;
         }
 
-        SendShiftTab();
+        // count > 1 = 网页"精确切模式"：已知当前模式时按循环距离连发（激活一次就够）。
+        // 每发一格间隔一拍，给 Claude 终端渲染模式条的时间，连发过快会丢拍。
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0)
+            {
+                await Task.Delay(150);
+                // 连发期间用户可能切走前台 —— 每一格都复查，错了立刻停手
+                if (GetForegroundWindow() != targetHwnd)
+                {
+                    _logger?.LogWarning(
+                        "SendShiftTabToTerminalAsync: foreground lost mid-sequence ({Done}/{Count}) for pid {Pid}; stopping.",
+                        i, count, claudePid);
+                    return false;
+                }
+            }
+            SendShiftTab();
+        }
         return true;
     }
 

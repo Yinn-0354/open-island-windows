@@ -24,6 +24,14 @@ public record AgentSession
     public bool IsSessionEnded { get; init; }
     public bool IsProcessAlive { get; init; } = true;
 
+    /// <summary>
+    /// 当前权限模式（"default" / "acceptEdits" / "plan" / "bypassPermissions"），来自
+    /// hook payload 的 permission_mode 字段，每个 hook 事件刷新。null = 还没有收到过
+    /// hook 上报（无法精确切换模式）。放顶层而非 ClaudeMetadata —— 扫描的
+    /// ClaudeSessionMetadataUpdated 会整体替换 ClaudeMetadata，放那里会被周期性清掉。
+    /// </summary>
+    public string? PermissionMode { get; init; }
+
     // 可选元数据
     /// <summary>该会话所有待处理的权限请求（FIFO 队列）。支持并行 subagent 共享同一
     /// session_id 时的多个并发请求 —— 入队而非互相覆盖。</summary>

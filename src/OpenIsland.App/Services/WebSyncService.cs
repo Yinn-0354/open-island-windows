@@ -77,12 +77,17 @@ public sealed class WebSyncService : IDisposable
 
     private string[] SelectedSnapshot() { lock (_selLock) return _selected.ToArray(); }
 
-    public WebSyncService(SessionManager sessionManager)
+    // 最近一帧 5h 订阅余额快照（PlanUsageService 15s 推一帧；网页底部工具行显示）
+    private volatile PlanUsageSnapshot? _lastUsage;
+
+    public WebSyncService(SessionManager sessionManager, PlanUsageService planUsage)
     {
         _sessionManager = sessionManager;
         // 会话有任何变化（阶段切换/权限请求/新会话…）就推 SSE —— 网页端不用再 2.5s 盲轮询。
         // IsRunning 守门：服务没开时不必启动去抖定时器。
         _sessionManager.SessionsChanged += (_, _) => { if (IsRunning) NotifyChanged(); };
+        // 余额变化也推一帧（stats 里捎带 usage 字段），手机端余额条与岛同步刷新
+        planUsage.UsageUpdated += (_, snap) => { _lastUsage = snap; if (IsRunning) NotifyChanged(); };
     }
 
     /// <summary>开始监听。端口被占用等失败会抛异常，调用方负责把消息呈现给用户。</summary>
@@ -311,6 +316,10 @@ public sealed class WebSyncService : IDisposable
                 WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSend(body));
             else if (method == "POST" && path == "/api/approve")
                 WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleApprove(body));
+            else if (method == "POST" && path == "/api/setmode")
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSetMode(body));
+            else if (method == "POST" && path == "/api/answer")
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleAnswer(body));
             else
                 WriteResponse(stream, "404 Not Found", "text/plain; charset=utf-8", "Not Found");
         }
@@ -521,6 +530,95 @@ public sealed class WebSyncService : IDisposable
     }
 
     /// <summary>
+    /// POST /api/setmode：{"id":"会话id","mode":"default"|"acceptEdits"|"plan"} →
+    /// 精确切换该会话的权限模式（SessionManager.SetPermissionModeAsync：按 hook 上报的
+    /// 当前模式算 Shift+Tab 循环步数，聚焦终端连发）。与 /api/send 同模式：UI 线程跑注入，
+    /// HTTP 线程阻塞等结果。
+    /// </summary>
+    private string HandleSetMode(byte[] body)
+    {
+        try
+        {
+            if (body.Length == 0) return """{"ok":false,"reason":"empty","reasonText":"请求无效"}""";
+            using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(body));
+            var root = doc.RootElement;
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var mode = root.TryGetProperty("mode", out var mEl) ? mEl.GetString() : null;
+            // 白名单四态（Shift+Tab 实测循环：default→acceptEdits→plan→auto）——
+            // bypassPermissions 故意不收（不在循环里，切不过去）
+            if (string.IsNullOrWhiteSpace(id) || mode is not ("default" or "acceptEdits" or "plan" or "auto"))
+                return """{"ok":false,"reason":"bad-request","reasonText":"请求无效"}""";
+
+            var app = System.Windows.Application.Current;
+            if (app == null) return """{"ok":false,"reason":"shutdown","reasonText":"应用正在退出"}""";
+
+            var task = app.Dispatcher.Invoke(() => _sessionManager.SetPermissionModeAsync(id!, mode!));
+            var (ok, reason) = task.GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new
+            {
+                ok,
+                reason,
+                reasonText = ok ? (reason == "already" ? "已在该模式" : "") : ModeReasonText(reason)
+            });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { ok = false, reason = ex.Message, reasonText = "切换出错" });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/answer：{"id":"会话id","option":2} 或 {"id":"会话id","skip":true} →
+    /// 回答 AskUserQuestion（SessionManager.AnswerQuestionAsync：CLI 注入 "{n}\r"，
+    /// 桌面端 UIA 点选项行；skip = Esc / Skip 按钮）。与 /api/send 同模式阻塞等结果。
+    /// </summary>
+    private string HandleAnswer(byte[] body)
+    {
+        try
+        {
+            if (body.Length == 0) return """{"ok":false,"reasonText":"请求无效"}""";
+            using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(body));
+            var root = doc.RootElement;
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var skip = root.TryGetProperty("skip", out var sEl) && sEl.ValueKind == JsonValueKind.True;
+            int option = 0;
+            if (root.TryGetProperty("option", out var oEl) && oEl.ValueKind == JsonValueKind.Number)
+                oEl.TryGetInt32(out option);
+            // 选项编号 1..20 防呆（Claude Code 的 AskUserQuestion 最多 4 个选项，留余量）
+            if (string.IsNullOrWhiteSpace(id) || (!skip && option is < 1 or > 20))
+                return """{"ok":false,"reasonText":"请求无效"}""";
+
+            var app = System.Windows.Application.Current;
+            if (app == null) return """{"ok":false,"reasonText":"应用正在退出"}""";
+
+            var task = app.Dispatcher.Invoke(() => _sessionManager.AnswerQuestionAsync(id!, option, skip));
+            var ok = task.GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new
+            {
+                ok,
+                reasonText = ok ? "" : "没能把答案送进终端，请稍后重试或直接在终端选择"
+            });
+        }
+        catch
+        {
+            return """{"ok":false,"reasonText":"回答出错"}""";
+        }
+    }
+
+    /// <summary>模式切换失败原因 → 网页人话。</summary>
+    private static string ModeReasonText(string? reason) => reason switch
+    {
+        "no-session" => "会话不存在",
+        "desktop-unsupported" => "桌面端会话暂不支持网页切换模式，请在 Claude 客户端里操作",
+        "busy-prompt" => "该会话有待处理的权限/提问弹窗，先处理掉再切换模式",
+        "unknown-mode" => "还不知道该会话当前处于什么模式（会话需要先有一次交互），暂时无法精确切换",
+        "bypass-mode" => "该会话以跳过全部权限的模式运行，不支持切换",
+        "no-terminal" => "没找到该会话的终端（同目录开了多个会话且无法区分时，为安全起见不发送）",
+        "inject-failed" => "没能把终端切到前台，请稍后重试",
+        _ => "切换失败"
+    };
+
+    /// <summary>
     /// GET /icon.png 用的图标字节：从 WPF 资源里抠 face.png（手机"添加到主屏幕"的图标）。
     /// GetResourceStream 必须在 UI 线程调用（依赖 Application 资源系统），结果缓存一次 ——
     /// 失败也缓存空数组（调用方据此回 404），避免每次请求都白跑一趟 Dispatcher。
@@ -625,16 +723,19 @@ public sealed class WebSyncService : IDisposable
                     updatedMs = new DateTimeOffset(x.Mtime).ToUnixTimeMilliseconds(),
                     tokens = (ulong)(x.Session.ClaudeMetadata?.TotalTokens ?? 0u),
                     featured = filterMode,
+                    // 当前权限模式（hook 上报；null = 未知）。前端显示徽章 + 模式下拉据此防呆
+                    mode = x.Session.PermissionMode,
                     permission = BuildPermission(x.Session.PermissionRequest),
-                    question = x.Session.QuestionPrompt?.Prompt,
-                    messages = ReadTail(x.Path, filterMode ? 60 : 12)
+                    question = BuildQuestion(x.Session),
+                    // 单会话视图要滚动看历史：默认 20 条、选中 60 条
+                    messages = ReadTail(x.Path, filterMode ? 60 : 20)
                 })
                 .ToList();
             return JsonSerializer.Serialize(new { stats = BuildStats(), sessions = items });
         }
         catch
         {
-            return """{"stats":{"running":0,"attention":0,"idle":0,"total":0},"sessions":[]}""";
+            return """{"stats":{"running":0,"attention":0,"idle":0,"total":0,"usageLeft":-1,"usageReset":"","usageApi":false,"usageTokens":0},"sessions":[]}""";
         }
     }
 
@@ -646,6 +747,10 @@ public sealed class WebSyncService : IDisposable
     private static object? BuildPermission(PermissionRequest? pr)
     {
         if (pr == null) return null;
+        // AskUserQuestion 是"提问"不是"权限"：让位给 question 块（选项按钮），
+        // 不然网页会同时弹出"允许/拒绝"——对提问而言语义完全是错的。
+        if (string.Equals(pr.ToolName, "AskUserQuestion", StringComparison.OrdinalIgnoreCase))
+            return null;
         var btn2 = pr.SuggestedAlwaysAllow?.ToButtonLabel();
         if (btn2 != null)
             btn2 = System.Text.RegularExpressions.Regex.Replace(btn2, @"^\s*2\s*[\.、]?\s*", "");
@@ -657,6 +762,51 @@ public sealed class WebSyncService : IDisposable
         };
     }
 
+    /// <summary>
+    /// 提问块 JSON：AskUserQuestion 挂起（或 hook 报了 QuestionPrompt）时返回
+    /// { prompt, options:[{n,label,desc}] }，否则 null。options 从
+    /// PermissionRequest.ToolInput 的 questions[0].options[] 解析（Claude Code 实际格式：
+    /// {"questions":[{"question":"…","options":[{"label":"…","description":"…"},…]}]}），
+    /// 与岛上 ParseAskUserQuestion 同一份契约；解析失败只回 prompt —— 网页退化为
+    /// "输入框回复编号"，不至于整块消失。
+    /// </summary>
+    private static object? BuildQuestion(AgentSession s)
+    {
+        var pr = s.PermissionRequest;
+        var isQuestion = string.Equals(pr?.ToolName, "AskUserQuestion", StringComparison.OrdinalIgnoreCase);
+        var prompt = s.QuestionPrompt?.Prompt ?? "";
+        if (!isQuestion && prompt.Length == 0) return null;
+
+        var options = new List<object>();
+        if (isQuestion && pr!.ToolInput is { Count: > 0 } input)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(JsonSerializer.Serialize(input));
+                if (doc.RootElement.TryGetProperty("questions", out var qs)
+                    && qs.ValueKind == JsonValueKind.Array && qs.GetArrayLength() > 0)
+                {
+                    var q = qs[0];
+                    if (prompt.Length == 0 && q.TryGetProperty("question", out var qt))
+                        prompt = qt.GetString() ?? "";
+                    if (q.TryGetProperty("options", out var opts) && opts.ValueKind == JsonValueKind.Array)
+                    {
+                        int n = 1;
+                        foreach (var opt in opts.EnumerateArray())
+                        {
+                            var label = opt.TryGetProperty("label", out var l) ? l.GetString() ?? "" : "";
+                            var desc = opt.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
+                            if (desc.Length > 160) desc = desc[..160];
+                            options.Add(new { n = n++, label, desc });
+                        }
+                    }
+                }
+            }
+            catch { /* 格式变了 → 只回 prompt，网页用输入框兜底 */ }
+        }
+        return new { prompt, options };
+    }
+
     /// <summary>stats 的 JSON 形状。属性名刻意小写 —— 直接成为 JSON 键（同 TailMessage）。</summary>
     private sealed class StatsDto
     {
@@ -664,6 +814,11 @@ public sealed class WebSyncService : IDisposable
         public int attention { get; set; }
         public int idle { get; set; }
         public int total { get; set; }
+        // ── 5h 订阅余额（底部工具行）：usageLeft = 剩余百分比，-1 = 未知/未取到 ──
+        public int usageLeft { get; set; } = -1;
+        public string usageReset { get; set; } = "";   // "0h54m"，空 = 不显示重置时间
+        public bool usageApi { get; set; }              // API 模式：只报终身累计 token
+        public ulong usageTokens { get; set; }
     }
 
     /// <summary>
@@ -693,6 +848,23 @@ public sealed class WebSyncService : IDisposable
         catch
         {
             // 枚举会话失败 —— 回零值，别让一帧 stats 拖垮整个响应
+        }
+
+        // 5h 余额：与灵动岛同一口径（剩余 = 100 - 已用%；Indeterminate 时显示 "--" 不伪造）
+        var u = _lastUsage;
+        if (u != null)
+        {
+            if (u.IsApi)
+            {
+                stats.usageApi = true;
+                stats.usageTokens = u.UsedTokens;
+            }
+            else if (!u.Indeterminate)
+            {
+                stats.usageLeft = Math.Clamp(100 - u.Percent, 0, 100);
+                if (u.ResetIn is { } r && r > TimeSpan.Zero)
+                    stats.usageReset = $"{(int)r.TotalHours}h{r.Minutes:D2}m";
+            }
         }
         return stats;
     }
@@ -783,18 +955,21 @@ public sealed class WebSyncService : IDisposable
     }
 
     /// <summary>
-    /// 内嵌的同步页面：SSE（/api/events）推送 + 150ms 去抖拉取 /api/sessions，
-    /// 按 sig 比对做增量 DOM 渲染（只重建变化的卡，滚动位置天然保留），SSE 断开时
-    /// 自动降级 5s 轮询。esc() 对所有动态文本做 HTML 转义 —— transcript 内容不可信
-    /// （可能含尖括号代码）。注意：C# 原始字符串里不能出现连续三个双引号，HTML 属性
-    /// 内嵌 JS 字符串一律用 &amp;quot; 实体规避。
+    /// 内嵌的同步页面 —— 聊天应用式单会话视图：顶部玻璃头（标题/统计/铃铛/主题）+
+    /// 会话标签行（标签 = /api/sessions 返回的会话；灵动岛选中谁就生成谁，点击切换），
+    /// 中间会话区高度固定（flex 撑满视口）内部滚轮翻历史（贴底跟随新消息、翻历史保位），
+    /// 底部 dock：输入框在上、工具行（模型切换 / 当前会话 tokens / 5h 余额）在下。
+    /// 数据链路：SSE（/api/events）推送 + 150ms 去抖拉取 /api/sessions，断线降级 5s 轮询；
+    /// 每会话草稿独立保存，切标签不丢。esc() 对所有动态文本做 HTML 转义 —— transcript
+    /// 内容不可信（可能含尖括号代码）。注意：C# 原始字符串里不能出现连续三个双引号，
+    /// HTML 属性内嵌 JS 字符串一律用 &amp;quot; 实体规避。
     /// </summary>
     private const string IndexHtml = """
         <!DOCTYPE html>
         <html>
         <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
         <meta name="theme-color" content="#0c0c0e">
         <meta name="apple-mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -802,51 +977,61 @@ public sealed class WebSyncService : IDisposable
         <link rel="icon" href="/icon.png">
         <title>Open Island · Web Sync</title>
         <style>
-          body { margin:0; padding:0 16px calc(16px + env(safe-area-inset-bottom));
-                 background:#0c0c0e; color:#e7e7ea;
+          * { box-sizing:border-box; }
+          html,body { height:100%; }
+          body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:column;
+                 overflow:hidden; background:#0c0c0e; color:#e7e7ea;
                  font-family:-apple-system,'Segoe UI',Roboto,sans-serif; }
-          /* ── 吸顶毛玻璃头部：第一行标题+圆钮，第二行状态 chips ── */
-          .hdr { position:sticky; top:0; z-index:20; margin:0 -16px 12px;
-                 padding:calc(10px + env(safe-area-inset-top)) 16px 8px;
-                 background:rgba(12,12,14,.78);
+          /* ── 玻璃头部：标题行 + 会话标签行（标签 = 灵动岛选中的会话） ── */
+          .hdr { flex:none; background:rgba(12,12,14,.78);
                  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-                 border-bottom:1px solid rgba(255,255,255,.06); }
-          .hwrap { max-width:760px; margin:0 auto; }
-          .topbar { display:flex; align-items:center; gap:8px; }
-          h1 { font-size:17px; margin:0; flex:1; overflow:hidden;
-               text-overflow:ellipsis; white-space:nowrap; }
-          .iconbtn { width:34px; height:34px; border-radius:50%; flex:none; padding:0;
+                 border-bottom:1px solid rgba(255,255,255,.06);
+                 padding:calc(10px + env(safe-area-inset-top)) 0 0; }
+          .topbar { display:flex; align-items:center; gap:8px; padding:0 16px;
+                    max-width:860px; margin:0 auto; width:100%; }
+          h1 { font-size:16px; margin:0; flex:none; }
+          .statline { flex:1; font-size:11px; color:#8a8a90; overflow:hidden;
+                      text-overflow:ellipsis; white-space:nowrap; }
+          .iconbtn { width:32px; height:32px; border-radius:50%; flex:none; padding:0;
                      background:#1c1c1f; border:1px solid #2a2a2e; color:#e7e7ea;
-                     font-size:15px; cursor:pointer; }
-          .chips { display:flex; gap:8px; margin-top:9px; overflow-x:auto; }
-          .chip { display:flex; align-items:center; gap:6px; flex:none; cursor:pointer;
-                  background:#1c1c1f; border:1px solid #2a2a2e; border-radius:999px;
-                  padding:4px 12px; font-size:12px; color:#9aa0a6; user-select:none; }
-          .chip b { font-weight:600; color:#e7e7ea; }
-          .chip.on { border-color:#CC785C; background:#2e2118; color:#e7e7ea; }
-          .cd { width:8px; height:8px; border-radius:50%; flex:none; }
-          .wrap { max-width:760px; margin:0 auto; }
-          .wrap.wide { max-width:1560px; }   /* 多选并行时放宽页面 */
-          #list.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
-                       gap:12px; align-items:start; }
-          #list.grid .card { margin-bottom:0; }
-          .card { background:#1c1c1f; border:1px solid #2a2a2e; border-radius:14px;
-                  padding:12px 14px; margin-bottom:12px; }
-          .card.featured { border-color:#CC785C; }
-          .card.attention { border-color:#FF9800; }   /* 有待批准权限：橙色描边 */
-          .head { display:flex; align-items:center; gap:8px; margin-bottom:2px; }
-          .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-          .title { font-size:14px; font-weight:600; overflow:hidden;
-                   text-overflow:ellipsis; white-space:nowrap; }
-          .badge { font-size:10px; color:#9aa0a6; background:#26262b;
-                   border-radius:8px; padding:1px 7px; flex:none; }
-          .star { font-size:10px; color:#CC785C; background:#2e2118;
-                  border-radius:8px; padding:1px 7px; flex:none; }
-          .time { font-size:11px; color:#6e6e74; margin-left:auto; flex:none; }
-          .meta { font-size:11px; color:#8a8a90; margin:0 0 8px 17px; }
-          /* 审批块 / 提问块（橙色系，卡内顶部） */
+                     font-size:14px; cursor:pointer; }
+          .tabs { display:flex; gap:8px; overflow-x:auto; padding:9px 16px 10px;
+                  max-width:860px; margin:0 auto; width:100%; scrollbar-width:none; }
+          .tabs::-webkit-scrollbar { display:none; }
+          .tab { display:flex; align-items:center; gap:6px; flex:none; cursor:pointer;
+                 user-select:none; background:#1c1c1f; border:1px solid #2a2a2e;
+                 border-radius:999px; padding:6px 12px; font-size:12px; color:#c9c9ce;
+                 max-width:190px; }
+          .tab .tt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .tab.on { border-color:#CC785C; background:#2e2118; color:#fff; }
+          .tab .td { width:7px; height:7px; border-radius:50%; flex:none; }
+          .tab .star { color:#CC785C; font-size:10px; flex:none; }
+          /* ── 会话区：高度固定（flex 撑满），内部滚轮浏览历史 ── */
+          .chat { flex:1 1 0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+          /* min-height + 首子元素 margin-top:auto：消息少时贴底（聊天 app 观感），
+             多时正常从顶往下排、容器内滚动 */
+          .chatin { max-width:860px; margin:0 auto; padding:14px 16px 10px;
+                    display:flex; flex-direction:column; gap:7px; min-height:100%; }
+          .chatin > :first-child { margin-top:auto; }
+          .msg { max-width:86%; padding:8px 11px; border-radius:12px; font-size:13.5px;
+                 white-space:pre-wrap; word-break:break-word; line-height:1.5; }
+          .user { align-self:flex-end; background:#3a2a1f; }
+          .assistant { align-self:flex-start; background:#1f1f23; }
+          .msg.ghost { opacity:.55; }   /* 乐观回显气泡：下次刷新被真实数据替换 */
+          .msg pre.code { background:#101013; border:1px solid #2a2a2e; border-radius:8px;
+                          padding:8px 10px; margin:6px 0; white-space:pre-wrap;
+                          word-break:break-all; font-family:ui-monospace,Consolas,monospace;
+                          font-size:12px; line-height:1.5; }
+          .code .dadd { color:#5DCAA5; }
+          .code .ddel { color:#F09595; }
+          .msg code { background:#101013; border-radius:4px; padding:1px 5px;
+                      font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+          .more { color:#CC785C; cursor:pointer; font-size:12px; user-select:none; }
+          .empty { color:#6e6e74; font-size:12.5px; text-align:center; padding:40px 20px;
+                   line-height:1.8; }
+          /* 审批 / 提问块（会话流底部，跟着最新消息走） */
           .perm,.qbox { background:rgba(255,152,0,.08); border:1px solid rgba(255,152,0,.45);
-                        border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+                        border-radius:12px; padding:10px 12px; align-self:stretch; }
           .permhead { color:#FF9800; font-weight:700; font-size:13px; margin-bottom:6px; }
           .permdesc { font-family:ui-monospace,Consolas,monospace; font-size:11.5px;
                       color:#b9bcc2; white-space:pre-wrap; word-break:break-word;
@@ -858,37 +1043,24 @@ public sealed class WebSyncService : IDisposable
           .pb.allow { background:#2e7d4f; }
           .pb.always { background:#3a3a40; }
           .pb.deny { background:#7a2e2e; }
+          .pb.qopt { background:#33536b; }   /* 提问选项：蓝系，与"允许/拒绝"区分 */
           .permok { color:#5DCAA5; font-size:13px; font-weight:600; }
           .qtext { font-size:13px; white-space:pre-wrap; word-break:break-word; }
           .qhint { font-size:11px; color:#FF9800; margin-top:6px; }
-          .msgs { display:flex; flex-direction:column; gap:6px; }
-          .msg { max-width:86%; padding:7px 10px; border-radius:11px; font-size:13px;
-                 white-space:pre-wrap; word-break:break-word; line-height:1.45; }
-          .user { align-self:flex-end; background:#3a2a1f; }
-          .assistant { align-self:flex-start; background:#26262b; }
-          .msg.ghost { opacity:.55; }   /* 乐观回显气泡：下次重建被真实数据替换 */
-          .msg pre.code { background:#101013; border:1px solid #2a2a2e; border-radius:8px;
-                          padding:8px 10px; margin:6px 0; white-space:pre-wrap;
-                          word-break:break-all; font-family:ui-monospace,Consolas,monospace;
-                          font-size:12px; line-height:1.5; }
-          .code .dadd { color:#5DCAA5; }
-          .code .ddel { color:#F09595; }
-          .msg code { background:#101013; border-radius:4px; padding:1px 5px;
-                      font-family:ui-monospace,Consolas,monospace; font-size:12px; }
-          .more { color:#CC785C; cursor:pointer; font-size:12px; user-select:none; }
-          .empty { color:#6e6e74; font-size:12px; }
-          /* 功能栏：输入栏上方（模型切换下拉等） */
-          .toolbar { display:flex; gap:8px; margin-top:10px; }
-          .toolbar select { background:#101013; color:#9aa0a6; border:1px solid #2a2a2e;
-                  border-radius:8px; padding:5px 8px; font-size:12px; }
-          .composer { display:flex; gap:8px; margin-top:8px; position:relative; }
+          /* ── 底部 dock：输入框在上，模型 / tokens / 5h 余额在下 ── */
+          .dock { flex:none; background:rgba(12,12,14,.85);
+                  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+                  border-top:1px solid rgba(255,255,255,.06);
+                  padding:10px 0 calc(10px + env(safe-area-inset-bottom)); }
+          .dockin { max-width:860px; margin:0 auto; padding:0 16px; }
+          .composer { display:flex; gap:8px; position:relative; }
           .composer input { flex:1; background:#101013; color:#e7e7ea; font-size:14px;
-                  border:1px solid #2a2a2e; border-radius:10px; padding:9px 12px; outline:none; }
+                  border:1px solid #2a2a2e; border-radius:11px; padding:10px 13px;
+                  outline:none; min-width:0; }
           .composer input:focus { border-color:#CC785C; }
-          .composer button { background:#CC785C; color:#fff; border:none; border-radius:10px;
-                  padding:9px 16px; font-size:13px; flex:none; cursor:pointer; }
+          .composer button { background:#CC785C; color:#fff; border:none; border-radius:11px;
+                  padding:10px 17px; font-size:13px; flex:none; cursor:pointer; }
           .composer button:disabled { opacity:.5; }
-          /* / 命令自动补全面板（悬浮在输入框上方） */
           .acmenu { display:none; position:absolute; bottom:100%; left:0; margin-bottom:6px;
                     min-width:260px; max-height:230px; overflow:auto; z-index:9;
                     background:#1c1c1f; border:1px solid #3a3a3e; border-radius:10px; }
@@ -896,59 +1068,77 @@ public sealed class WebSyncService : IDisposable
           .acmenu div:hover { background:#26262b; }
           .acmenu b { color:#CC785C; font-weight:600; }
           .acmenu span { color:#8a8a90; margin-left:8px; font-size:12px; }
-          .sendmsg { font-size:11px; color:#9aa0a6; margin-top:5px; min-height:14px; }
+          .toolbar { display:flex; align-items:center; gap:12px; margin-top:8px;
+                     font-size:11.5px; color:#8a8a90; }
+          .toolbar select { background:transparent; color:#9aa0a6; border:1px solid #2a2a2e;
+                  border-radius:8px; padding:4px 7px; font-size:11.5px; max-width:150px; }
+          .quota { display:flex; align-items:center; gap:5px; margin-left:auto; flex:none; }
+          .qd { width:7px; height:7px; border-radius:50%; background:#5A5A5E; flex:none; }
+          .sendmsg { font-size:11px; color:#9aa0a6; margin-top:4px; min-height:13px; }
           .sendmsg.err { color:#e07a6a; }
           /* ── 白天模式（所有组件都要有对应覆盖） ── */
           body.light { background:#f2f3f5; color:#1c1c1f; }
-          .light .hdr { background:rgba(243,244,246,.8); border-bottom-color:rgba(0,0,0,.07); }
+          .light .hdr { background:rgba(243,244,246,.85); border-bottom-color:rgba(0,0,0,.07); }
           .light .iconbtn { background:#fff; border-color:#d8dade; color:#1c1c1f; }
-          .light .chip { background:#fff; border-color:#d8dade; color:#5a5f66; }
-          .light .chip b { color:#1c1c1f; }
-          .light .chip.on { background:#f7e8df; border-color:#CC785C; color:#1c1c1f; }
-          .light .card { background:#ffffff; border-color:#e1e2e6; }
-          .light .card.featured { border-color:#CC785C; }
-          .light .card.attention { border-color:#FF9800; }
-          .light .badge { background:#eceef1; color:#5a5f66; }
-          .light .star { background:#f7e8df; }
-          .light .meta { color:#7a7f87; }
-          .light .perm,.light .qbox { background:rgba(255,152,0,.1);
-                                      border-color:rgba(230,126,0,.5); }
-          .light .permhead,.light .qhint { color:#c46a00; }
-          .light .permdesc { color:#5a5f66; }
-          .light .pb.always { background:#5a5f66; }
-          .light .permok { color:#1f7a4d; }
-          .light .msg.assistant { background:#eef0f3; }
+          .light .statline { color:#7a7f87; }
+          .light .tab { background:#fff; border-color:#d8dade; color:#5a5f66; }
+          .light .tab.on { background:#f7e8df; border-color:#CC785C; color:#1c1c1f; }
+          .light .msg.assistant { background:#ffffff; }
           .light .msg.user { background:#f7e3d6; }
           .light .msg pre.code { background:#f0f1f4; border-color:#e1e2e6; color:#1c1c1f; }
           .light .code .dadd { color:#1f7a4d; }
           .light .code .ddel { color:#c0392b; }
           .light .msg code { background:#eceef1; }
-          .light .toolbar select { background:#fff; color:#5a5f66; border-color:#d8dade; }
+          .light .perm,.light .qbox { background:rgba(255,152,0,.1);
+                                      border-color:rgba(230,126,0,.5); }
+          .light .permhead,.light .qhint { color:#c46a00; }
+          .light .permdesc { color:#5a5f66; }
+          .light .pb.always { background:#5a5f66; }
+          .light .pb.qopt { background:#3d6e91; }
+          .light .permok { color:#1f7a4d; }
+          .light .dock { background:rgba(243,244,246,.9); border-top-color:rgba(0,0,0,.07); }
           .light .composer input { background:#fff; color:#1c1c1f; border-color:#d8dade; }
+          .light .toolbar { color:#7a7f87; }
+          .light .toolbar select { color:#5a5f66; border-color:#d8dade; }
           .light .acmenu { background:#fff; border-color:#d8dade; }
           .light .acmenu div:hover { background:#f0f1f4; }
-          .light .time { color:#9aa0a6; }
           .light .empty { color:#9aa0a6; }
         </style>
         </head>
         <body>
         <div class="hdr">
-          <div class="hwrap">
-            <div class="topbar">
-              <h1>Open Island · Web Sync</h1>
-              <button class="iconbtn" id="soundBtn" onclick="toggleSound()" title="声音提醒">&#128277;</button>
-              <button class="iconbtn" id="themeBtn" onclick="toggleTheme()" title="日夜主题">&#127769;</button>
-            </div>
-            <div class="chips">
-              <div class="chip on" id="chip-all" onclick="setFilter('all')">全部 <b id="c-total">0</b></div>
-              <div class="chip" id="chip-run" onclick="setFilter('run')"><span class="cd" style="background:#2196F3"></span>运行 <b id="c-run">0</b></div>
-              <div class="chip" id="chip-att" onclick="setFilter('att')"><span class="cd" style="background:#FF9800"></span>待批准 <b id="c-att">0</b></div>
-              <div class="chip" id="chip-idle" onclick="setFilter('idle')"><span class="cd" style="background:#9E9E9E"></span>空闲 <b id="c-idle">0</b></div>
-            </div>
+          <div class="topbar">
+            <h1>Open Island</h1>
+            <span class="statline" id="statline"></span>
+            <button class="iconbtn" id="soundBtn" onclick="toggleSound()" title="声音提醒">&#128277;</button>
+            <button class="iconbtn" id="themeBtn" onclick="toggleTheme()" title="日夜主题">&#127769;</button>
           </div>
+          <div class="tabs" id="tabs"></div>
         </div>
-        <div class="wrap">
-          <div id="list"><div id="emptyMsg" class="empty">加载中&#8230;</div></div>
+        <div class="chat" id="chat"><div class="chatin" id="chatin"><div class="empty">连接中&#8230;</div></div></div>
+        <div class="dock">
+          <div class="dockin">
+            <div class="composer">
+              <div class="acmenu"></div>
+              <input type="text" id="msgIn" placeholder="回复&#8230; 输入 / 出命令"
+               oninput="onType(this)" onblur="hideAc(this)"
+               onkeydown="if(event.key===&quot;Enter&quot;&amp;&amp;!event.isComposing&amp;&amp;event.keyCode!==229)sendActive()">
+              <button onclick="sendActive()">发送</button>
+            </div>
+            <div class="toolbar">
+              <select id="mdl" onchange="modelChange(this)"><option value="">&#9881; 切换模型&#8230;</option></select>
+              <select id="pmd" onchange="permModeChange(this)">
+                <option value="">&#128737; 权限模式&#8230;</option>
+                <option value="default">默认（逐项确认）</option>
+                <option value="acceptEdits">自动接受编辑</option>
+                <option value="plan">计划模式</option>
+                <option value="auto">自动模式（auto）</option>
+              </select>
+              <span id="tokline"></span>
+              <span class="quota"><span class="qd" id="qdot"></span><span id="quota">5h 余 --</span></span>
+            </div>
+            <div class="sendmsg" id="sendmsg"></div>
+          </div>
         </div>
         <script>
         // ── 基础工具 ──
@@ -960,12 +1150,13 @@ public sealed class WebSyncService : IDisposable
           if(p==='Completed')return '#9E9E9E';
           return '#4CAF50';
         }
-        function phaseText(p){
-          if(p==='Running')return '运行中';
-          if(p==='WaitingForApproval')return '待批准';
-          if(p==='WaitingForAnswer')return '待回答';
-          if(p==='Completed')return '完成';
-          return '空闲';
+        function modeText(m){
+          if(m==='acceptEdits')return '自动接受编辑';
+          if(m==='plan')return '计划模式';
+          if(m==='auto')return '自动模式';
+          if(m==='bypassPermissions')return '跳过权限';
+          if(m==='default')return '默认询问';
+          return m;
         }
         function humanTokens(n){
           n=Number(n)||0;
@@ -981,14 +1172,7 @@ public sealed class WebSyncService : IDisposable
           return (d.getHours()<10?'0':'')+d.getHours()+':'
                 +(d.getMinutes()<10?'0':'')+d.getMinutes();
         }
-        // 每 30s 刷一遍所有相对时间 —— 卡片没重建时时间也要往前走
-        setInterval(function(){
-          var els=document.querySelectorAll('.reltime');
-          for(var i=0;i<els.length;i++){
-            var ms=parseInt(els[i].getAttribute('data-ms'),10);
-            if(ms)els[i].textContent=relTime(ms);
-          }
-        },30000);
+        function h32(s){var h=0;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
         // ── 主题：localStorage 记住；首次无记录按系统 prefers-color-scheme ──
         function applyTheme(){
           var saved=localStorage.getItem('oi-theme');
@@ -996,7 +1180,6 @@ public sealed class WebSyncService : IDisposable
             :!!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches);
           document.body.classList.toggle('light',light);
           document.getElementById('themeBtn').innerHTML=light?'&#9728;':'&#127769;';
-          // theme-color 跟着主题走 —— 否则浅色模式下手机地址栏/状态栏还是深色，和页面割裂
           var tc=document.querySelector('meta[name=theme-color]');
           if(tc)tc.setAttribute('content',light?'#f2f3f5':'#0c0c0e');
         }
@@ -1005,8 +1188,8 @@ public sealed class WebSyncService : IDisposable
             document.body.classList.contains('light')?'dark':'light');
           applyTheme();
         }
-        // ── 声音提醒：局域网 http 拿不到 Notification 权限，用 WebAudio 两短声替代 ──
-        var soundOn=localStorage.getItem('oi-sound')==='on';  // 默认关
+        // ── 声音提醒（WebAudio 两短声）：必须用户手势内解锁 AudioContext ──
+        var soundOn=localStorage.getItem('oi-sound')==='on';
         var audioCtx=null;
         function updateSoundBtn(){
           var b=document.getElementById('soundBtn');
@@ -1022,8 +1205,6 @@ public sealed class WebSyncService : IDisposable
         function toggleSound(){
           soundOn=!soundOn;
           localStorage.setItem('oi-sound',soundOn?'on':'off');
-          // 必须在用户点击手势内创建/resume AudioContext，否则移动端拒绝出声；
-          // 顺带响一声当即时反馈
           if(soundOn){ensureAudio();beep();}
           updateSoundBtn();
         }
@@ -1031,10 +1212,7 @@ public sealed class WebSyncService : IDisposable
           if(!soundOn)return;
           ensureAudio();
           if(!audioCtx)return;
-          try{
-            var t=audioCtx.currentTime;
-            tone(t);tone(t+0.2);  // 880Hz 两短声
-          }catch(e){}
+          try{var t=audioCtx.currentTime;tone(t);tone(t+0.2);}catch(e){}
         }
         function tone(start){
           var o=audioCtx.createOscillator(),g=audioCtx.createGain();
@@ -1045,13 +1223,12 @@ public sealed class WebSyncService : IDisposable
           o.connect(g);g.connect(audioCtx.destination);
           o.start(start);o.stop(start+0.16);
         }
-        // 刷新页面后 soundOn 从 localStorage 恢复为开，但 AudioContext 只能在用户手势内
-        // 创建/resume（自动播放策略）—— 第一次触屏/点击顺手解锁，否则铃铛亮着却永远无声。
+        // 刷新后 soundOn 恢复为开时，第一次触屏顺手解锁 AudioContext（自动播放策略）
         document.addEventListener('pointerdown',function unlockAudio(){
           if(soundOn)ensureAudio();
           document.removeEventListener('pointerdown',unlockAudio);
         });
-        // ── 标题闪烁：有待批准且页面不在前台时提醒，focus/归零即复原 ──
+        // ── 标题闪烁：有待批准且页面不在前台时提醒 ──
         var baseTitle=document.title,flashTimer=null,flashOn=false,curAttention=0;
         function updateFlash(){
           if(curAttention>0&&(document.hidden||!document.hasFocus())){
@@ -1067,58 +1244,53 @@ public sealed class WebSyncService : IDisposable
           document.title=baseTitle;
         }
         window.addEventListener('focus',function(){stopFlash();scheduleRefresh();});
-        // 最常见路径是"先看到待批准、再切走"—— 此后不会有新 stats 帧来触发 updateFlash，
-        // 必须在失焦/切后台的瞬间基于 curAttention 立即重估，否则闪烁永远不会开始。
         window.addEventListener('blur',updateFlash);
         document.addEventListener('visibilitychange',updateFlash);
-        // ── 状态 chips + phase 过滤（client 端过滤渲染） ──
-        var FILTER='all',lastAttention=null;
+        // ── 顶部统计 + 底部 5h 余额（与灵动岛同一口径） ──
+        var lastAttention=null;
         function applyStats(st){
           if(!st)return;
           curAttention=st.attention||0;
-          setNum('c-total',st.total);setNum('c-run',st.running);
-          setNum('c-att',st.attention);setNum('c-idle',st.idle);
-          // attention 比上次增大 → 有新的待批准/待回答；首帧只记录不响
+          var el=document.getElementById('statline');
+          if(el)el.textContent='运行 '+(st.running||0)+' · 待批准 '+(st.attention||0)
+            +' · 空闲 '+(st.idle||0);
+          renderQuota(st);
           if(lastAttention!==null&&curAttention>lastAttention&&soundOn)beep();
           lastAttention=curAttention;
           updateFlash();
         }
-        function setNum(id,v){var e=document.getElementById(id);if(e)e.textContent=String(v||0);}
-        function passFilter(s){
-          if(FILTER==='run')return s.phase==='Running';
-          if(FILTER==='att')return s.phase==='WaitingForApproval'||s.phase==='WaitingForAnswer';
-          if(FILTER==='idle')return s.phase!=='Running'
-            &&s.phase!=='WaitingForApproval'&&s.phase!=='WaitingForAnswer';
-          return true;
-        }
-        function setFilter(f){
-          FILTER=f;
-          var ids=['all','run','att','idle'];
-          for(var i=0;i<ids.length;i++){
-            var c=document.getElementById('chip-'+ids[i]);
-            if(c)c.classList.toggle('on',ids[i]===f);
+        function renderQuota(st){
+          var q=document.getElementById('quota'),d=document.getElementById('qdot');
+          if(!q||!d)return;
+          if(st.usageApi){
+            q.textContent=humanTokens(st.usageTokens||0)+' 累计';
+            d.style.background='#5A5A5E';
+            return;
           }
-          renderSessions(lastSessions);  // 用上次数据立即重渲染，不等下次推送
+          var left=(st.usageLeft==null?-1:st.usageLeft);
+          if(left<0){q.textContent='5h 余 --';d.style.background='#5A5A5E';return;}
+          var t='5h 余 '+left+'%';
+          if(st.usageReset)t+=' · '+st.usageReset+' 后重置';
+          q.textContent=t;
+          d.style.background=left<=10?'#E74C3C':left<=30?'#FF9F0A':'#30D158';
         }
-        // ── 模型列表（功能栏下拉）。可能晚于首帧渲染返回：成功后清掉所有 sig 强制重建，
-        // 把下拉补进已有卡片（否则 sig 不变卡片不重建，下拉长期只有占位项）；失败 5s 重试。
-        var MODEL_OPTS='';
+        // ── 模型列表（底部工具行下拉），失败 5s 重试 ──
         function loadModels(){
           fetch('/api/models').then(function(r){return r.json();}).then(function(ms){
-            MODEL_OPTS=ms.map(function(m){
-              return '<option value="'+esc(m.slug)+'">'+esc(m.name)+'</option>';
-            }).join('');
-            cardMap.forEach(function(v){v.sig='';});
-            renderSessions(lastSessions);
+            var sel=document.getElementById('mdl');
+            var opts='<option value="">&#9881; 切换模型&#8230;</option>';
+            for(var i=0;i<ms.length;i++)
+              opts+='<option value="'+esc(ms[i].slug)+'">'+esc(ms[i].name)+'</option>';
+            sel.innerHTML=opts;
           }).catch(function(){setTimeout(loadModels,5000);});
         }
         function modelChange(sel){
           var slug=sel.value;
           if(!slug)return;
           sel.value='';
-          sendText(sel.getAttribute('data-id'),'/model '+slug);
+          if(activeSid)sendText(activeSid,'/model '+slug,null);
         }
-        // ── / 命令自动补全（与 Claude Code 客户端一致：/r 出 r 开头命令，点击选用） ──
+        // ── / 命令自动补全 ──
         var SLASH=[
           ['/add-dir','添加工作目录'],['/agents','管理子代理'],['/clear','清空对话'],
           ['/compact','压缩上下文'],['/config','打开设置'],['/context','上下文占用'],
@@ -1149,7 +1321,7 @@ public sealed class WebSyncService : IDisposable
           menu.style.display='none';
         }
         function pick(ev,item){
-          ev.preventDefault(); // mousedown 抢在 blur 前；阻止默认避免输入框失焦
+          ev.preventDefault();
           var menu=item.parentElement;
           var input=menu.parentElement.querySelector('input');
           input.value=item.getAttribute('data-cmd')+' ';
@@ -1157,28 +1329,26 @@ public sealed class WebSyncService : IDisposable
           input.focus();
         }
         function hideAc(input){
-          // blur 稍等一拍再收 —— 让 acmenu 的 mousedown 先处理
           setTimeout(function(){
             var m=input.parentElement.querySelector('.acmenu');
             if(m)m.style.display='none';
           },150);
         }
-        // ── 消息富渲染：安全第一 —— 先 esc 全文，再切 ``` 围栏与 `内联代码` ──
+        // ── 消息富渲染：先 esc 全文，再切 ``` 围栏与 `内联代码` ──
         function renderBody(t){
           var s=esc(t);
           var parts=s.split('```');
           var out='';
           for(var i=0;i<parts.length;i++){
             if(i%2===1){
-              // 奇数段 = 围栏代码块：首行若是语言标记（如 js / diff）则不上墙
               var lines=parts[i].split('\n');
               if(lines.length>1&&/^[A-Za-z0-9_+-]{0,20}$/.test(lines[0]))lines.shift();
               if(lines.length>1&&lines[lines.length-1]==='')lines.pop();
               var lh='';
               for(var j=0;j<lines.length;j++){
                 var ln=lines[j],cls='';
-                if(ln.indexOf('+ ')===0)cls=' class="dadd"';       // diff 新增行
-                else if(ln.indexOf('- ')===0)cls=' class="ddel"';  // diff 删除行
+                if(ln.indexOf('+ ')===0)cls=' class="dadd"';
+                else if(ln.indexOf('- ')===0)cls=' class="ddel"';
                 lh+='<span'+cls+'>'+ln+'</span>';
                 if(j<lines.length-1)lh+='\n';
               }
@@ -1189,14 +1359,11 @@ public sealed class WebSyncService : IDisposable
           }
           return out;
         }
-        // 长文折叠：>320 字符显示前 300 字 + 展开；原文存 data-full（esc 过，属性安全）
         function collapsedHtml(t){
           return renderBody(t.slice(0,300))+'&#8230; <span class="more">展开</span>';
         }
-        // 展开状态记在 JS 侧（键 = 会话id:文本hash）—— 状态若只存在 DOM 节点上，
-        // 任何 sig 变化引起的整卡重建都会把读到一半的长文打回折叠态。
+        // 展开状态记在 JS 侧（键 = 会话id:文本hash），整块重建后仍保留
         var expKeys=new Set();
-        function h32(s){var h=0;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return h;}
         function msgHtml(m,sid){
           var cls=m.role==='user'?'user':'assistant';
           var t=m.text||'';
@@ -1210,7 +1377,6 @@ public sealed class WebSyncService : IDisposable
           }
           return '<div class="msg '+cls+'">'+renderBody(t)+'</div>';
         }
-        // 展开/收起用事件委托 —— 消息节点随整卡重建，逐个绑事件不划算
         document.addEventListener('click',function(ev){
           var t=ev.target;
           if(!t||!t.classList||!t.classList.contains('more'))return;
@@ -1228,21 +1394,118 @@ public sealed class WebSyncService : IDisposable
             msg.innerHTML=renderBody(full)+' <span class="more">收起</span>';
           }
         });
-        // ── 卡片构建（整卡 innerHTML，一次性拼好） ──
-        function buildCard(node,s){
-          var cls='card';
-          if(s.permission)cls+=' attention';
-          if(s.featured)cls+=' featured';
-          node.className=cls;
-          var h='<div class="head">'
-            +'<div class="dot" style="background:'+dotColor(s.phase)+'"></div>'
-            +'<div class="title">'+esc(s.title)+'</div>'
-            +(s.featured?'<div class="star">&#9733; 已选</div>':'')
-            +(s.entry?'<div class="badge">'+esc(s.entry)+'</div>':'')
-            +'<div class="time reltime" data-ms="'+(s.updatedMs||0)+'">'
-            +relTime(s.updatedMs||0)+'</div>'
-            +'</div>';
-          h+='<div class="meta">'+phaseText(s.phase)+' &#183; '+humanTokens(s.tokens)+'</div>';
+        // ── 会话标签 + 单会话视图 ──
+        var lastSessions=[],drafts={},lastChatKey='';
+        var activeSid=localStorage.getItem('oi-active')||'';
+        function pickActive(){
+          if(lastSessions.length===0)return '';
+          for(var i=0;i<lastSessions.length;i++)
+            if(lastSessions[i].id===activeSid)return activeSid;
+          // 原 active 不在列表里了：优先跳到待批准的，其次第一个
+          for(var i=0;i<lastSessions.length;i++){
+            var p=lastSessions[i].phase;
+            if(p==='WaitingForApproval'||p==='WaitingForAnswer')return lastSessions[i].id;
+          }
+          return lastSessions[0].id;
+        }
+        function switchTab(id){
+          if(id===activeSid)return;
+          var inp=document.getElementById('msgIn');
+          if(inp)drafts[activeSid]=inp.value;   // 每个会话的未发送草稿独立保存
+          activeSid=id;
+          localStorage.setItem('oi-active',id);
+          if(inp)inp.value=drafts[id]||'';
+          lastChatKey='';
+          renderTabs();
+          renderActive(true);
+        }
+        function renderTabs(){
+          var box=document.getElementById('tabs');
+          var sl=box.scrollLeft;
+          var h='';
+          for(var i=0;i<lastSessions.length;i++){
+            var s=lastSessions[i];
+            h+='<div class="tab'+(s.id===activeSid?' on':'')
+              +'" onclick="switchTab(&quot;'+esc(s.id)+'&quot;)">'
+              +'<span class="td" style="background:'+dotColor(s.phase)+'"></span>'
+              +(s.featured?'<span class="star">&#9733;</span>':'')
+              +'<span class="tt">'+esc(s.title||s.id)+'</span>'
+              +'</div>';
+          }
+          box.innerHTML=h;
+          box.scrollLeft=sl;
+        }
+        function findActive(){
+          for(var i=0;i<lastSessions.length;i++)
+            if(lastSessions[i].id===activeSid)return lastSessions[i];
+          return null;
+        }
+        function updateTokline(){
+          var el=document.getElementById('tokline');
+          if(!el)return;
+          var s=findActive();
+          el.textContent=s?humanTokens(s.tokens)+' · '+relTime(s.updatedMs||0)
+            +(s.mode?' · '+modeText(s.mode):''):'';
+        }
+        // ── 权限模式切换：精确切（后端按 hook 上报的当前模式算 Shift+Tab 步数） ──
+        function permModeChange(sel){
+          var mode=sel.value;
+          if(!mode)return;
+          sel.value='';
+          if(!activeSid)return;
+          var sm=document.getElementById('sendmsg');
+          if(sm){sm.textContent='切换模式中…';sm.className='sendmsg';}
+          sel.disabled=true;
+          fetch('/api/setmode',{method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id:activeSid,mode:mode})})
+          .then(function(r){return r.json();})
+          .then(function(res){
+            sel.disabled=false;
+            if(res.ok){
+              if(sm)sm.textContent=res.reasonText||('已切换：'+modeText(mode));
+              scheduleRefresh();
+            }else{
+              if(sm){sm.textContent='失败：'+(res.reasonText||res.reason||'');
+                     sm.className='sendmsg err';}
+            }
+          })
+          .catch(function(){
+            sel.disabled=false;
+            if(sm){sm.textContent='网络错误';sm.className='sendmsg err';}
+          });
+        }
+        function renderActive(force){
+          var chat=document.getElementById('chat');
+          var chatin=document.getElementById('chatin');
+          var sid=pickActive();
+          if(sid!==activeSid){
+            activeSid=sid;
+            if(sid)localStorage.setItem('oi-active',sid);
+            lastChatKey='';
+            force=true;
+          }
+          if(!sid){
+            chatin.innerHTML='<div class="empty">暂无会话<br>在灵动岛展开列表，点会话状态圆点选择要同步的对话；<br>选了几个，这里就有几个标签</div>';
+            document.getElementById('tokline').textContent='';
+            lastChatKey='';
+            return;
+          }
+          var s=findActive();
+          if(!s)return;
+          updateTokline();
+          var key=sid+'|'+s.updatedMs+':'+(s.messages?s.messages.length:0)+':'+s.phase
+            +':'+(s.permission?h32(String(s.permission.tool||'')+'|'+(s.permission.desc||'')):0)
+            +':'+(s.question?h32(JSON.stringify(s.question)):0);
+          if(!force&&key===lastChatKey)return;
+          lastChatKey=key;
+          // 粘底判定：本来就在底部附近 → 重建后继续贴底；在上面翻历史 → 保持原位置
+          var nearBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<90;
+          var prevTop=chat.scrollTop;
+          var h='';
+          var arr=s.messages||[];
+          if(arr.length===0)h+='<div class="empty">(暂无消息)</div>';
+          for(var i=0;i<arr.length;i++)h+=msgHtml(arr[i],sid);
           if(s.permission){
             var p=s.permission;
             h+='<div class="perm">'
@@ -1256,112 +1519,114 @@ public sealed class WebSyncService : IDisposable
               +'</div></div>';
           }
           if(s.question){
-            h+='<div class="qbox"><div class="qtext">'+esc(s.question)+'</div>'
-              +'<div class="qhint">在下方输入框回复编号或内容</div></div>';
-          }
-          var msgs='',arr=s.messages||[];
-          for(var i=0;i<arr.length;i++)msgs+=msgHtml(arr[i],s.id);
-          if(!msgs)msgs='<div class="empty">(暂无消息)</div>';
-          h+='<div class="msgs">'+msgs+'</div>';
-          h+='<div class="toolbar">'
-            +'<select class="mdl" data-id="'+esc(s.id)+'" onchange="modelChange(this)">'
-            +'<option value="">&#9881; 切换模型&#8230;</option>'+MODEL_OPTS+'</select>'
-            +'</div>';
-          h+='<div class="composer">'
-            +'<div class="acmenu"></div>'
-            +'<input type="text" placeholder="回复&#8230; 输入 / 出命令" data-id="'+esc(s.id)+'"'
-            +' oninput="onType(this)" onblur="hideAc(this)"'
-            // isComposing/229 守卫：拼音输入法按 Enter 确认候选词时 key 也是 Enter，
-            // 不挡住会把打到一半的内容提前发出去（中文用户必踩）
-            +' onkeydown="if(event.key===&quot;Enter&quot;&amp;&amp;!event.isComposing&amp;&amp;event.keyCode!==229)sendMsg(this)">'
-            +'<button onclick="sendMsg(this.parentElement.querySelector(&quot;input&quot;))">发送</button>'
-            +'</div>';
-          h+='<div class="sendmsg" id="sm-'+esc(s.id)+'"></div>';
-          node.innerHTML=h;
-        }
-        // ── 增量渲染：Map sid→{node,sig}，sig 不变跳过、变了只重建该卡 ──
-        var cardMap=new Map(),lastSessions=[];
-        function cardBusy(node){
-          // 细粒度 busy-guard：该卡内 input/select 有焦点或有未发送文字 → 本次不动它
-          var a=document.activeElement;
-          if(a&&node.contains(a)&&(a.tagName==='INPUT'||a.tagName==='SELECT'))return true;
-          var ins=node.querySelectorAll('.composer input');
-          for(var i=0;i<ins.length;i++)if(ins[i].value)return true;
-          return false;
-        }
-        function renderSessions(sessions){
-          lastSessions=sessions;
-          var list=document.getElementById('list');
-          var shown=[];
-          for(var i=0;i<sessions.length;i++)
-            if(passFilter(sessions[i]))shown.push(sessions[i]);
-          var multi=shown.length>1&&!!shown[0].featured;  // 选中模式多卡 → grid 并行
-          document.querySelector('.wrap').classList.toggle('wide',multi);
-          list.classList.toggle('grid',multi);
-          if(shown.length===0){
-            // 清场同样要尊重 busy-guard：正在输入的卡（含未发送草稿、可能正聚焦）
-            // 不许删 —— 电脑端批准导致 phase 变化掉出过滤时，草稿会随卡一起丢
-            var deadE=[];
-            cardMap.forEach(function(v,k){if(!cardBusy(v.node))deadE.push(k);});
-            for(var i=0;i<deadE.length;i++){
-              cardMap.get(deadE[i]).node.remove();
-              cardMap.delete(deadE[i]);
-            }
-            var e=document.getElementById('emptyMsg');
-            if(cardMap.size===0){
-              if(!e){
-                e=document.createElement('div');
-                e.id='emptyMsg';e.className='empty';
-                list.appendChild(e);
+            var qp=s.question,qo=qp.options||[];
+            h+='<div class="qbox"><div class="permhead">&#10067; Claude 在等你回答</div>'
+              +'<div class="qtext">'+esc(qp.prompt||'')+'</div>';
+            if(qo.length){
+              h+='<div class="permbtns" style="margin-top:9px">';
+              for(var qi=0;qi<qo.length;qi++){
+                h+='<button class="pb qopt" data-n="'+qo[qi].n+'" onclick="answerQ(this)"'
+                  +' title="'+esc(qo[qi].desc||'')+'">'+qo[qi].n+' '+esc(qo[qi].label||'')+'</button>';
               }
-              e.textContent=sessions.length===0?'暂无会话':'当前过滤条件下没有会话';
-            }else if(e){e.remove();}
-            return;
+              h+='<button class="pb deny" data-n="0" onclick="answerQ(this)">跳过</button></div>'
+                +'<div class="qhint">点选项直接回答；也可在下方输入框自由回复</div>';
+            }else{
+              h+='<div class="qhint">在下方输入框回复编号或内容</div>';
+            }
+            h+='</div>';
           }
-          var e0=document.getElementById('emptyMsg');
-          if(e0)e0.remove();
-          var seen={},prev=null;
-          for(var i=0;i<shown.length;i++){
-            var s=shown[i];
-            seen[s.id]=1;
-            var entry=cardMap.get(s.id);
-            if(!entry){
-              entry={node:document.createElement('div'),sig:''};
-              entry.node.setAttribute('data-sid',s.id);  // approve 等从卡上取会话 id
-              cardMap.set(s.id,entry);
+          chatin.innerHTML=h;
+          if(force||nearBottom)chat.scrollTop=chat.scrollHeight;
+          else chat.scrollTop=prevTop;
+        }
+        // 30s 刷一次 tokens 行里的相对时间
+        setInterval(updateTokline,30000);
+        // ── 回答提问：POST /api/answer {id,option} / {id,skip}（id = 当前标签会话） ──
+        function answerQ(btn){
+          var n=parseInt(btn.getAttribute('data-n'),10);
+          var box=btn.parentElement;
+          var bs=box.querySelectorAll('button');
+          for(var i=0;i<bs.length;i++)bs[i].disabled=true;
+          fetch('/api/answer',{method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(n>0?{id:activeSid,option:n}:{id:activeSid,skip:true})})
+          .then(function(r){return r.json();})
+          .then(function(res){
+            if(res.ok){
+              box.innerHTML='<span class="permok">已回答 &#10003;</span>';
+              scheduleRefresh();
+            }else{
+              for(var i=0;i<bs.length;i++)bs[i].disabled=false;
+              var sm=document.getElementById('sendmsg');
+              if(sm){sm.textContent='失败：'+(res.reasonText||'');sm.className='sendmsg err';}
             }
-            // sig 必须覆盖卡上**所有**可见字段：title 来自会话元数据，可在 transcript
-            // 不落盘（updatedMs 不变）的情况下单独变化；perm/question 取内容哈希而非有无
-            var sig=s.updatedMs+':'+(s.messages?s.messages.length:0)+':'+s.phase
-                   +':'+(s.featured?1:0)+':'+(s.tokens||0)
-                   +':'+h32(String(s.title||'')+'|'+(s.entry||''))
-                   +':'+(s.permission?h32(String(s.permission.tool||'')+'|'+(s.permission.desc||'')):0)
-                   +':'+(s.question?h32(String(s.question)):0);
-            var busy=cardBusy(entry.node);
-            // sig 没变跳过；busy 时不重建也不记 sig，下次空闲再补
-            if(sig!==entry.sig&&!busy){
-              buildCard(entry.node,s);
-              entry.sig=sig;
+          })
+          .catch(function(){
+            for(var i=0;i<bs.length;i++)bs[i].disabled=false;
+          });
+        }
+        // ── 审批：POST /api/approve {id,digit}（id = 当前标签会话） ──
+        function approve(btn){
+          var digit=btn.getAttribute('data-d');
+          var sid=activeSid;
+          var box=btn.parentElement;
+          var bs=box.querySelectorAll('button');
+          for(var i=0;i<bs.length;i++)bs[i].disabled=true;
+          fetch('/api/approve',{method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id:sid,digit:digit})})
+          .then(function(r){return r.json();})
+          .then(function(res){
+            if(res.ok){
+              box.innerHTML='<span class="permok">已发送 &#10003;</span>';
+              scheduleRefresh();
+            }else{
+              for(var i=0;i<bs.length;i++)bs[i].disabled=false;
             }
-            // insertBefore 维持服务器顺序；busy 卡不挪位（DOM move 会让输入框失焦）
-            if(entry.node.parentNode!==list){
-              list.insertBefore(entry.node,prev?prev.nextSibling:list.firstChild);
-            }else if(!busy){
-              var want=prev?prev.nextSibling:list.firstChild;
-              if(want!==entry.node)list.insertBefore(entry.node,want);
+          })
+          .catch(function(){
+            for(var i=0;i<bs.length;i++)bs[i].disabled=false;
+          });
+        }
+        // ── 发送：POST /api/send，成功后乐观回显 ──
+        async function sendText(id,text,inputToClear){
+          var sm=document.getElementById('sendmsg');
+          if(sm){sm.textContent='发送中…';sm.className='sendmsg';}
+          try{
+            var r=await fetch('/api/send',{method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id:id,text:text})});
+            var res=await r.json();
+            if(res.ok){
+              if(inputToClear)inputToClear.value='';
+              drafts[id]='';
+              if(sm)sm.innerHTML='已发送 &#10003;';
+              if(id===activeSid){
+                var chatin=document.getElementById('chatin');
+                var chat=document.getElementById('chat');
+                var d=document.createElement('div');
+                d.className='msg user ghost';
+                d.textContent=text;
+                chatin.appendChild(d);
+                chat.scrollTop=chat.scrollHeight;
+              }
+              scheduleRefresh();
+            }else{
+              if(sm){sm.textContent='失败：'+(res.reasonText||res.reason||'');
+                     sm.className='sendmsg err';}
             }
-            prev=entry.node;
-          }
-          // 服务器列表里消失的卡 → 移除；busy 的卡留到输入框清空/失焦后的渲染再删
-          var dead=[];
-          cardMap.forEach(function(v,k){if(!seen[k]&&!cardBusy(v.node))dead.push(k);});
-          for(var i=0;i<dead.length;i++){
-            cardMap.get(dead[i]).node.remove();
-            cardMap.delete(dead[i]);
+          }catch(e){
+            if(sm){sm.textContent='网络错误';sm.className='sendmsg err';}
           }
         }
-        // ── SSE 推送 + 150ms 去抖拉取；断线降级 5s 轮询 ──
-        var pollTimer=null,refreshTimer=null;
+        function sendActive(){
+          var inp=document.getElementById('msgIn');
+          var text=inp.value.trim();
+          if(!text||!activeSid)return;
+          sendText(activeSid,text,inp);
+        }
+        // ── SSE 推送 + 150ms 去抖拉取；断线降级 5s 轮询；乱序响应丢弃 ──
+        var pollTimer=null,refreshTimer=null,fetchSeq=0;
         function scheduleRefresh(){
           if(refreshTimer)clearTimeout(refreshTimer);
           refreshTimer=setTimeout(refresh,150);
@@ -1380,90 +1645,28 @@ public sealed class WebSyncService : IDisposable
               scheduleRefresh();
             };
             es.onerror=function(){
-              // EventSource 会自动重连；重连期间靠轮询兜底，onopen 时清掉
               if(!pollTimer)pollTimer=setInterval(refresh,5000);
             };
           }catch(e){
             pollTimer=setInterval(refresh,5000);
           }
         }
-        var fetchSeq=0;  // SSE 去抖/轮询/focus 三个入口并发拉取，乱序返回时旧数据要丢弃
         async function refresh(){
           var my=++fetchSeq;
           try{
             var r=await fetch('/api/sessions');
             var data=await r.json();
-            if(my!==fetchSeq)return; // 已有更新的请求发出 —— 这份是旧数据，不许覆盖渲染
+            if(my!==fetchSeq)return;
             if(data.stats)applyStats(data.stats);
-            renderSessions(data.sessions||[]);
+            lastSessions=data.sessions||[];
+            renderTabs();
+            renderActive(false);
           }catch(e){/* 服务端重启 / 网络抖动 —— 下次推送或轮询再试 */}
-        }
-        // ── 审批：POST /api/approve {id,digit}；等待中禁用，ok 后换成已发送 ──
-        function approve(btn){
-          var card=btn.closest('.card');
-          if(!card)return;
-          var id=card.getAttribute('data-sid');
-          var digit=btn.getAttribute('data-d');
-          var box=btn.parentElement;
-          var bs=box.querySelectorAll('button');
-          for(var i=0;i<bs.length;i++)bs[i].disabled=true;
-          fetch('/api/approve',{method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({id:id,digit:digit})})
-          .then(function(r){return r.json();})
-          .then(function(res){
-            if(res.ok){
-              box.innerHTML='<span class="permok">已发送 &#10003;</span>';
-              scheduleRefresh();
-            }else{
-              for(var i=0;i<bs.length;i++)bs[i].disabled=false;
-            }
-          })
-          .catch(function(){
-            for(var i=0;i<bs.length;i++)bs[i].disabled=false;
-          });
-        }
-        // ── 发送：POST /api/send，成功后乐观回显一个半透明 user 气泡 ──
-        async function sendText(id,text,inputToClear){
-          var sm=document.getElementById('sm-'+id);
-          if(sm){sm.textContent='发送中…';sm.className='sendmsg';}
-          try{
-            var r=await fetch('/api/send',{method:'POST',
-              headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({id:id,text:text})});
-            var res=await r.json();
-            if(res.ok){
-              if(inputToClear)inputToClear.value='';
-              if(sm)sm.innerHTML='已发送 &#10003;';
-              // 乐观回显：真实数据要等注入+transcript 落盘，先给用户一个气泡
-              var entry=cardMap.get(id);
-              if(entry){
-                var box=entry.node.querySelector('.msgs');
-                if(box){
-                  var d=document.createElement('div');
-                  d.className='msg user ghost';
-                  d.textContent=text;
-                  box.appendChild(d);
-                }
-              }
-              scheduleRefresh();
-            }else{
-              if(sm){sm.textContent='失败：'+(res.reasonText||res.reason||'');
-                     sm.className='sendmsg err';}
-            }
-          }catch(e){
-            if(sm){sm.textContent='网络错误';sm.className='sendmsg err';}
-          }
-        }
-        function sendMsg(input){
-          var text=input.value.trim();
-          if(!text)return;
-          sendText(input.getAttribute('data-id'),text,input);
         }
         // ── 启动 ──
         applyTheme();
         updateSoundBtn();
-        refresh();     // 首渲染不等模型表 —— loadModels 成功后会自己清 sig 重渲染补下拉
+        refresh();
         loadModels();
         startSse();
         </script>
