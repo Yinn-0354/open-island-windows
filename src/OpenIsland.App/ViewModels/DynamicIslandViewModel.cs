@@ -44,16 +44,31 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     private SessionPhase? _prevAggregatePhase;
 
     /// <summary>
-    /// 用户用小叉号临时收起的 session。key=sessionId，value=sawQuiet（被收起后
-    /// 是否已经走到过 Idle/Completed 安静态）。语义：
-    ///   · 被收起后仍 Running（本轮没结束）→ 继续隐藏
-    ///   · 走到 Idle/Completed → sawQuiet=true，仍隐藏（本轮活动收尾）
-    ///   · 安静后再次 Running（新一轮）→ 移出、重新显示
+    /// 用户用小叉号 / "清理任务" 临时收起的 session。key=sessionId。
+    ///
+    /// 判定改用 **transcript 内容水位**（mtime）而不是 phase：phase 会说谎 ——
+    /// SyncProcessStatus 在进程存活翻转时会把 phase 拉成 Running（同目录/标题模糊匹配，
+    /// 任何 claude 进程出现都能"点亮"一批历史会话），按 phase 判"新一轮活动"会让
+    /// 清掉的卡片过一阵子集体复活（实测根因）。mtime 不会说谎：转录文件真有新字节
+    /// 落盘才算"有新活动"。语义：
+    ///   · 收起后本轮还在写（mtime 持续前进）→ 水位跟进，继续隐藏
+    ///   · 停笔超过 DismissQuietGap → sawQuiet=true（本轮收尾），仍隐藏
+    ///   · 安静后 mtime 再次前进（真·新内容）→ 移出、重新显示
     ///   · 任意时刻进入 WaitingForApproval/WaitingForAnswer（需关注）→ 立即移出、
     ///     重新显示（阻塞性 prompt 不允许被永久藏掉）
     /// 进程退出 / 重启应用后自然清空（仅内存，符合"临时"语义）。
     /// </summary>
-    private readonly Dictionary<string, bool> _dismissed = new();
+    private sealed class DismissRecord
+    {
+        public bool SawQuiet;       // 收起后是否已观察到"停笔"（水位静止超过 DismissQuietGap）
+        public DateTime Watermark;  // 收起后见过的最新 transcript 写入时间（UTC）
+    }
+
+    private readonly Dictionary<string, DismissRecord> _dismissed = new();
+
+    /// <summary>转录停笔多久算"本轮收尾"。太短：长工具静默期会被误判收尾，
+    /// 工具出结果时卡片弹回；太长：清掉后紧接着的新一轮可能被吞。</summary>
+    private static readonly TimeSpan DismissQuietGap = TimeSpan.FromSeconds(120);
 
     /// <summary>被图钉固定的会话 Id —— "清理任务"不会清掉它们（用户显式保留）。</summary>
     private readonly HashSet<string> _pinned = new(StringComparer.Ordinal);
@@ -666,13 +681,16 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         // 退到 RunningSessionInfo 的项目名兜底，再退到字面量 "Claude"。
         // 改成 cc-switch 的做法：按转录文件 mtime 排序的 scan 会话直接当"当前活跃
         // 会话"列表用，把 ProcessMonitor 的运行进程数仅当作"应该显示几条"的依据。
-        var sessionsByRecency = _sessionManager.GetAllSessions()
+        var withMtime = _sessionManager.GetAllSessions()
             .Where(s => s.Tool == AgentTool.ClaudeCode && !string.IsNullOrEmpty(s.ClaudeMetadata?.TranscriptPath))
             .Select(s => new { Session = s, Mtime = TryGetMtime(s.ClaudeMetadata!.TranscriptPath!) })
             .Where(x => x.Mtime.HasValue)
             .OrderByDescending(x => x.Mtime!.Value)
-            .Select(x => x.Session)
             .ToList();
+        var sessionsByRecency = withMtime.Select(x => x.Session).ToList();
+        // id → 转录 mtime（UTC），给收起状态机做内容水位比对
+        var mtimeById = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        foreach (var x in withMtime) mtimeById[x.Session.Id] = x.Mtime!.Value;
 
         var assignedIds = new HashSet<string>();
         var desired = new List<(string Key, AgentSession? Session, RunningSessionInfo? Info)>();
@@ -699,13 +717,14 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             if (session != null)
             {
                 assignedIds.Add(session.Id);
-                if (IsHiddenByDismiss(session.Id, session.Phase)) continue;
+                if (IsHiddenByDismiss(session.Id, session.Phase,
+                        mtimeById.TryGetValue(session.Id, out var mt) ? mt : null)) continue;
                 if (!PassesSourceFilter(session)) continue; // 来源筛选（全部/终端/客户端）
                 desired.Add((session.Id, session, null));
             }
             else
             {
-                if (IsHiddenByDismiss(r.SessionId, null)) continue;
+                if (IsHiddenByDismiss(r.SessionId, null, null)) continue;
                 if (!PassesSourceFilter(null)) continue;    // 占位卡按终端算
                 desired.Add((r.SessionId, null, r));
             }
@@ -804,7 +823,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     private void DismissSession(string id)
     {
         if (string.IsNullOrEmpty(id)) return;
-        _dismissed[id] = false; // sawQuiet 初值 false，下一次 RefreshSessions 按 phase 推进
+        // Watermark 初值 MinValue：下一次 RefreshSessions 用真实 mtime 填水位并推进状态机
+        _dismissed[id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
         RefreshSessions();
     }
 
@@ -823,8 +843,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     ///   · 阻塞性 prompt（WaitingForApproval/WaitingForAnswer）—— IsHiddenByDismiss 里
     ///     "需关注 phase 压过收起"那条规则会在本次 RefreshSessions 立即把它移出 _dismissed
     ///     并保留可见，未答的权限不会被清掉（用户仍要回应）。
-    ///   · 其余收起的 session —— 跑完转 Idle/Completed 继续藏；安静后再次 Running（新一轮）
-    ///     或进入需关注，由既有 IsHiddenByDismiss 自动放回。
+    ///   · 其余收起的 session —— 停笔后继续藏；转录真有新内容落盘（新一轮活动）
+    ///     或进入需关注，由既有 IsHiddenByDismiss（内容水位版）自动放回。
     /// 复用既有 dismiss/reappear 状态机，不另写过滤逻辑；运行数徽章仍由 RefreshSessions
     /// 末尾按真实运行进程数算，与"视觉清空"解耦。
     ///
@@ -854,9 +874,28 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             // 图钉固定的会话：用户显式保留，不清理。
             if (_pinned.Contains(s.Id))
                 continue;
-            // 已在 _dismissed 里的不要覆盖其 sawQuiet（保持它在状态机里的既有进度）
+            // 已在 _dismissed 里的不要覆盖其水位/进度（保持它在状态机里的既有状态）
             if (!_dismissed.ContainsKey(s.Id))
-                _dismissed[s.Id] = false;
+                _dismissed[s.Id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
+        }
+
+        // 清理范围必须是**此刻所有已知的安静会话**，不只是可见列表：卡数 = 运行进程数，
+        // 只清可见的 N 张，进程槽会立刻把第 N+1 名往后的陈年会话顶上来补位（实测：清完
+        // 马上冒出从未显示过的旧卡），视觉上等于"没清干净"。全量记下水位后补位无从发生，
+        // 之后谁的转录真有新内容谁再回来 —— 与单卡收起同一套状态机。
+        foreach (var s in _sessionManager.GetAllSessions())
+        {
+            if (s.Tool != AgentTool.ClaudeCode || string.IsNullOrEmpty(s.Id)) continue;
+            if (s.Phase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer) continue;
+            if (_pinned.Contains(s.Id)) continue;
+            // "正在活动"以转录新鲜度为准而非 phase —— 历史状态里可能残留进程同步伪造的
+            // Running（清不掉就成了永远赶不走的卡）。2 分钟内有写入的才保留。
+            var tp = s.ClaudeMetadata?.TranscriptPath;
+            if (!string.IsNullOrEmpty(tp) && TryGetMtime(tp!) is { } m
+                && DateTime.UtcNow - m <= TimeSpan.FromMinutes(2))
+                continue;
+            if (!_dismissed.ContainsKey(s.Id))
+                _dismissed[s.Id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
         }
 
         // 刷新：IsHiddenByDismiss 会把刚记下的统统隐藏，但阻塞性 prompt 那条会被
@@ -922,36 +961,44 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 返回 true = 这条 session 当前应保持隐藏（被收起且还没"再次活动"）。
-    /// 会按 phase 推进 _dismissed 的状态机（见 _dismissed 字段注释）。
+    /// 返回 true = 这条 session 当前应保持隐藏（被收起且还没"真有新活动"）。
+    /// 按 **transcript 内容水位** 推进状态机（见 _dismissed 字段注释）——
+    /// 故意不看 Running/Idle phase：phase 会被进程存活同步伪造（本次 bug 根因），
+    /// 而转录文件的 mtime 只有真写入新内容才会前进。
     /// </summary>
-    private bool IsHiddenByDismiss(string id, SessionPhase? phase)
+    private bool IsHiddenByDismiss(string id, SessionPhase? phase, DateTime? transcriptMtimeUtc)
     {
-        if (string.IsNullOrEmpty(id) || !_dismissed.TryGetValue(id, out var sawQuiet))
+        if (string.IsNullOrEmpty(id) || !_dismissed.TryGetValue(id, out var rec))
             return false;
 
-        // 需关注 phase 压过收起 —— 阻塞性 prompt 必须冒出来
+        // 需关注 phase 压过收起 —— 阻塞性 prompt 必须冒出来（hook 写入，可信）
         if (phase is SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer)
         {
             _dismissed.Remove(id);
             return false;
         }
 
-        // 走到安静态：本轮活动收尾，标记 sawQuiet，仍隐藏
-        if (phase is SessionPhase.Idle or SessionPhase.Completed)
+        // 没有转录的占位卡：无从判断"新活动"，维持隐藏（进程消失后由剪枝回收）
+        if (transcriptMtimeUtc is not { } mtime)
+            return true;
+
+        if (!rec.SawQuiet)
         {
-            _dismissed[id] = true;
+            // 收起时这一轮可能还在写：水位跟着最新写入走，不算"新活动"
+            if (mtime > rec.Watermark) rec.Watermark = mtime;
+            // 停笔超过间隔 = 本轮收尾，之后水位再前进才是"新一轮"
+            if (DateTime.UtcNow - rec.Watermark > DismissQuietGap)
+                rec.SawQuiet = true;
             return true;
         }
 
-        // 安静之后又 Running = 新一轮活动 → 重新显示
-        if (phase is SessionPhase.Running && sawQuiet)
+        // 安静之后转录又有新字节 = 真·新活动 → 重新显示
+        if (mtime > rec.Watermark)
         {
             _dismissed.Remove(id);
             return false;
         }
 
-        // 其它（收起时还在 Running，本轮没结束；或没有 phase 信息的兜底项）→ 继续隐藏
         return true;
     }
 

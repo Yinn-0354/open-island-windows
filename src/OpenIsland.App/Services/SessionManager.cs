@@ -133,7 +133,12 @@ public class SessionManager : IDisposable
                     {
                         // 更新会话状态
                         var updatedSession = session with { IsProcessAlive = isRunning };
-                        if (isRunning)
+                        // "进程活着" ≠ "在干活"：挂在提示符上的 claude 进程一直存活，而这里的
+                        // 匹配又松（同 cwd / 标题互含都算），任何 claude 进程出现都会让一批
+                        // 历史会话 alive 翻转。若凭翻转就把 phase 拉成 Running，被清掉的卡片
+                        // 会集体复活、状态点/统计虚高（实测 bug 根因）。只有 transcript 真在
+                        // 动（2 分钟内有写入）才升 Running；其余只更新 IsProcessAlive。
+                        if (isRunning && IsTranscriptFresh(session))
                         {
                             updatedSession = updatedSession with
                             {
@@ -163,6 +168,21 @@ public class SessionManager : IDisposable
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"SyncProcessStatus error: {ex.Message}");
+        }
+    }
+
+    /// <summary>转录最近 2 分钟内有写入 = 会话真在活动（SyncProcessStatus 升 Running 的门槛）。</summary>
+    private static bool IsTranscriptFresh(AgentSession session)
+    {
+        var path = session.ClaudeMetadata?.TranscriptPath;
+        if (string.IsNullOrEmpty(path)) return false;
+        try
+        {
+            return DateTime.UtcNow - System.IO.File.GetLastWriteTimeUtc(path) <= TimeSpan.FromMinutes(2);
+        }
+        catch
+        {
+            return false; // 文件没了/读不了 —— 当不活跃处理
         }
     }
 
