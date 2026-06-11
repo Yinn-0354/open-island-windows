@@ -58,7 +58,7 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
   - **会提醒** —— 新待批准时两短声提示音（铃铛开关记忆），页面切后台时标题闪烁"● 待批准 N"
   - **看得舒服** —— 代码块 / diff 行色 / 内联代码富渲染、长消息折叠、相对时间、tokens 人类化、5h 余额行、日 / 夜主题、添加到主屏幕有小人图标
 
-  <img src="docs/screenshots/web-sync.png" alt="手机 / 平板上的网页同步：顶部多会话标签、橙色权限审批卡（允许 / 都允许 / 拒绝），底部一行可切换模型与权限模式，并显示 5 小时余额" width="620"/>
+  <img src="docs/screenshots/web-sync.png" alt="网页同步：顶部多会话标签、橙色权限审批卡（允许 / 都允许 / 拒绝），底部一行可切换模型与权限模式，并显示 5 小时余额" height="380"/> <img src="docs/screenshots/web-sync-phone.png" alt="真实 iPhone 截图：Safari 打开局域网地址，手机上直接看对话、发消息、切换模型与权限模式" height="380"/>
 
 - **安装 Skill** —— 命令栏"安装 Skill"按钮：粘贴 `claude plugin` 命令（支持连写 / `&&` / 换行）或 `owner/repo` 简写，后台静默调用 claude CLI 安装并实时显示输出；严格白名单校验防命令注入
 - **会话来源筛选** —— 命令栏三态按钮：全部 → 仅终端(CLI) → 仅客户端(Claude Desktop) 循环切换，筛选时按钮高亮并切换字形

@@ -58,7 +58,7 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
   - **Alerts** — two short beeps on new approvals (bell toggle, remembered) and a flashing tab title "● pending N" while the page is in the background
   - **Comfortable** — fenced code blocks / diff line colors / inline code, long-message collapsing, relative timestamps, humanized token counts, the 5-hour balance row, light/dark theme, and a home-screen icon
 
-  <img src="docs/screenshots/web-sync.png" alt="Web Sync on a phone / tablet: multi-session tabs up top, an orange permission card (Allow / Always / Deny), and a bottom row to switch model and permission mode with the 5-hour balance" width="620"/>
+  <img src="docs/screenshots/web-sync.png" alt="Web Sync: multi-session tabs up top, an orange permission card (Allow / Always / Deny), and a bottom row to switch model and permission mode with the 5-hour balance" height="380"/> <img src="docs/screenshots/web-sync-phone.png" alt="Real iPhone screenshot: Safari on the LAN address — chat, send messages, and switch model / permission mode right from the phone" height="380"/>
 
 - **Skill install** — an "Install Skill" button in the command bar: paste `claude plugin` commands (multi-line / `&&` supported) or an `owner/repo` shorthand, and it installs via the claude CLI in the background with live output; strict whitelist validation prevents command injection
 - **Session source filter** — a tri-state command-bar button cycling All → CLI-only → Desktop-only (by `ClaudeMetadata.Entrypoint`), highlighted with a matching glyph while active
