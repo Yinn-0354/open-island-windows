@@ -222,7 +222,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         else
         {
             _webSync.Stop();
-            _webSync.FeaturedSessionId = null; // 关同步 = 取消置顶
+            _webSync.ClearSelected(); // 关同步 = 清空选中
             WebSyncOn = false;
             WebSyncTip = Loc.Get("Web_Off_Tip");
             foreach (var s in Sessions) s.IsWebFeatured = false;
@@ -230,14 +230,15 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 卡片状态圆点被点（仅网页同步开启时圆点可点）：把该会话置顶同步到网页 ——
-    /// 网页上排第一、带 ⭐、携带更长历史（60 条）；再点同一个圆点取消置顶。
+    /// 卡片状态圆点被点（仅网页同步开启时圆点可点）：切换该会话的"网页选中"状态。
+    /// 选中任意会话后，网页**只显示**选中的会话（多选并行展示，每个带 60 条完整历史）；
+    /// 全部取消选中则回到默认信息流。圆点橙色外圈 = 已选中。
     /// </summary>
     private void SyncSessionToWeb(string id)
     {
         if (string.IsNullOrEmpty(id) || !WebSyncOn) return;
-        _webSync.FeaturedSessionId = _webSync.FeaturedSessionId == id ? null : id;
-        foreach (var s in Sessions) s.IsWebFeatured = s.Id == _webSync.FeaturedSessionId;
+        _webSync.ToggleSelected(id);
+        foreach (var s in Sessions) s.IsWebFeatured = _webSync.IsSelected(s.Id);
     }
 
     [ObservableProperty] private bool _isExpanded;
@@ -688,7 +689,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                     : new IslandSessionItem(info!, _sessionManager, DismissSession, _settings, TogglePinSession);
                 item.IsPinned = _pinned.Contains(key);
                 item.SetSyncWeb(SyncSessionToWeb);
-                item.IsWebFeatured = WebSyncOn && _webSync.FeaturedSessionId == key;
+                item.IsWebFeatured = WebSyncOn && _webSync.IsSelected(key);
                 Sessions.Insert(i, item); // 前 i 项已就位，i <= Count，安全
             }
             else
@@ -697,7 +698,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 if (session != null) Sessions[i].Update(session); else Sessions[i].Update(info!);
                 Sessions[i].IsPinned = _pinned.Contains(key); // 图钉状态以 VM 的 _pinned 为准
                 Sessions[i].SetSyncWeb(SyncSessionToWeb);
-                Sessions[i].IsWebFeatured = WebSyncOn && _webSync.FeaturedSessionId == key;
+                Sessions[i].IsWebFeatured = WebSyncOn && _webSync.IsSelected(key);
             }
         }
 

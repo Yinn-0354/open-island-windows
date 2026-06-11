@@ -542,16 +542,20 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
+                                <!-- 切换模型：图标-only（芯片字形 + 小箭头），悬停出提示 —— 本行按钮统一只用
+                                     图标，文字全部放 ToolTip（320 宽岛体放不下四个带字按钮）。 -->
                                 <ToggleButton x:Name="ModelMenuToggle" Grid.Column="0" Cursor="Hand"
                                               FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
-                                              IsChecked="{Binding ModelMenuOpen, Mode=TwoWay}">
+                                              IsChecked="{Binding ModelMenuOpen, Mode=TwoWay}"
+                                              ToolTip="{Binding [Island_SwitchModel], Source={x:Static svc:Loc.Instance}}">
                                     <ToggleButton.Template>
                                         <ControlTemplate TargetType="ToggleButton">
                                             <Border x:Name="Bd" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
                                                 <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="{Binding [Island_SwitchModel], Source={x:Static svc:Loc.Instance}}" Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
-                                                    <Path Margin="7,2,0,0" VerticalAlignment="Center" Fill="#CC785C" Data="M0,0 L4,4 L8,0 Z"/>
+                                                    <TextBlock Text="&#xE950;" FontFamily="Segoe MDL2 Assets"
+                                                               Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                    <Path Margin="5,2,0,0" VerticalAlignment="Center" Fill="#CC785C" Data="M0,0 L4,4 L8,0 Z"/>
                                                 </StackPanel>
                                             </Border>
                                             <ControlTemplate.Triggers>
@@ -632,12 +636,8 @@
                                         <ControlTemplate TargetType="Button">
                                             <Border x:Name="Cb" Background="#252320" BorderBrush="#3A3631"
                                                     BorderThickness="1" CornerRadius="8" Padding="9,5">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"
-                                                               Foreground="#CC785C" FontSize="11" VerticalAlignment="Center"/>
-                                                    <TextBlock Text="{Binding [Island_ClearTasks], Source={x:Static svc:Loc.Instance}}" Foreground="#FAF9F5" FontSize="12"
-                                                               VerticalAlignment="Center" Margin="4,0,0,0"/>
-                                                </StackPanel>
+                                                <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">

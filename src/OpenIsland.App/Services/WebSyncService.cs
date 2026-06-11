@@ -31,12 +31,27 @@ public sealed class WebSyncService : IDisposable
 
     public bool IsRunning { get; private set; }
 
-    /// <summary>
-    /// 被"置顶同步"的会话 Id（点灵动岛卡片状态圆点设置，再点取消）。网页上该会话
-    /// 排第一、带 ⭐ 标识、携带更长的历史（60 条 vs 普通 12 条）。null = 无置顶。
-    /// 读写都是引用赋值（原子），无需加锁。
-    /// </summary>
-    public string? FeaturedSessionId { get; set; }
+    // ── 选中同步集合：点灵动岛卡片状态圆点把会话加入/移出。集合非空时网页**只显示**
+    // 选中的会话（每个带 60 条完整历史，多个并行展示）；空集合 = 默认显示最近 8 条会话。
+    private readonly object _selLock = new();
+    private readonly HashSet<string> _selected = new(StringComparer.Ordinal);
+
+    /// <summary>切换某会话的选中状态，返回切换后是否选中。</summary>
+    public bool ToggleSelected(string id)
+    {
+        lock (_selLock)
+        {
+            if (_selected.Remove(id)) return false;
+            _selected.Add(id);
+            return true;
+        }
+    }
+
+    public bool IsSelected(string id) { lock (_selLock) return _selected.Contains(id); }
+
+    public void ClearSelected() { lock (_selLock) _selected.Clear(); }
+
+    private string[] SelectedSnapshot() { lock (_selLock) return _selected.ToArray(); }
 
     public WebSyncService(SessionManager sessionManager)
     {
@@ -263,15 +278,22 @@ public sealed class WebSyncService : IDisposable
     {
         try
         {
-            var featuredId = FeaturedSessionId; // 快照一次，整个构建过程用同一个值
-            var items = _sessionManager.GetAllSessions()
+            var selected = SelectedSnapshot(); // 快照一次，整个构建过程用同一份
+            var candidates = _sessionManager.GetAllSessions()
                 .Where(s => s.Tool == AgentTool.ClaudeCode
                             && !string.IsNullOrEmpty(s.ClaudeMetadata?.TranscriptPath))
                 .Select(s => new { Session = s, Path = s.ClaudeMetadata!.TranscriptPath! })
-                .Select(x => new { x.Session, x.Path, Mtime = File.GetLastWriteTimeUtc(x.Path) })
-                .OrderByDescending(x => x.Session.Id == featuredId) // 置顶会话排第一
-                .ThenByDescending(x => x.Mtime)
-                .Take(8)
+                .Select(x => new { x.Session, x.Path, Mtime = File.GetLastWriteTimeUtc(x.Path) });
+
+            // 选中模式：**只**返回被点了圆点的会话（多选并行），每个带 60 条完整历史；
+            // 未选任何会话：默认信息流 —— 最近 8 条、各 12 条。
+            bool filterMode = selected.Length > 0;
+            if (filterMode)
+                candidates = candidates.Where(x => selected.Contains(x.Session.Id));
+
+            var items = candidates
+                .OrderByDescending(x => x.Mtime)
+                .Take(filterMode ? 6 : 8)
                 .Select(x => new
                 {
                     id = x.Session.Id,
@@ -279,9 +301,8 @@ public sealed class WebSyncService : IDisposable
                     phase = x.Session.Phase.ToString(),
                     entry = x.Session.ClaudeMetadata?.Entrypoint ?? "",
                     updated = x.Mtime.ToLocalTime().ToString("HH:mm:ss"),
-                    featured = x.Session.Id == featuredId,
-                    // 置顶会话带更长历史（60 条），普通会话 12 条
-                    messages = ReadTail(x.Path, x.Session.Id == featuredId ? 60 : 12)
+                    featured = filterMode,
+                    messages = ReadTail(x.Path, filterMode ? 60 : 12)
                 })
                 .ToList();
             return JsonSerializer.Serialize(items);
@@ -392,8 +413,13 @@ public sealed class WebSyncService : IDisposable
           body { margin:0; padding:16px; background:#0c0c0e; color:#e7e7ea;
                  font-family:-apple-system,'Segoe UI',Roboto,sans-serif; }
           .wrap { max-width:760px; margin:0 auto; }
+          .wrap.wide { max-width:1560px; }   /* 多选并行时放宽页面 */
           h1 { font-size:18px; margin:0 0 2px 0; }
           .sub { font-size:12px; color:#8a8a90; margin-bottom:14px; }
+          /* 多选并行：grid 自动分列（手机仍单列堆叠，平板/桌面并排） */
+          #list.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+                       gap:12px; align-items:start; }
+          #list.grid .card { margin-bottom:0; }
           .card { background:#1c1c1f; border:1px solid #2a2a2e; border-radius:14px;
                   padding:12px 14px; margin-bottom:12px; }
           .card.featured { border-color:#CC785C; }
@@ -426,7 +452,7 @@ public sealed class WebSyncService : IDisposable
         <body>
         <div class="wrap">
           <h1>Open Island · Web Sync</h1>
-          <div class="sub">自动刷新中，可直接回复对话 · auto-refreshing, reply inline</div>
+          <div class="sub">自动刷新，可直接回复 · 在灵动岛点会话圆点 → 只显示选中的对话（可多选并行）</div>
           <div id="list"><div class="empty">Loading…</div></div>
         </div>
         <script>
@@ -451,6 +477,11 @@ public sealed class WebSyncService : IDisposable
           try{
             const r=await fetch('/api/sessions');
             const data=await r.json();
+            // 选中模式（服务端只回选中的会话，featured=true）：多于一张时并行分列展示
+            const selMode=data.length>0&&data[0].featured;
+            const multi=selMode&&data.length>1;
+            document.querySelector('.wrap').classList.toggle('wide',multi);
+            document.getElementById('list').classList.toggle('grid',multi);
             let html='';
             for(const s of data){
               let msgs='';
@@ -463,7 +494,7 @@ public sealed class WebSyncService : IDisposable
                 +'<div class="head">'
                 +'<div class="dot" style="background:'+dotColor(s.phase)+'"></div>'
                 +'<div class="title">'+esc(s.title)+'</div>'
-                +(s.featured?'<div class="star">&#9733; synced</div>':'')
+                +(s.featured?'<div class="star">&#9733; 已选 synced</div>':'')
                 +(s.entry?'<div class="badge">'+esc(s.entry)+'</div>':'')
                 +'<div class="time">'+esc(s.updated)+'</div>'
                 +'</div>'

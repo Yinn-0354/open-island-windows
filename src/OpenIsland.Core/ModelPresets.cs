@@ -10,10 +10,13 @@ public static class ModelPresets
 {
     public static IReadOnlyList<ModelProfile> BuiltInClaude { get; } = new[]
     {
-        new ModelProfile { Id = ModelProfile.OfficialClaudeId, Name = "Claude（官方）", Kind = ModelKind.ClaudeModel },
-        new ModelProfile { Id = "claude-opus",   Name = "Claude Opus",   Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "opus",   Model = "claude-opus-4-7" },
-        new ModelProfile { Id = "claude-sonnet", Name = "Claude Sonnet", Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "sonnet", Model = "claude-sonnet-4-6" },
-        new ModelProfile { Id = "claude-haiku",  Name = "Claude Haiku",  Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "haiku",  Model = "claude-haiku-4-5-20251001" },
+        new ModelProfile { Id = ModelProfile.OfficialClaudeId, Name = "Claude（官方默认）", Kind = ModelKind.ClaudeModel },
+        // 版本锁定档：slug 用完整模型 id，/model 精确切到该版本（短别名 opus/sonnet 会落到 CLI 自己的默认版本）
+        new ModelProfile { Id = "claude-fable-5",   Name = "Claude Fable 5",   Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "claude-fable-5",              Model = "claude-fable-5" },
+        new ModelProfile { Id = "claude-opus-48",   Name = "Claude Opus 4.8",  Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "claude-opus-4-8",             Model = "claude-opus-4-8" },
+        new ModelProfile { Id = "claude-opus",      Name = "Claude Opus 4.7",  Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "claude-opus-4-7",             Model = "claude-opus-4-7" },
+        new ModelProfile { Id = "claude-sonnet",    Name = "Claude Sonnet 4.6",Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "claude-sonnet-4-6",           Model = "claude-sonnet-4-6" },
+        new ModelProfile { Id = "claude-haiku",     Name = "Claude Haiku 4.5", Kind = ModelKind.ClaudeModel, ClaudeModelSlug = "claude-haiku-4-5-20251001",   Model = "claude-haiku-4-5-20251001" },
     };
 
     /// <summary>第三方 provider 模板（ApiKey 留空，用户在控制中心填）。</summary>
