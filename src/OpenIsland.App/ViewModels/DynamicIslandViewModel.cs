@@ -326,6 +326,18 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         WebSyncTip = Loc.Get("Web_Off_Tip");
         SourceFilterTip = Loc.Get("Island_SrcFilter_All");
 
+        // accept 循环异常崩溃（非用户 Stop）：服务已自清理，这里把开关/圆点状态拨回"关"，
+        // 否则地球按钮显示开启而服务实际已死。事件来自线程池线程，必须回 UI 线程。
+        _webSync.StoppedUnexpectedly += (_, _) =>
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+            {
+                if (!WebSyncOn) return;
+                WebSyncOn = false;
+                WebSyncTip = Loc.Get("Web_Off_Tip");
+                _webSync.ClearSelected();
+                foreach (var s in Sessions) s.IsWebFeatured = false;
+            });
+
         // 启动时把提示音开关对齐持久化值，并同步到 SoundService —— 否则 SoundService.Enabled
         // 默认 true，用户上次关了重启后仍会响一次才被纠正。
         // 直接写 backing field（非 SoundEnabled 属性）避免触发 OnSoundEnabledChanged 在
