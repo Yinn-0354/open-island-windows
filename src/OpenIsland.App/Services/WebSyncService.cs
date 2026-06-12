@@ -1068,8 +1068,10 @@ public sealed class WebSyncService : IDisposable
           .acmenu div:hover { background:#26262b; }
           .acmenu b { color:#CC785C; font-weight:600; }
           .acmenu span { color:#8a8a90; margin-left:8px; font-size:12px; }
-          .toolbar { display:flex; align-items:center; gap:12px; margin-top:8px;
-                     font-size:11.5px; color:#8a8a90; }
+          .toolbar { display:flex; align-items:center; gap:8px 12px; margin-top:8px;
+                     font-size:11.5px; color:#8a8a90;
+                     flex-wrap:wrap; }            /* 手机宽度下下拉/计数/余额换行而不是竖排溢出 */
+          .toolbar span { white-space:nowrap; }
           .toolbar select { background:transparent; color:#9aa0a6; border:1px solid #2a2a2e;
                   border-radius:8px; padding:4px 7px; font-size:11.5px; max-width:150px; }
           .quota { display:flex; align-items:center; gap:5px; margin-left:auto; flex:none; }
