@@ -2,7 +2,7 @@
 
 # 🟣 Open Island
 
-**Windows 上的 AI 编码助手控制中心 · 仿 macOS 灵动岛**
+**Windows 上的 AI 编码助手控制中心 · 桌面顶部灵动岛**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
@@ -20,7 +20,7 @@
 
 ---
 
-Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码代理的运行状态、Token 用量、权限请求都汇聚到屏幕顶部一个 macOS 风格的"灵动岛"上。
+Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码代理的运行状态、Token 用量、权限请求都汇聚到屏幕顶部一个悬浮的"灵动岛"上。
 
 - 🎮 **像素状态精灵** —— 头部状态指示器是绑定会话阶段的像素动画：Claude 工作时跳动，完成后休息（每 30s 随机播一遍空闲小动作）
 - 📈 **系统状态栏** —— 实时 CPU / 内存 / GPU / 网速，1 秒刷新一次（GPU 在非英文 Windows 也能正常显示）

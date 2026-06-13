@@ -2,7 +2,7 @@
 
 # 🟣 Open Island
 
-**A macOS-style Dynamic Island for AI coding agents on Windows**
+**A floating Dynamic Island for AI coding agents on Windows**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
@@ -20,7 +20,7 @@
 
 ---
 
-Open Island is a Windows tray companion that surfaces the live state of AI coding agents (primarily Claude Code) on a macOS-inspired Dynamic Island floating at the top of your screen — including permission prompts, token usage, and active sessions.
+Open Island is a Windows tray companion that surfaces the live state of AI coding agents (primarily Claude Code) on a Dynamic Island floating at the top of your screen — including permission prompts, token usage, and active sessions.
 
 - 🎮 **Pixel status sprite** — the header status indicator is an animated pixel-art sprite bound to session phase: bouncing while Claude works, resting (with a short idle animation every 30s) when done
 - 📈 **System stats bar** — live CPU / RAM / GPU / network throughput, refreshed every second (GPU works on any Windows locale)
