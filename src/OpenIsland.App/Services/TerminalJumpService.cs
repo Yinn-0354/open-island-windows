@@ -233,7 +233,22 @@ public partial class TerminalJumpService
     /// 排除 "Open Island" 自己的标题以免误激活。
     /// </summary>
     public bool ActivateClaudeDesktopWindow(string? sessionTitle = null)
+        => ActivateClaudeDesktopWindow(sessionTitle, out _);
+
+    /// <summary>
+    /// 重载（bug①）：在激活的基础上把"侧边栏导航是否成功选中目标会话"透出（navigated）。
+    /// 仅注入路径（SendTextToClaudeDesktopAsync）关心 navigated —— 导航失败必须中止，
+    /// 绝不盲发进 Claude Desktop 当前打开的错误会话。JumpToSessionAsync / 权限 / AskQuestion
+    /// 等其它调用方走无 out 的旧重载，行为完全不变（它们只要窗口被拉前台，不关心导航成败）。
+    ///
+    /// 语义约定：
+    ///   - 返回值（bool）= 是否成功激活窗口（同旧行为，导航成败不影响它）。
+    ///   - navigated = 仅当传了非空 sessionTitle 且 UIA 在侧边栏找到并 Invoke 了目标会话按钮时为 true；
+    ///     未传 sessionTitle（null/空）时 navigated 恒为 false（无导航意图，调用方不应据此中止）。
+    /// </summary>
+    public bool ActivateClaudeDesktopWindow(string? sessionTitle, out bool navigated)
     {
+        navigated = false;
         var claudePids = new HashSet<int>(
             Process.GetProcessesByName("claude").Select(p => p.Id));
 
@@ -296,8 +311,13 @@ public partial class TerminalJumpService
         _logger?.LogInformation(
             "Activating Claude Desktop hwnd=0x{Hwnd:X} area={Area}",
             bestHwnd.ToInt64(), bestArea);
-        // SW_SHOWNORMAL 对最小化 / 隐藏 / 可见都能正确恢复到正常窗口状态
-        ShowWindow(bestHwnd, SW_SHOWNORMAL);
+        // 只在最小化时恢复：SW_RESTORE 回到最小化前的状态（原本最大化的仍保持最大化），
+        // 绝不对已可见 / 最大化的窗口调 SW_SHOWNORMAL —— 那会强制 un-maximize + resize，
+        // 触发 Electron 渲染器重排，在客户端正忙 / 出字时极易把窗口卡死（网页回复桌面端
+        // 会话冒黑屏冻结的根因）。已可见窗口不动其尺寸，仅靠 ActivateWindow 拉前台
+        // （ActivateWindow 内部对 iconic 走 SW_RESTORE、否则 SW_SHOW，均不改尺寸）。
+        if (IsIconic(bestHwnd))
+            ShowWindow(bestHwnd, SW_RESTORE);
         ActivateWindow(bestHwnd);
 
         // 进一步：如果传了 sessionTitle，通过 UI Automation 在侧边栏点击对应 session 按钮 ——
@@ -306,7 +326,9 @@ public partial class TerminalJumpService
         // <Title>"（例 "Awaiting input ppt"、"Idle 实践"）的元素，支持 InvokePattern。
         if (!string.IsNullOrEmpty(sessionTitle) && bestOwnerPid > 0)
         {
-            TryNavigateClaudeDesktopToSession(bestOwnerPid, sessionTitle);
+            // bug①: 透出导航结果。找到并 Invoke 了目标 session 按钮 = true；8 次重试耗尽 /
+            // 没找到 = false。注入路径据此决定"导航失败就中止"，不盲发回车进错误会话。
+            navigated = TryNavigateClaudeDesktopToSession(bestOwnerPid, sessionTitle);
         }
         return true;
     }
@@ -314,9 +336,12 @@ public partial class TerminalJumpService
     /// <summary>
     /// 用 UI Automation 在 Claude Desktop（PID = claudeDesktopPid）的侧边栏找到 Name 包含
     /// sessionTitle 的 session 按钮，滚动到可见并 Invoke（等价用户点击）。
-    /// 失败静默 —— 激活窗口已经成功，导航只是 best-effort。
+    ///
+    /// bug①: 返回是否成功导航 —— 找到目标 session 按钮并 Invoke = true；8 次重试耗尽 /
+    /// 没找到 / 中途异常 = false。注入路径据此决定是否中止（导航失败绝不盲发进错误会话）；
+    /// JumpToSession 等不关心成败的调用方忽略返回值即可（行为不变）。
     /// </summary>
-    private void TryNavigateClaudeDesktopToSession(int claudeDesktopPid, string sessionTitle)
+    private bool TryNavigateClaudeDesktopToSession(int claudeDesktopPid, string sessionTitle)
     {
         // 落地诊断到本地文件 —— 由于 _logger 在 OpenIsland 当前 DI 配置里是 null（没接
         // logger provider），出问题没法看日志。临时写文件直到问题确诊。
@@ -394,18 +419,20 @@ public partial class TerminalJumpService
                 _logger?.LogInformation(
                     "Navigated Claude Desktop to session '{Title}' after {Attempts} attempt(s)",
                     sessionTitle, attempt + 1);
-                return;
+                return true; // bug①: 找到并 Invoke 了目标会话按钮 —— 导航成功
             }
 
             Diag($"all 8 attempts exhausted, target not found");
             _logger?.LogInformation(
                 "Claude Desktop sidebar: session button for title '{Title}' not found after 8 retries",
                 sessionTitle);
+            return false; // bug①: 重试耗尽仍没找到目标会话 —— 导航失败
         }
         catch (Exception ex)
         {
             Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
             _logger?.LogWarning(ex, "Failed to navigate Claude Desktop to session '{Title}'", sessionTitle);
+            return false; // bug①: 异常 —— 视作导航失败，调用方据此中止注入
         }
     }
 
@@ -763,7 +790,7 @@ public partial class TerminalJumpService
                         Diag($"  attempt {attempt}: no Skip element yet");
                         continue;
                     }
-                    if (InvokeElement(skipTarget, Diag, "Skip"))
+                    if (InvokeElement(skipTarget, Diag, "Skip", winHwnd))
                     {
                         Diag($"  clicked Skip after {attempt + 1} attempt(s)");
                         return true;
@@ -785,7 +812,7 @@ public partial class TerminalJumpService
                 var matchedName = "?";
                 try { matchedName = target.Current.Name; } catch { }
 
-                if (!InvokeElement(target, Diag, $"option#{optionNumber}"))
+                if (!InvokeElement(target, Diag, $"option#{optionNumber}", winHwnd))
                 {
                     // Invoke 没成 —— 继续重试（React handler 可能还没挂）
                     continue;
@@ -816,14 +843,18 @@ public partial class TerminalJumpService
                     catch (Exception reEx) { Diag($"  submit rescan threw: {reEx.Message}"); }
                 }
 
-                if (submit != null && InvokeElement(submit, Diag, "Submit"))
+                if (submit != null && InvokeElement(submit, Diag, "Submit", winHwnd))
                 {
                     Diag("  clicked Submit");
                 }
                 else
                 {
-                    Diag("  no Submit element clickable -> sending Enter to foreground as fallback");
-                    SendVk(0x0D); // VK_RETURN —— Claude Desktop 已在前台（ActivateClaudeDesktopWindow）
+                    // bug④: 不再无脑发 Enter。发键前复核前台仍是目标 Claude Desktop 主窗口，
+                    // 否则放弃（避免把回车打到激活后被抢焦的别的窗口误提交）。
+                    if (SendEnterIfForeground(winHwnd, Diag))
+                        Diag("  no Submit element clickable -> sent Enter to target foreground as fallback");
+                    else
+                        Diag("  no Submit element clickable, foreground not target -> Enter skipped");
                 }
                 return true;
             }
@@ -850,7 +881,9 @@ public partial class TerminalJumpService
     /// （注：WPF 引用的托管 UIAutomation 程序集没有 LegacyIAccessiblePattern，
     ///   故不走它；Invoke + SelectionItem + Enter 兜底已覆盖 React 行/按钮两类。）
     /// </summary>
-    private static bool InvokeElement(AutomationElement el, Action<string> Diag, string tag)
+    // 改为实例方法（原 static）：bug④ 的 Enter 兜底需调实例方法 SendEnterIfForeground 做前台复核。
+    // 新增 targetHwnd 参数：补 Enter 前复核前台仍是该目标窗口（传 Zero 跳过校验）。
+    private bool InvokeElement(AutomationElement el, Action<string> Diag, string tag, IntPtr targetHwnd)
     {
         try
         {
@@ -876,9 +909,15 @@ public partial class TerminalJumpService
                 return true;
             }
             // 既不能 Invoke 也不能 Select，但已 SetFocus —— 补一个 Enter 激活当前焦点项。
-            Diag($"  [{tag}] no Invoke/SelectionItem pattern; sending Enter to focused element");
-            SendVk(0x0D); // VK_RETURN
-            return true;
+            // bug④: 发键前复核前台仍是目标窗口（SetFocus 后焦点理应在目标内，但激活后可能被
+            // 别的窗口抢前台），不一致则放弃，绝不向错误窗口补刀回车。
+            if (SendEnterIfForeground(targetHwnd, Diag))
+            {
+                Diag($"  [{tag}] no Invoke/SelectionItem pattern; sent Enter to focused element");
+                return true;
+            }
+            Diag($"  [{tag}] no Invoke/SelectionItem pattern and foreground not target; Enter skipped");
+            return false;
         }
         catch (Exception invEx)
         {
@@ -1109,6 +1148,30 @@ public partial class TerminalJumpService
         inputs[3].u.ki.wVk = VK_SHIFT;
         inputs[3].u.ki.dwFlags = KEYEVENTF_KEYUP;
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    /// <summary>
+    /// bug④: 发 Enter 前的前台复核（与 QuickReply.TrySubmitIfStillForeground 同款收口）。
+    /// SendVk 注入到 *当前前台* 窗口，所以补 Enter 提交前必须确认前台仍是我们激活的目标
+    /// （expectedHwnd）；不一致则记日志放弃，绝不把回车打到错误窗口误提交别处内容。
+    /// expectedHwnd==Zero 时跳过校验（无目标可比对，退回旧行为）。返回是否真的发了 Enter。
+    /// </summary>
+    private bool SendEnterIfForeground(IntPtr expectedHwnd, Action<string>? diag = null)
+    {
+        if (expectedHwnd != IntPtr.Zero)
+        {
+            var fg = GetForegroundWindow();
+            if (fg != expectedHwnd)
+            {
+                diag?.Invoke($"  Enter aborted: foreground changed (target=0x{expectedHwnd.ToInt64():X}, fg=0x{fg.ToInt64():X})");
+                _logger?.LogWarning(
+                    "Enter submit aborted: foreground changed (target=0x{Tgt:X}, fg=0x{Fg:X})",
+                    expectedHwnd.ToInt64(), fg.ToInt64());
+                return false;
+            }
+        }
+        SendVk(0x0D); // VK_RETURN
+        return true;
     }
 
     private static void SendVk(ushort vk)

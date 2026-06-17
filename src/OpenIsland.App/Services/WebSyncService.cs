@@ -27,6 +27,26 @@ public sealed class WebSyncService : IDisposable
 {
     private const int Port = 18686;
 
+    // ── DoS/Slowloris 护栏（bug ③）──────────────────────────────────────────
+    // 全局并发连接上限：accept 后先抢信号量，抢不到直接拒绝（回 503 并关），挡住海量半开连接。
+    private const int MaxConcurrentConnections = 32;
+    // 单 IP 并发连接上限：单台设备/单个攻击源最多占这么多槽，防一个 IP 吃光全局额度。
+    private const int MaxConnectionsPerIp = 8;
+    // SSE 长连接池上限：超过即拒绝新 EventSource（每条都常驻，必须封顶）。
+    private const int MaxSseClients = 24;
+    // 单请求"整请求时长预算"：从拿到连接到读完头+body 累计超过这个时长就断（不只靠单次 ReadTimeout，
+    // 防 Slowloris 用"每隔几秒发一字节"把单次读超时永远撑不到的慢速攻击）。
+    private static readonly TimeSpan RequestBudget = TimeSpan.FromSeconds(10);
+
+    private readonly SemaphoreSlim _connGate = new(MaxConcurrentConnections, MaxConcurrentConnections);
+    // 每个远端 IP 当前占用的连接数（HandleClient 进出各 +/-1）
+    private readonly ConcurrentDictionary<string, int> _ipConns = new();
+
+    // 网页同步访问令牌（持久化在 WorkspaceSettings.WebSyncToken）：GetUrl 带进 ?t=，
+    // 所有 /api/* 请求据此鉴权。运行期不变，缓存成 byte[] 供常量时间比较。
+    private readonly WorkspaceSettings _settings;
+    private readonly byte[] _tokenBytes;
+
     private readonly SessionManager _sessionManager;
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
@@ -80,9 +100,12 @@ public sealed class WebSyncService : IDisposable
     // 最近一帧 5h 订阅余额快照（PlanUsageService 15s 推一帧；网页底部工具行显示）
     private volatile PlanUsageSnapshot? _lastUsage;
 
-    public WebSyncService(SessionManager sessionManager, PlanUsageService planUsage)
+    public WebSyncService(SessionManager sessionManager, PlanUsageService planUsage, WorkspaceSettings settings)
     {
         _sessionManager = sessionManager;
+        _settings = settings;
+        // 令牌运行期不变（WorkspaceSettings 首次启动已确保生成）：缓存其 ASCII 字节，供常量时间比较。
+        _tokenBytes = Encoding.ASCII.GetBytes(_settings.WebSyncToken ?? "");
         // 会话有任何变化（阶段切换/权限请求/新会话…）就推 SSE —— 网页端不用再 2.5s 盲轮询。
         // IsRunning 守门：服务没开时不必启动去抖定时器。
         _sessionManager.SessionsChanged += (_, _) => { if (IsRunning) NotifyChanged(); };
@@ -138,7 +161,25 @@ public sealed class WebSyncService : IDisposable
                     continue;
                 }
                 catch { break; }
-                _ = Task.Run(() => HandleClient(client));
+
+                // bug ③ DoS：全局并发上限。抢不到信号量（已 32 条在处理）直接拒绝并关，
+                // 不让海量半开/慢速连接堆死线程池。短促回个 503 让正常客户端能看懂。
+                if (!_connGate.Wait(0))
+                {
+                    try
+                    {
+                        using var ns = client.GetStream();
+                        ns.WriteTimeout = 1000;
+                        var busy = Encoding.ASCII.GetBytes(
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        ns.Write(busy, 0, busy.Length);
+                    }
+                    catch { }
+                    try { client.Dispose(); } catch { }
+                    continue;
+                }
+                // HandleClientGated 在它的 finally 里成对归还信号量与单 IP 计数（无论如何退出）。
+                _ = Task.Run(() => HandleClientGated(client));
             }
             // 非 Stop() 路径的异常退出：做与 Stop() 等价的**完整**清理（停心跳/取消 CTS/
             // 关 listener/清 SSE 池）。只置 IsRunning=false 是不够的 —— 心跳还活着会让
@@ -198,9 +239,12 @@ public sealed class WebSyncService : IDisposable
     /// 返回局域网可访问的地址：取第一个 Up 且非回环/非虚拟网卡的 IPv4 单播地址。
     /// 排除常见虚拟网卡（Hyper-V/VMware/VirtualBox/vEthernet）—— 它们的网段手机进不来。
     /// 找不到合适网卡时回退 localhost（至少本机浏览器能用）。
+    /// URL 末尾带 ?t={token}：扫码/复制地址即带访问令牌，网页加载后存进 localStorage 并据此鉴权。
     /// </summary>
     public string GetUrl()
     {
+        // 令牌作为查询参数附在 / 之后（形如 http://192.168.1.5:18686/?t=abcd...）
+        var q = $"?t={_settings.WebSyncToken}";
         try
         {
             foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
@@ -222,13 +266,66 @@ public sealed class WebSyncService : IDisposable
                     if (addr.Address.AddressFamily == AddressFamily.InterNetwork
                         && !IPAddress.IsLoopback(addr.Address))
                     {
-                        return $"http://{addr.Address}:{Port}/";
+                        return $"http://{addr.Address}:{Port}/{q}";
                     }
                 }
             }
         }
         catch { /* 网卡枚举失败走 localhost 兜底 */ }
-        return $"http://localhost:{Port}/";
+        return $"http://localhost:{Port}/{q}";
+    }
+
+    /// <summary>
+    /// HandleClient 的外壳：持有 bug ③ 的并发额度。进来时全局信号量已被 accept 循环抢到，
+    /// 这里再做单 IP 计数（超限拒绝），无论后续如何退出都在 finally 里**成对**归还信号量与
+    /// IP 计数。注意：SSE 长连接虽不在 finally 关流，但额度仍在请求处理结束时归还 ——
+    /// 否则每条常驻 SSE 都白占一个全局槽，很快把 32 个名额耗尽。
+    /// </summary>
+    private async Task HandleClientGated(TcpClient client)
+    {
+        // 远端 IP（用于单 IP 并发上限）。取不到地址按 "?" 归一类，照样受限。
+        string ip = "?";
+        try { ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "?"; }
+        catch { }
+
+        bool ipCounted = false;
+        try
+        {
+            // bug ③ 单 IP 上限：原子自增后若超限即回退并拒绝，挡住单源吃光全局额度。
+            int now = _ipConns.AddOrUpdate(ip, 1, (_, v) => v + 1);
+            ipCounted = true;
+            if (now > MaxConnectionsPerIp)
+            {
+                try
+                {
+                    using var ns = client.GetStream();
+                    ns.WriteTimeout = 1000;
+                    var busy = Encoding.ASCII.GetBytes(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    ns.Write(busy, 0, busy.Length);
+                }
+                catch { }
+                try { client.Dispose(); } catch { }
+                return;
+            }
+
+            await HandleClient(client).ConfigureAwait(false);
+        }
+        catch
+        {
+            // 兜底：HandleClient 内部已全包 try/catch，这里只防极端意外
+        }
+        finally
+        {
+            if (ipCounted)
+            {
+                // 归还单 IP 计数：减到 0 就移除键，避免字典无限增长
+                _ipConns.AddOrUpdate(ip, 0, (_, v) => v - 1);
+                if (_ipConns.TryGetValue(ip, out var left) && left <= 0)
+                    _ipConns.TryRemove(new KeyValuePair<string, int>(ip, left));
+            }
+            try { _connGate.Release(); } catch { }
+        }
     }
 
     /// <summary>
@@ -236,13 +333,21 @@ public sealed class WebSyncService : IDisposable
     /// POST body 的字节也吞进自己的缓冲区，后续读 body 就缺数据），body 按 Content-Length
     /// 精确读取。整个方法 try/catch 全包 —— 手机锁屏断开 / 半截请求都静默关连接，不影响别人。
     ///
+    /// 安全护栏（按本文件 6 个 bug）：
+    ///  ③ 整请求时长预算（RequestBudget，~10s）：从进入到读完头+body 累计超时即断，
+    ///     与单次 ReadTimeout 互补 —— 防 Slowloris 用"每隔几秒一字节"把单次超时永远撑不到。
+    ///  ⑥ Content-Length 出现重复/冲突/负值/超界一律 400，绝不静默取最后一个。
+    ///  ① 所有 /api/* 校验 token（POST/GET 取 X-OI-Token 头），不符 403；静态页 / 不校验。
+    ///  ② 所有 POST：Host 头白名单（挡 DNS rebinding）+ 拒绝跨站 Origin/Referer；OPTIONS 显式回不含通配 CORS。
+    ///
     /// 不再 using(client) 包整个生命周期：/api/events（SSE）是长连接，所有权移交给
     /// _sseClients 后这里必须**不关**；其余短请求在 finally 里关。
     /// </summary>
-    private void HandleClient(TcpClient client)
+    private async Task HandleClient(TcpClient client)
     {
         NetworkStream? stream = null;
         bool handedOff = false; // true = SSE 已接管连接，finally 不许 Dispose
+        var budget = System.Diagnostics.Stopwatch.StartNew(); // bug ③ 整请求时长预算
         try
         {
             stream = client.GetStream();
@@ -254,6 +359,7 @@ public sealed class WebSyncService : IDisposable
             int state = 0; // \r\n\r\n 状态机
             while (state < 4)
             {
+                if (budget.Elapsed > RequestBudget) return; // bug ③：慢速攻击 —— 累计超预算即断
                 int b = stream.ReadByte();
                 if (b < 0) return;
                 headerBuf.WriteByte((byte)b);
@@ -271,27 +377,99 @@ public sealed class WebSyncService : IDisposable
             var method = parts[0];
             var path = parts[1];
 
-            // SSE 路由提前判断：不读 body（GET 没有）、写完头和 hello 帧就移交所有权返回
+            // ── 解析需要的头：Host / Origin / Referer / X-OI-Token，以及（含校验的）Content-Length ──
+            string? host = null, origin = null, referer = null, headerToken = null;
+            int contentLength = 0;
+            bool clSeen = false, clBad = false;
+            foreach (var hl in lines)
+            {
+                if (hl.StartsWith("Host:", StringComparison.OrdinalIgnoreCase))
+                    host = hl["Host:".Length..].Trim();
+                else if (hl.StartsWith("Origin:", StringComparison.OrdinalIgnoreCase))
+                    origin = hl["Origin:".Length..].Trim();
+                else if (hl.StartsWith("Referer:", StringComparison.OrdinalIgnoreCase))
+                    referer = hl["Referer:".Length..].Trim();
+                else if (hl.StartsWith("X-OI-Token:", StringComparison.OrdinalIgnoreCase))
+                    headerToken = hl["X-OI-Token:".Length..].Trim();
+                else if (hl.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    // bug ⑥：任何重复（哪怕同值）/ 非法 / 负值的 Content-Length 一律 400 ——
+                    // 不静默取最后一个（重复 CL 是请求走私的典型手法，保守全拒）。
+                    var raw = hl["Content-Length:".Length..].Trim();
+                    if (clSeen) { clBad = true; }                              // 出现第二个 = 拒
+                    else if (!int.TryParse(raw, out var cl) || cl < 0) { clBad = true; }
+                    else { contentLength = cl; clSeen = true; }
+                }
+            }
+            if (clBad)
+            {
+                WriteResponse(stream, "400 Bad Request", "text/plain; charset=utf-8", "Bad Content-Length");
+                return;
+            }
+
+            bool isApi = path.StartsWith("/api/", StringComparison.Ordinal);
+
+            // ── bug ②（CSRF/Origin）：OPTIONS 预检显式回应，绝不含通配 CORS（不放行跨站脚本带凭据调用）──
+            if (method == "OPTIONS")
+            {
+                // 不回 Access-Control-Allow-Origin: *，也不回任何允许跨站的 CORS 头 —— 同源页面本就不需要预检
+                var h = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nAllow: GET, POST\r\nConnection: close\r\n\r\n";
+                var hb = Encoding.ASCII.GetBytes(h);
+                stream.Write(hb, 0, hb.Length);
+                stream.Flush();
+                return;
+            }
+
+            // ── bug ②：Host 头白名单（挡 DNS rebinding）。所有 /api/* 与 POST 都校验 ──
+            //    只接受 localhost / 127.0.0.1 / 本机任一局域网 IPv4，端口必须是 18686（或省略）。
+            if (isApi && !IsHostAllowed(host))
+            {
+                WriteResponse(stream, "403 Forbidden", "text/plain; charset=utf-8", "Forbidden");
+                return;
+            }
+
+            // ── bug ① 鉴权：所有 /api/* 校验 token。SSE 从查询参数取（EventSource 不能带自定义头），
+            //    其余从 X-OI-Token 头取。静态页 GET /（含 /?...）不校验 —— 要让页面先加载拿 token。──
+            if (isApi)
+            {
+                bool isSse = path == "/api/events" || path.StartsWith("/api/events?");
+                string? presented = isSse ? ExtractQueryToken(path) : headerToken;
+                if (!TokenOk(presented))
+                {
+                    WriteResponse(stream, "403 Forbidden", "text/plain; charset=utf-8", "Forbidden");
+                    return;
+                }
+            }
+
+            // SSE 路由：token 已过（上面），不读 body（GET 没有）、写完头和 hello 帧就移交所有权返回
             if (method == "GET" && (path == "/api/events" || path.StartsWith("/api/events?")))
             {
                 handedOff = TryStartSse(client, stream);
                 return;
             }
 
-            int contentLength = 0;
-            foreach (var hl in lines)
+            // bug ②：所有 POST 拒绝跨站 Origin/Referer（缺失也拒 —— 浏览器 fetch 同源会带 Origin；
+            //        非浏览器客户端没有同源概念，但已被上面的 token 挡住，这里专防"用户在恶意站点
+            //        被诱导发跨站请求"）。
+            if (method == "POST" && !IsSameOrigin(origin, referer, host))
             {
-                if (hl.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                    int.TryParse(hl["Content-Length:".Length..].Trim(), out contentLength);
+                WriteResponse(stream, "403 Forbidden", "text/plain; charset=utf-8", "Forbidden");
+                return;
             }
 
             byte[] body = Array.Empty<byte>();
-            if (contentLength > 0 && contentLength <= 64 * 1024)
+            if (contentLength > 64 * 1024)
+            {
+                WriteResponse(stream, "413 Payload Too Large", "text/plain; charset=utf-8", "Too Large");
+                return;
+            }
+            if (contentLength > 0)
             {
                 body = new byte[contentLength];
                 int off = 0;
                 while (off < contentLength)
                 {
+                    if (budget.Elapsed > RequestBudget) return; // bug ③：读 body 也吃整请求预算
                     int n = stream.Read(body, off, contentLength - off);
                     if (n <= 0) break;
                     off += n;
@@ -312,14 +490,16 @@ public sealed class WebSyncService : IDisposable
                 else
                     WriteResponse(stream, "404 Not Found", "text/plain; charset=utf-8", "Not Found");
             }
+            // bug ④：注入续体不再压在 UI 线程、HTTP 线程也不再 .GetResult() 同步阻塞 ——
+            //         各 HandleXxx 改 async，内部用 await InvokeAsync(...).Task.Unwrap()。
             else if (method == "POST" && path == "/api/send")
-                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSend(body));
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", await HandleSend(body).ConfigureAwait(false));
             else if (method == "POST" && path == "/api/approve")
-                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleApprove(body));
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", await HandleApprove(body).ConfigureAwait(false));
             else if (method == "POST" && path == "/api/setmode")
-                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleSetMode(body));
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", await HandleSetMode(body).ConfigureAwait(false));
             else if (method == "POST" && path == "/api/answer")
-                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", HandleAnswer(body));
+                WriteResponse(stream, "200 OK", "application/json; charset=utf-8", await HandleAnswer(body).ConfigureAwait(false));
             else
                 WriteResponse(stream, "404 Not Found", "text/plain; charset=utf-8", "Not Found");
         }
@@ -338,6 +518,107 @@ public sealed class WebSyncService : IDisposable
     }
 
     /// <summary>
+    /// bug ① token 常量时间比较。presented 为空或长度/内容不符均返回 false。
+    /// 用 CryptographicOperations.FixedTimeEquals 避免按字节提前返回的计时侧信道。
+    /// Constant-time token check; empty/mismatched tokens fail.
+    /// </summary>
+    private bool TokenOk(string? presented)
+    {
+        if (string.IsNullOrEmpty(presented)) return false;
+        if (_tokenBytes.Length == 0) return false; // 没配置令牌（理论不会发生）= 一律拒绝，绝不"裸奔放行"
+        byte[] given;
+        try { given = Encoding.ASCII.GetBytes(presented); }
+        catch { return false; }
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(given, _tokenBytes);
+    }
+
+    /// <summary>从形如 "/api/events?t=xxxx&amp;a=b" 的路径里取 t 参数（SSE 鉴权用，EventSource 不能带自定义头）。</summary>
+    private static string? ExtractQueryToken(string path)
+    {
+        var qi = path.IndexOf('?');
+        if (qi < 0 || qi + 1 >= path.Length) return null;
+        foreach (var kv in path[(qi + 1)..].Split('&'))
+        {
+            if (kv.StartsWith("t=", StringComparison.Ordinal))
+                return Uri.UnescapeDataString(kv[2..]);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// bug ② Host 头白名单：挡 DNS rebinding。只接受 localhost / 127.0.0.1 / 本机任一活动 IPv4，
+    /// 端口必须是 18686（或缺省）。host 缺失或不在白名单一律拒绝。
+    /// </summary>
+    private bool IsHostAllowed(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        // 拆出主机名与端口（IPv6 不在本服务监听范围，简单处理）
+        string h = host;
+        int port = Port;
+        var colon = host.LastIndexOf(':');
+        if (colon > 0 && !host.Contains(']')) // 排除 IPv6 字面量里的冒号
+        {
+            h = host[..colon];
+            if (!int.TryParse(host[(colon + 1)..], out port)) return false;
+        }
+        if (port != Port) return false;
+
+        if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!IPAddress.TryParse(h, out var ip)) return false;
+        if (IPAddress.IsLoopback(ip)) return true;
+        // 本机任一活动 IPv4（手机访问时 Host 就是电脑的局域网 IP）
+        return IsLocalIPv4(ip);
+    }
+
+    /// <summary>给定 IP 是否是本机某张网卡的 IPv4 地址（Host 白名单用）。失败保守返回 false。</summary>
+    private static bool IsLocalIPv4(IPAddress ip)
+    {
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                foreach (var addr in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (addr.Address.AddressFamily == AddressFamily.InterNetwork
+                        && addr.Address.Equals(ip))
+                        return true;
+                }
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// bug ② 跨站防护：POST 必须同源。优先看 Origin（浏览器 fetch 同源会带），缺 Origin 退看 Referer；
+    /// 两者都缺则拒绝（同源浏览器请求至少带其一）。比较只认 http + 与 Host 相同的主机:端口。
+    /// </summary>
+    private bool IsSameOrigin(string? origin, string? referer, string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        // 取 Origin 的 scheme://host:port；没有 Origin 用 Referer 的同段
+        var src = !string.IsNullOrWhiteSpace(origin) ? origin : referer;
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        if (!Uri.TryCreate(src, UriKind.Absolute, out var u)) return false;
+        if (u.Scheme != Uri.UriSchemeHttp) return false; // 本服务只跑 http
+        // Origin 端口必须是本服务端口（默认端口即非 18686，直接判否）
+        int oport = u.IsDefaultPort ? 80 : u.Port;
+        if (oport != Port) return false;
+        // Host 头形如 "192.168.1.5:18686" 或 "192.168.1.5"（端口缺省）；剥掉端口取主机名
+        var hostNorm = host;
+        var colon = host!.LastIndexOf(':');
+        if (colon > 0 && !host.Contains(']'))
+        {
+            if (!int.TryParse(host[(colon + 1)..], out var hp) || hp != Port) return false;
+            hostNorm = host[..colon];
+        }
+        // 同源 = Origin 主机名与 Host 主机名一致；再叠一层 Host 白名单（双保险，挡 rebinding）
+        return string.Equals(u.Host, hostNorm, StringComparison.OrdinalIgnoreCase)
+            && IsHostAllowed(host);
+    }
+
+    /// <summary>
     /// /api/events：写 SSE 响应头 + hello 帧后把连接放进长连接池。
     /// 成功返回 true（调用方不许再关这条连接）；任何一步写失败返回 false 走正常清理。
     /// </summary>
@@ -345,6 +626,20 @@ public sealed class WebSyncService : IDisposable
     {
         try
         {
+            // bug ③：SSE 池有上限（每条常驻必须封顶）。已满直接拒绝，回 503 让前端降级轮询。
+            if (_sseClients.Count >= MaxSseClients)
+            {
+                try
+                {
+                    var full = Encoding.ASCII.GetBytes(
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    stream.Write(full, 0, full.Length);
+                    stream.Flush();
+                }
+                catch { }
+                return false; // 走 HandleClient finally 收尾
+            }
+
             // 长连接：读永不超时（SSE 单向推送、不再读请求）；写 10s 超时防僵尸连接卡住广播
             stream.ReadTimeout = Timeout.Infinite;
             stream.WriteTimeout = 10000;
@@ -381,31 +676,45 @@ public sealed class WebSyncService : IDisposable
     }
 
     /// <summary>
-    /// 给所有 SSE 客户端写同一帧字节。写失败 = 客户端已断（锁屏/切网/关页面），
-    /// 移除并 Dispose。锁按连接粒度（见 _sseClients 注释）：同一条流上心跳与广播
-    /// 仍串行（帧不交错），但一个写超时卡 10s 的客户端只阻塞自己。
+    /// 给所有 SSE 客户端写同一帧字节。写失败 = 客户端已断（锁屏/切网/关页面），移除并 Dispose。
+    /// bug ⑤：每个连接各起一个 Task 并发分发（仍各自持本连接的 WriteLock 防同流帧交错），
+    /// Task.WhenAll 套一个整体超时 —— 一个写超时卡满 10s 的僵尸客户端只拖自己，不再队头阻塞
+    /// 其余所有客户端整轮心跳/广播。整体超时（12s，略大于单连接 10s WriteTimeout）只是兜底，
+    /// 不强杀慢任务（它们自己的 WriteTimeout 到点会抛而被回收）。
     /// </summary>
     private void SseBroadcast(byte[] frame)
     {
-        foreach (var kv in _sseClients)
+        var snapshot = _sseClients.ToArray();
+        if (snapshot.Length == 0) return;
+
+        var tasks = new List<Task>(snapshot.Length);
+        foreach (var kv in snapshot)
         {
-            try
+            tasks.Add(Task.Run(() =>
             {
-                lock (kv.Value.WriteLock)
+                try
                 {
-                    kv.Value.Stream.Write(frame, 0, frame.Length);
-                    kv.Value.Stream.Flush();
+                    // 每连接各持自己的 WriteLock：与该连接上的心跳/其它广播互斥（帧不交错），
+                    // 但不同连接之间完全并行。
+                    lock (kv.Value.WriteLock)
+                    {
+                        kv.Value.Stream.Write(frame, 0, frame.Length);
+                        kv.Value.Stream.Flush();
+                    }
                 }
-            }
-            catch
-            {
-                if (_sseClients.TryRemove(kv.Key, out var dead))
+                catch
                 {
-                    try { dead.Stream.Dispose(); } catch { }
-                    try { dead.Client.Dispose(); } catch { }
+                    if (_sseClients.TryRemove(kv.Key, out var dead))
+                    {
+                        try { dead.Stream.Dispose(); } catch { }
+                        try { dead.Client.Dispose(); } catch { }
+                    }
                 }
-            }
+            }));
         }
+        // 整体超时兜底：正常情况下全部很快返回；个别慢连接由各自 WriteTimeout 收尾，
+        // 这里不阻塞调用线程（心跳 Timer / 去抖 Timer）超过 12s。
+        try { Task.WhenAll(tasks).Wait(TimeSpan.FromSeconds(12)); } catch { }
     }
 
     /// <summary>
@@ -445,9 +754,11 @@ public sealed class WebSyncService : IDisposable
     /// <summary>
     /// POST /api/send：{"id":"会话id","text":"消息"} → 复用灵动岛快捷回复的注入通道发给
     /// 对应 CLI 终端 / Claude 桌面端（SessionManager.SendQuickReplyAsync）。注入要激活
-    /// 窗口/动剪贴板，必须在 UI 线程执行；本方法在 HTTP 线程上同步等结果（不阻塞 UI）。
+    /// 窗口/动剪贴板，必须在 UI 线程**启动**；bug ④：用 InvokeAsync(...).Task.Unwrap() 把整条
+    /// 注入异步链（含其续体）交给 UI Dispatcher 自行排队，HTTP 线程只 await 等结果 ——
+    /// 既不在 UI 线程同步阻塞跑完整条注入，HTTP 线程也不再 .GetResult() 死等。
     /// </summary>
-    private string HandleSend(byte[] body)
+    private async Task<string> HandleSend(byte[] body)
     {
         try
         {
@@ -464,10 +775,12 @@ public sealed class WebSyncService : IDisposable
             var app = System.Windows.Application.Current;
             if (app == null) return """{"ok":false,"reason":"app shutting down"}""";
 
-            // Dispatcher.Invoke 返回 UI 线程上启动的 Task；在 HTTP 线程阻塞等它完成
-            //（Task 的延续跑在 UI Dispatcher 上，与这里的阻塞互不相干，无死锁）。
-            var task = app.Dispatcher.Invoke(() => _sessionManager.SendQuickReplyAsync(id!, text!));
-            var result = task.GetAwaiter().GetResult();
+            // InvokeAsync 在 UI 线程启动 SendQuickReplyAsync；.Task 是 Task<Task<...>>，
+            // Unwrap() 摊平成 Task<...>，await 它 —— 注入的 await 续体由 Dispatcher 排队，
+            // 不抢占也不阻塞 UI；HTTP 线程在此挂起等完成，不占线程池忙等。
+            var result = await app.Dispatcher
+                .InvokeAsync(() => _sessionManager.SendQuickReplyAsync(id!, text!))
+                .Task.Unwrap().ConfigureAwait(false);
             return JsonSerializer.Serialize(new
             {
                 ok = result.Ok,
@@ -492,6 +805,7 @@ public sealed class WebSyncService : IDisposable
         "foreground-lost" => "终端失焦，文字已粘贴但未提交",
         "inject-error" => "注入出错，已取消",
         "desktop-activate-failed" or "no-desktop-window" => "没能激活 Claude Desktop 窗口",
+        "session-nav-failed" => "没能在 Claude Desktop 切到目标会话，已取消（避免发错会话），请在客户端手动打开该会话",
         "clipboard-failed" => "电脑剪贴板被占用，请重试",
         _ => "发送失败"
     };
@@ -499,9 +813,10 @@ public sealed class WebSyncService : IDisposable
     /// <summary>
     /// POST /api/approve：{"id":"会话id","digit":"1"|"2"|"3"} → 复用灵动岛权限按钮的通路
     /// （SessionManager.RespondToPermissionAsync 内部已分流 CLI 注入 / 桌面 UIA）。
-    /// 与 /api/send 同模式：注入必须在 UI 线程跑，HTTP 线程阻塞等结果。
+    /// 与 /api/send 同模式（bug ④）：InvokeAsync(...).Task.Unwrap() + await，UI 线程不被阻塞、
+    /// HTTP 线程不 .GetResult() 死等。
     /// </summary>
-    private string HandleApprove(byte[] body)
+    private async Task<string> HandleApprove(byte[] body)
     {
         try
         {
@@ -517,10 +832,9 @@ public sealed class WebSyncService : IDisposable
             var app = System.Windows.Application.Current;
             if (app == null) return """{"ok":false}""";
 
-            // Dispatcher.Invoke 返回 UI 线程上启动的 Task；HTTP 线程阻塞等它完成
-            //（Task 延续跑在 UI Dispatcher 上，与这里的阻塞互不相干，无死锁）。
-            var task = app.Dispatcher.Invoke(() => _sessionManager.RespondToPermissionAsync(id!, digit[0]));
-            var ok = task.GetAwaiter().GetResult();
+            var ok = await app.Dispatcher
+                .InvokeAsync(() => _sessionManager.RespondToPermissionAsync(id!, digit[0]))
+                .Task.Unwrap().ConfigureAwait(false);
             return JsonSerializer.Serialize(new { ok });
         }
         catch
@@ -532,10 +846,10 @@ public sealed class WebSyncService : IDisposable
     /// <summary>
     /// POST /api/setmode：{"id":"会话id","mode":"default"|"acceptEdits"|"plan"} →
     /// 精确切换该会话的权限模式（SessionManager.SetPermissionModeAsync：按 hook 上报的
-    /// 当前模式算 Shift+Tab 循环步数，聚焦终端连发）。与 /api/send 同模式：UI 线程跑注入，
-    /// HTTP 线程阻塞等结果。
+    /// 当前模式算 Shift+Tab 循环步数，聚焦终端连发）。与 /api/send 同模式（bug ④）：
+    /// InvokeAsync(...).Task.Unwrap() + await，UI 线程不被阻塞、HTTP 线程不 .GetResult() 死等。
     /// </summary>
-    private string HandleSetMode(byte[] body)
+    private async Task<string> HandleSetMode(byte[] body)
     {
         try
         {
@@ -552,8 +866,9 @@ public sealed class WebSyncService : IDisposable
             var app = System.Windows.Application.Current;
             if (app == null) return """{"ok":false,"reason":"shutdown","reasonText":"应用正在退出"}""";
 
-            var task = app.Dispatcher.Invoke(() => _sessionManager.SetPermissionModeAsync(id!, mode!));
-            var (ok, reason) = task.GetAwaiter().GetResult();
+            var (ok, reason) = await app.Dispatcher
+                .InvokeAsync(() => _sessionManager.SetPermissionModeAsync(id!, mode!))
+                .Task.Unwrap().ConfigureAwait(false);
             return JsonSerializer.Serialize(new
             {
                 ok,
@@ -570,9 +885,10 @@ public sealed class WebSyncService : IDisposable
     /// <summary>
     /// POST /api/answer：{"id":"会话id","option":2} 或 {"id":"会话id","skip":true} →
     /// 回答 AskUserQuestion（SessionManager.AnswerQuestionAsync：CLI 注入 "{n}\r"，
-    /// 桌面端 UIA 点选项行；skip = Esc / Skip 按钮）。与 /api/send 同模式阻塞等结果。
+    /// 桌面端 UIA 点选项行；skip = Esc / Skip 按钮）。与 /api/send 同模式（bug ④）：
+    /// InvokeAsync(...).Task.Unwrap() + await。
     /// </summary>
-    private string HandleAnswer(byte[] body)
+    private async Task<string> HandleAnswer(byte[] body)
     {
         try
         {
@@ -591,8 +907,9 @@ public sealed class WebSyncService : IDisposable
             var app = System.Windows.Application.Current;
             if (app == null) return """{"ok":false,"reasonText":"应用正在退出"}""";
 
-            var task = app.Dispatcher.Invoke(() => _sessionManager.AnswerQuestionAsync(id!, option, skip));
-            var ok = task.GetAwaiter().GetResult();
+            var ok = await app.Dispatcher
+                .InvokeAsync(() => _sessionManager.AnswerQuestionAsync(id!, option, skip))
+                .Task.Unwrap().ConfigureAwait(false);
             return JsonSerializer.Serialize(new
             {
                 ok,
@@ -1143,6 +1460,23 @@ public sealed class WebSyncService : IDisposable
           </div>
         </div>
         <script>
+        // ── 访问令牌（鉴权）：URL 的 ?t= 带进来，存 localStorage 持久化（刷新/扫码后免重传）。
+        //    所有 /api/* 的 fetch 都带 X-OI-Token 头；SSE（EventSource 不能带自定义头）改用 ?t= 查询参数。──
+        var OI_TOKEN=(function(){
+          try{
+            var m=/[?&]t=([^&]+)/.exec(location.search);
+            if(m&&m[1]){var t=decodeURIComponent(m[1]);localStorage.setItem('oi-token',t);return t;}
+          }catch(e){}
+          try{return localStorage.getItem('oi-token')||'';}catch(e){return '';}
+        })();
+        // 统一带 token 的 fetch：自动注入 X-OI-Token 头（GET/POST 通用）。
+        function apiFetch(url,opts){
+          opts=opts||{};
+          var h=opts.headers?Object.assign({},opts.headers):{};
+          if(OI_TOKEN)h['X-OI-Token']=OI_TOKEN;
+          opts.headers=h;
+          return fetch(url,opts);
+        }
         // ── 基础工具 ──
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
           .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -1278,7 +1612,7 @@ public sealed class WebSyncService : IDisposable
         }
         // ── 模型列表（底部工具行下拉），失败 5s 重试 ──
         function loadModels(){
-          fetch('/api/models').then(function(r){return r.json();}).then(function(ms){
+          apiFetch('/api/models').then(function(r){return r.json();}).then(function(ms){
             var sel=document.getElementById('mdl');
             var opts='<option value="">&#9881; 切换模型&#8230;</option>';
             for(var i=0;i<ms.length;i++)
@@ -1458,7 +1792,7 @@ public sealed class WebSyncService : IDisposable
           var sm=document.getElementById('sendmsg');
           if(sm){sm.textContent='切换模式中…';sm.className='sendmsg';}
           sel.disabled=true;
-          fetch('/api/setmode',{method:'POST',
+          apiFetch('/api/setmode',{method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({id:activeSid,mode:mode})})
           .then(function(r){return r.json();})
@@ -1549,7 +1883,7 @@ public sealed class WebSyncService : IDisposable
           var box=btn.parentElement;
           var bs=box.querySelectorAll('button');
           for(var i=0;i<bs.length;i++)bs[i].disabled=true;
-          fetch('/api/answer',{method:'POST',
+          apiFetch('/api/answer',{method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify(n>0?{id:activeSid,option:n}:{id:activeSid,skip:true})})
           .then(function(r){return r.json();})
@@ -1574,7 +1908,7 @@ public sealed class WebSyncService : IDisposable
           var box=btn.parentElement;
           var bs=box.querySelectorAll('button');
           for(var i=0;i<bs.length;i++)bs[i].disabled=true;
-          fetch('/api/approve',{method:'POST',
+          apiFetch('/api/approve',{method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({id:sid,digit:digit})})
           .then(function(r){return r.json();})
@@ -1595,7 +1929,7 @@ public sealed class WebSyncService : IDisposable
           var sm=document.getElementById('sendmsg');
           if(sm){sm.textContent='发送中…';sm.className='sendmsg';}
           try{
-            var r=await fetch('/api/send',{method:'POST',
+            var r=await apiFetch('/api/send',{method:'POST',
               headers:{'Content-Type':'application/json'},
               body:JSON.stringify({id:id,text:text})});
             var res=await r.json();
@@ -1635,7 +1969,8 @@ public sealed class WebSyncService : IDisposable
         }
         function startSse(){
           try{
-            var es=new EventSource('/api/events');
+            // EventSource 不能带自定义请求头：token 走查询参数 ?t=
+            var es=new EventSource('/api/events?t='+encodeURIComponent(OI_TOKEN));
             es.onopen=function(){
               if(pollTimer){clearInterval(pollTimer);pollTimer=null;}
             };
@@ -1656,7 +1991,7 @@ public sealed class WebSyncService : IDisposable
         async function refresh(){
           var my=++fetchSeq;
           try{
-            var r=await fetch('/api/sessions');
+            var r=await apiFetch('/api/sessions');
             var data=await r.json();
             if(my!==fetchSeq)return;
             if(data.stats)applyStats(data.stats);

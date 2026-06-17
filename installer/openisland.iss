@@ -47,7 +47,7 @@ VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
 CloseApplications=force
-RestartApplications=no
+RestartApplications=yes
 
 [Languages]
 ; 仅英文 —— GitHub Actions 的 windows-latest 上 Inno Setup 默认安装不带 ChineseSimplified.isl。

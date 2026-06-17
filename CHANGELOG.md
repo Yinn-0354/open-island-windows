@@ -4,6 +4,27 @@ All notable changes to Open Island will be documented here.
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.1] - 2026-06-18
+
+### Added
+
+- **在线升级** —— 命令栏「检查更新」按钮 + 启动后台静默检查；发现新版弹提示卡（版本号 + 更新日志 + 一键更新）。自动下载 GitHub 最新 `Setup.exe` 静默安装（复用 Inno 安装包：`CloseApplications=force` 关旧版 → 覆盖 → `RestartApplications=yes` 自动重启）。下载走 GitHub 原生 + 多镜像兜底（ghproxy 等），用 `MZ` 魔数 + 体积校验防镜像伪造响应；语义化版本比较。
+
+### Fixed
+
+- **网页回复 Claude Desktop 会话一直「发送中」最后失败** —— 原强制 UIA 侧边栏导航在长标题/截断时匹配不上，卡 ~3 分钟后 `session-nav-failed`。改为「回复客户端当前打开的会话」为可靠主路径：不导航、直接激活窗口 + 焦点校验（实测聊天框 `ControlType=Document`）+ 粘贴 + 回车，实测端到端 < 0.7s。**CLI 注入路径完全不变。**
+- **安装 Skill 永久卡在「安装中」** —— stdout/stderr 读取无超时，claude CLI spawn 的 git/node 孙进程持有继承的管道写端句柄即永不返回。改为读取也受超时/取消约束（`WaitAsync`）、加全局总超时与「取消」按钮，任何情况都能返回、复位状态。
+
+### Security
+
+- **网页同步 18686 接口鉴权加固** —— 首启生成 32-hex 随机访问令牌（持久化，扫码/复制地址带 `?t=`）；所有 `/api/*`（GET / POST / SSE）校验 `X-OI-Token`，缺失或错误一律 403，静态页放行。局域网监听 `0.0.0.0` 全靠它挡未授权访问。
+- **CSRF / DNS-rebinding 防护** —— 所有 POST 校验 Host 头白名单（挡 DNS rebinding）+ 拒绝跨站 Origin / Referer，OPTIONS 不回通配 CORS。
+- **抗 DoS** —— 连接并发上限信号量（超限 503 / 429）、整请求时长预算、SSE 连接上限；Content-Length 重复 / 冲突 / 越界一律 400。
+
+### Changed
+
+- `installer/openisland.iss`：`RestartApplications=no` → `yes`，静默更新装完自动重启。
+
 ## [0.5.0] - 2026-06-12
 
 ### Added

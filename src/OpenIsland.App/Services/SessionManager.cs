@@ -1270,6 +1270,14 @@ public class SessionManager : IDisposable
         var entrypoint = session.ClaudeMetadata?.Entrypoint;
         TerminalJumpService.InjectDiag($"reply: entrypoint={entrypoint ?? "(null)"} title={session.Title}");
         if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+            // 桌面端「回复当前打开的会话」为可靠主路径：不传 sessionTitle ⇒ 不做 UIA 侧边栏导航
+            // （导航用全标题匹配在长标题/截断时不可靠，会卡 ~2s×8 重试后 session-nav-failed，
+            //  表现为网页一直“发送中”最后失败）。用户在网页回复时，客户端基本就停在那个会话，
+            //  直接激活窗口 + 粘贴 + 回车即可，几乎必成。激活+前台校验+提交前复核仍在，
+            //  不会发到 Claude Desktop 以外的窗口。CLI 路径完全不受影响。
+            // Reply into Claude Desktop's *currently-open* conversation (reliable path): pass no
+            // sessionTitle so we skip the flaky UIA sidebar navigation (full-title match fails on
+            // long/truncated titles → ~2s×8 retries then abort, surfacing as a stuck "sending").
             return await _terminalJumpService.SendTextToClaudeDesktopAsync(prepared.Text, submit: true);
 
         var pid = ResolveTerminalPidForInjection(session);

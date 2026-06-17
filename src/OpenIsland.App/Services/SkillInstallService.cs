@@ -73,14 +73,40 @@ public class SkillInstallService
         return result;
     }
 
+    /// <summary>每条命令的超时上限：claude CLI 要拉 git 仓库，可能较慢。</summary>
+    private static readonly TimeSpan PerCommandTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// 整个命令序列的全局总超时预算：owner/repo 展开 2 条、连写可任意多条，
+    /// 仅靠每条 5min 时最坏 N×5min 不可控；总预算给命令序列封顶。
+    /// </summary>
+    private static readonly TimeSpan TotalTimeout = TimeSpan.FromMinutes(12);
+
     /// <summary>
     /// 逐条顺序执行命令（任意一条失败即停止）。onProgress 报告当前执行到哪条；
-    /// 每条命令 5 分钟超时（claude CLI 要拉 git 仓库，可能较慢），超时杀进程树并判失败。
+    /// 每条命令 5 分钟超时、整个序列 12 分钟总超时（取两者先到者），另接收外部
+    /// <paramref name="externalToken"/> 供 UI"取消"按钮中断；任一触发都杀进程树并判失败。
     /// 返回 (是否全部成功, 累计输出尾部最多 4000 字符)。
     /// </summary>
-    public async Task<(bool Ok, string Output)> RunAsync(IReadOnlyList<string> commands, Action<string>? onProgress)
+    /// <remarks>
+    /// 关键修复：stdout/stderr 的 ReadToEndAsync 也必须受超时/取消约束。claude CLI
+    /// spawn 的 git/node 孙进程会继承重定向管道的写端句柄；即便父进程退出，只要孙进程
+    /// 还攥着写端不放，ReadToEndAsync 就永不返回 —— 过去只对 WaitForExitAsync 设超时，
+    /// 读取却裸 await，于是功能永久锁死在"安装中"。现在读取走 WaitAsync(token)，
+    /// 超时/取消分支统一 Kill(entireProcessTree) 并观测被丢弃的读取任务，确保任何
+    /// 情况下本方法都能返回。
+    /// </remarks>
+    public async Task<(bool Ok, string Output)> RunAsync(
+        IReadOnlyList<string> commands,
+        Action<string>? onProgress,
+        CancellationToken externalToken = default)
     {
         var output = new StringBuilder();
+
+        // 全局总超时：整个序列共享一个预算；与外部取消令牌联动，二者任一触发即中断。
+        using var totalCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+        totalCts.CancelAfter(TotalTimeout);
+
         for (int i = 0; i < commands.Count; i++)
         {
             var cmd = commands[i];
@@ -110,22 +136,37 @@ public class SkillInstallService
                 var stdoutTask = proc.StandardOutput.ReadToEndAsync();
                 var stderrTask = proc.StandardError.ReadToEndAsync();
 
-                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                // 本条命令的有效令牌 = 每条 5min ∪ 全局总预算 ∪ 外部取消，先到者生效。
+                using var cmdCts = CancellationTokenSource.CreateLinkedTokenSource(totalCts.Token);
+                cmdCts.CancelAfter(PerCommandTimeout);
+                var token = cmdCts.Token;
+
                 try
                 {
-                    await proc.WaitForExitAsync(cts.Token);
+                    // 退出 + 两路读取都必须落在同一令牌下；任一被取消即抛 OperationCanceledException。
+                    await proc.WaitForExitAsync(token);
+                    var stdout = await stdoutTask.WaitAsync(token);
+                    var err = await stderrTask.WaitAsync(token);
+
+                    output.AppendLine(stdout);
+                    if (!string.IsNullOrWhiteSpace(err)) output.AppendLine(err);
                 }
                 catch (OperationCanceledException)
                 {
-                    // 超时：杀整棵进程树（claude CLI 会再起 git 等子进程），整体判失败。
+                    // 超时 / 外部取消：杀整棵进程树（claude CLI 会再起 git 等子进程），整体判失败。
                     try { proc.Kill(entireProcessTree: true); } catch { }
-                    output.AppendLine($"[{cmd}] timed out after 5 minutes");
+
+                    // 观测被丢弃的读取任务，避免 stdoutTask/stderrTask 成为未观测异常任务
+                    // （进程树已杀，管道写端关闭，读取通常会迅速以异常/空串收尾；给 2s 兜底）。
+                    try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(2)); }
+                    catch { /* 已杀进程，读取的异常/超时无需再处理 */ }
+
+                    // 区分"用户主动取消"与"超时"：外部令牌被触发 → 取消；否则 → 超时。
+                    output.AppendLine(externalToken.IsCancellationRequested
+                        ? $"[{cmd}] canceled"
+                        : $"[{cmd}] timed out");
                     return (false, Tail(output));
                 }
-
-                output.AppendLine(await stdoutTask);
-                var err = await stderrTask;
-                if (!string.IsNullOrWhiteSpace(err)) output.AppendLine(err);
 
                 if (proc.ExitCode != 0)
                 {

@@ -30,6 +30,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     private readonly WorkspaceSettings _settings;
     private readonly ScreenshotService _screenshot;
     private readonly SkillInstallService _skillInstall;
+    private readonly UpdateService _update;
     private readonly WebSyncService _webSync;
     private readonly System.Timers.Timer _greenStatusTimer;
     private bool _justCompletedTask = false;
@@ -325,7 +326,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// 任一 Running→Running，否则 Idle。跟 StatusDotColor 同一处计算。</summary>
     [ObservableProperty] private SessionPhase _aggregatePhase = SessionPhase.Idle;
 
-    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings, ScreenshotService screenshot, SkillInstallService skillInstall, WebSyncService webSync)
+    public DynamicIslandViewModel(SessionManager sessionManager, PopupWindowService popupService, SystemStatsService systemStats, MediaControlService media, PlanUsageService planUsage, WorkspaceSettings settings, ScreenshotService screenshot, SkillInstallService skillInstall, UpdateService update, WebSyncService webSync)
     {
         _sessionManager = sessionManager;
         _popupService = popupService;
@@ -335,6 +336,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _settings = settings;
         _screenshot = screenshot;
         _skillInstall = skillInstall;
+        _update = update;
         _webSync = webSync;
 
         // 网页同步默认关，ToolTip 先放使用说明（开启后换成访问地址）
@@ -367,6 +369,10 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _sessionManager.TaskCompleted += OnTaskCompleted;
         _systemStats.StatsUpdated += OnSystemStatsUpdated;
         _planUsage.UsageUpdated += OnPlanUsageUpdated;
+        // 在线升级：订阅"发现新版"事件（来自后台线程，marshal 到 UI 线程，仿 OnSystemStatsUpdated），
+        // 并启动一次启动静默检查（延迟几秒，仿 PlanUsageService 的延迟触发）。
+        _update.UpdateAvailable += OnUpdateAvailable;
+        _update.StartSilentCheck();
         // 启动时把滑块对齐到当前系统音量；之后跟着 SystemStats 的 1s tick 顺带同步，
         // 这样在别处（系统音量条/媒体键）改了音量，岛上滑块也会跟上。
         SyncVolumeFromSystem();
@@ -400,6 +406,8 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             // 来源筛选按钮 ToolTip 同理
             SourceFilterTip = Loc.Get(SourceFilter switch
             { 1 => "Island_SrcFilter_Cli", 2 => "Island_SrcFilter_Desktop", _ => "Island_SrcFilter_All" });
+            // "取消"按钮文案是代码侧双语直出，语言切换时通知绑定重读
+            OnPropertyChanged(nameof(SkillCancelLabel));
         });
     }
 
@@ -925,17 +933,37 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _skillMenuOpen;
     [ObservableProperty] private string _skillInstallInput = "";
     [ObservableProperty] private string _skillInstallStatus = "";
-    private bool _isSkillInstalling;
 
     /// <summary>
-    /// 解析输入 → 后台逐条跑 claude plugin 命令。安装过程中再点直接忽略（防并发重入）；
+    /// 是否正在安装。改为 ObservableProperty 是为了让 XAML 能据此切换"安装/取消"按钮，
+    /// 同时通过 NotifyCanExecuteChangedFor 联动两个命令的 CanExecute（安装中禁用"安装"、
+    /// 仅安装中启用"取消"）。
+    /// </summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(InstallSkillCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelSkillInstallCommand))]
+    private bool _isSkillInstalling;
+
+    /// <summary>当前安装任务的取消源：UI"取消"按钮触发它 → 经服务的联动令牌杀进程树。</summary>
+    private CancellationTokenSource? _skillInstallCts;
+
+    /// <summary>"取消"按钮文案（双语）—— 本地化键在 Loc.cs，这里不便改它，按现有 IsEnglish 直出。</summary>
+    public string SkillCancelLabel => Loc.Instance.IsEnglish ? "Cancel" : "取消";
+
+    /// <summary>
+    /// 解析输入 → 后台逐条跑 claude plugin 命令。安装过程中按钮已被 CanExecute 禁用；
+    /// 万一仍被触发（如绑定时序边角），给出"安装中"提示而非静默 early-return。
     /// 进度回调来自后台线程，需经 Dispatcher 回 UI 线程；await 之后由 async 上下文
     /// 自动回到 UI 线程，结果状态直接赋值即可。
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanInstallSkill))]
     private async Task InstallSkill()
     {
-        if (_isSkillInstalling) return;
+        if (IsSkillInstalling)
+        {
+            SkillInstallStatus = Loc.Get("Skill_Installing");
+            return;
+        }
 
         var cmds = SkillInstallService.ParseCommands(SkillInstallInput);
         if (cmds.Count == 0)
@@ -944,20 +972,171 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _isSkillInstalling = true;
+        // 每次安装开新令牌；取消按钮持有它，结束时归还。
+        var cts = new CancellationTokenSource();
+        _skillInstallCts = cts;
+        IsSkillInstalling = true;
         SkillInstallStatus = Loc.Get("Skill_Installing");
         try
         {
             var (ok, output) = await _skillInstall.RunAsync(cmds,
-                p => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => SkillInstallStatus = p));
+                p => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => SkillInstallStatus = p),
+                cts.Token);
             SkillInstallStatus = ok
                 ? Loc.Get("Skill_Done")
                 : Loc.Format("Skill_Failed", output.Length <= 300 ? output : output[^300..]);
         }
         finally
         {
-            _isSkillInstalling = false;
+            // 无论成功/失败/取消，都复位状态并释放令牌 —— 保证按钮可再次点击。
+            IsSkillInstalling = false;
+            _skillInstallCts = null;
+            cts.Dispose();
         }
+    }
+
+    /// <summary>"安装"按钮 CanExecute：安装进行中禁用，避免并发重入。</summary>
+    private bool CanInstallSkill() => !IsSkillInstalling;
+
+    /// <summary>
+    /// "取消"按钮：触发取消令牌 —— 服务侧的联动令牌随即取消，杀掉当前 powershell 进程树。
+    /// 状态文案与 finally 复位由 InstallSkill 的收尾统一处理（取消后服务返回 Ok=false，
+    /// 输出含 "canceled"）。仅在安装中可用。
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(IsSkillInstalling))]
+    private void CancelSkillInstall()
+    {
+        SkillInstallStatus = Loc.Instance.IsEnglish ? "Canceling…" : "正在取消…";
+        try { _skillInstallCts?.Cancel(); } catch { /* 已释放则忽略 */ }
+    }
+
+    // ── 在线升级：检查 GitHub Release → 发现新版提示面板 → 下载 Setup.exe 静默安装重启 ──
+
+    /// <summary>是否存在可安装的新版本（控制"发现新版"提示面板可见性 + 检查更新按钮小红点）。
+    /// Whether an installable update exists (drives the panel visibility and the button badge).</summary>
+    [ObservableProperty] private bool _updateAvailable;
+
+    /// <summary>更新状态文案（"检查中…" / "已是最新 vX.Y.Z" / "下载中 xx%" / 错误等）。
+    /// Update status text (checking / up-to-date / downloading / error).</summary>
+    [ObservableProperty] private string _updateStatus = "";
+
+    /// <summary>最新版本号（X.Y.Z）。/ Latest version (X.Y.Z).</summary>
+    [ObservableProperty] private string _latestVersion = "";
+
+    /// <summary>最新版更新日志。/ Latest release notes.</summary>
+    [ObservableProperty] private string _updateNotes = "";
+
+    /// <summary>下载进度 0..1（进度条绑定）。/ Download progress 0..1 (bound to the progress bar).</summary>
+    [ObservableProperty] private double _updateProgress;
+
+    /// <summary>最新版 Setup .exe 下载地址（CheckForUpdateAsync 返回，InstallUpdate 用）。
+    /// Latest Setup .exe URL (from CheckForUpdateAsync, consumed by InstallUpdate).</summary>
+    private string? _setupUrl;
+
+    /// <summary>是否正在下载/安装中（防重入 + 控制"立即更新"按钮 CanExecute）。
+    /// Whether a download/install is in progress (re-entrancy guard + InstallUpdate CanExecute).</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(InstallUpdateCommand))]
+    private bool _isUpdating;
+
+    /// <summary>检查更新菜单是否展开（命令栏按钮 + 面板的开关）。/ Whether the update panel is open.</summary>
+    [ObservableProperty] private bool _updateMenuOpen;
+
+    /// <summary>
+    /// 后台静默检查发现新版 → 填面板字段并亮提示。来自后台线程，必须 marshal 回 UI 线程
+    /// （写法同 OnSystemStatsUpdated）。
+    /// Background silent check found an update; populate the panel on the UI thread.
+    /// </summary>
+    private void OnUpdateAvailable(object? sender, UpdateInfo info)
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            UpdateAvailable = info.HasUpdate;
+            LatestVersion = info.LatestVersion;
+            UpdateNotes = info.Notes;
+            _setupUrl = info.SetupUrl;
+            UpdateStatus = "";
+        });
+    }
+
+    /// <summary>
+    /// 命令栏"检查更新"按钮：手动查一次。有新版 → 亮提示面板并填版本/日志；无 → 状态显示"已是最新"。
+    /// Manual "check for updates": queries once, shows the panel on a hit or an up-to-date message otherwise.
+    /// </summary>
+    [RelayCommand]
+    private async Task CheckUpdate()
+    {
+        UpdateMenuOpen = true;
+        UpdateStatus = Loc.Get("Update_Checking");
+        try
+        {
+            var info = await _update.CheckForUpdateAsync();
+            UpdateAvailable = info.HasUpdate;
+            LatestVersion = info.LatestVersion;
+            UpdateNotes = info.Notes;
+            _setupUrl = info.SetupUrl;
+            UpdateStatus = info.HasUpdate ? "" : Loc.Format("Update_UpToDate", info.CurrentVersion);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"CheckUpdate failed: {ex.Message}");
+            UpdateStatus = Loc.Get("Update_CheckFailed");
+        }
+    }
+
+    /// <summary>
+    /// "立即更新"按钮：下载 Setup.exe（原生 + 镜像兜底）并静默安装、退出本进程让安装器接管。
+    /// 进度经 IProgress 回 UI 线程更新进度条与"下载中 xx%"文案。安装成功后本进程会被关掉，
+    /// 不会走到 finally（成功路径里安装器 1s 后 Shutdown）；失败/无 URL 才复位 IsUpdating。
+    /// "Install now": downloads (native + mirror fallback) and silently installs, then exits.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanInstallUpdate))]
+    private async Task InstallUpdate()
+    {
+        if (IsUpdating) return;
+        if (string.IsNullOrWhiteSpace(_setupUrl))
+        {
+            UpdateStatus = Loc.Get("Update_CheckFailed");
+            return;
+        }
+
+        IsUpdating = true;
+        UpdateProgress = 0;
+        UpdateStatus = Loc.Format("Update_Downloading", 0);
+        // 进度回调来自后台线程，marshal 回 UI 线程更新进度条 + 文案。
+        var progress = new Progress<double>(p =>
+        {
+            UpdateProgress = p;
+            UpdateStatus = Loc.Format("Update_Downloading", (int)Math.Round(p * 100));
+        });
+        try
+        {
+            var ok = await _update.DownloadAndInstallAsync(_setupUrl, progress);
+            // 成功路径：安装器已启动、本进程即将被 Shutdown，这里通常看不到；失败才提示。
+            if (!ok) UpdateStatus = Loc.Get("Update_DownloadFailed");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"InstallUpdate failed: {ex.Message}");
+            UpdateStatus = Loc.Get("Update_DownloadFailed");
+        }
+        finally
+        {
+            IsUpdating = false;
+        }
+    }
+
+    /// <summary>"立即更新"CanExecute：下载/安装进行中禁用，避免并发重入。
+    /// InstallUpdate CanExecute: disabled while a download/install is running.</summary>
+    private bool CanInstallUpdate() => !IsUpdating;
+
+    /// <summary>"稍后"按钮：收起提示面板（不再亮），下次启动/手动检查仍会再提示。
+    /// "Later": collapse the panel; the next startup/manual check will surface it again.</summary>
+    [RelayCommand]
+    private void DismissUpdate()
+    {
+        UpdateAvailable = false;
+        UpdateMenuOpen = false;
     }
 
     /// <summary>
@@ -1012,6 +1191,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         _sessionManager.TaskCompleted -= OnTaskCompleted;
         _systemStats.StatsUpdated -= OnSystemStatsUpdated;
         _planUsage.UsageUpdated -= OnPlanUsageUpdated;
+        _update.UpdateAvailable -= OnUpdateAvailable;
         _settings.Changed -= OnSettingsChangedForModels;
         Loc.Instance.LanguageChanged -= OnLanguageChanged;
         _greenStatusTimer.Stop();
@@ -1497,6 +1677,7 @@ public partial class IslandSessionItem : ObservableObject
         "foreground-lost" => Loc.Get("Reply_ForegroundLost"),
         "inject-error" => Loc.Get("Reply_InjectError"),
         "desktop-activate-failed" or "no-desktop-window" => Loc.Get("Reply_DesktopActivateFailed"),
+        "session-nav-failed" => Loc.Get("Reply_SessionNavFailed"),
         "clipboard-failed" => Loc.Get("Reply_ClipboardFailed"),
         _ => Loc.Get("Reply_SendFailed")
     };

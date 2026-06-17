@@ -44,6 +44,15 @@ public class WorkspaceSettings
     /// 点余额行切换并落盘，下次启动灵动岛恢复关闭时的状态。json key = "showUsageChart"。</summary>
     public bool ShowUsageChart { get; private set; }
 
+    /// <summary>
+    /// 网页同步（WebSyncService）的访问令牌：32 个 hex 字符的随机串，扫码/复制地址时带在
+    /// URL 的 ?t= 参数里，网页端所有 /api/* 请求据此鉴权。首次启动（或文件里没有此键）自动
+    /// 生成并落盘，之后保持不变 —— 局域网监听 0.0.0.0 全靠它挡住未授权访问。json key = "webSyncToken"。
+    /// Access token for web sync: 32 hex chars, auto-generated and persisted on first launch.
+    /// Carried in the URL's ?t= query and required on every /api/* request to authorize access.
+    /// </summary>
+    public string WebSyncToken { get; private set; } = "";
+
     public event EventHandler? Changed;
 
     private System.Threading.Timer? _pollTimer;
@@ -55,7 +64,22 @@ public class WorkspaceSettings
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         _path = Path.Combine(appData, "OpenIsland", "settings.json");
         Load();
+        EnsureWebSyncToken(); // 首次启动（或旧 settings.json 无此键）即生成并落盘网页同步令牌
         StartHotReload();
+    }
+
+    /// <summary>
+    /// 确保网页同步令牌存在：为空时用密码学安全随机数生成 32 个 hex 字符并立即落盘。
+    /// 只在生成时 Save 一次（不通知 Changed —— 这是内部初始化，无订阅者关心）。
+    /// Generate and persist a 32-hex-char cryptographically random web-sync token if absent.
+    /// </summary>
+    private void EnsureWebSyncToken()
+    {
+        if (!string.IsNullOrWhiteSpace(WebSyncToken)) return;
+        // 16 字节随机 → 32 个小写 hex 字符
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        WebSyncToken = Convert.ToHexString(bytes).ToLowerInvariant();
+        Save();
     }
 
     /// <summary>
@@ -246,6 +270,13 @@ public class WorkspaceSettings
             {
                 ShowUsageChart = suc.GetBoolean();
             }
+            // webSyncToken 缺失 / 空 / 非法 → 保持空串，由构造函数 EnsureWebSyncToken 生成并落盘
+            if (doc.RootElement.TryGetProperty("webSyncToken", out var wst)
+                && wst.ValueKind == JsonValueKind.String)
+            {
+                var v = wst.GetString();
+                if (!string.IsNullOrWhiteSpace(v)) WebSyncToken = v!.Trim();
+            }
             // 旧版的 glassEnabled / glassOpacity 字段不再读取（毛玻璃功能已移除），
             // 残留在 settings.json 里也无害，下次 Save 自然消失。
         }
@@ -280,7 +311,8 @@ public class WorkspaceSettings
                     activeModelProfileId = ActiveModelProfileId,
                     language = Language,
                     screenshotHotkey = ScreenshotHotkey,
-                    showUsageChart = ShowUsageChart
+                    showUsageChart = ShowUsageChart,
+                    webSyncToken = WebSyncToken
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。

@@ -690,25 +690,48 @@
                                                      AcceptsReturn="True" TextWrapping="Wrap" Height="52"
                                                      Background="#2C2C2E" Foreground="#FAF9F5" BorderBrush="#3A3A3C"
                                                      CaretBrush="#FAF9F5" FontSize="11" Margin="0,6,0,6"/>
-                                            <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
-                                                    HorizontalAlignment="Left"
-                                                    Command="{Binding InstallSkillCommand}">
-                                                <Button.Template>
-                                                    <ControlTemplate TargetType="Button">
-                                                        <Border x:Name="Gb" Background="#252320" BorderBrush="#3A3631"
-                                                                BorderThickness="1" CornerRadius="8" Padding="12,5">
-                                                            <TextBlock Text="{Binding [Island_InstallSkill_Go], Source={x:Static svc:Loc.Instance}}"
-                                                                       Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
-                                                        </Border>
-                                                        <ControlTemplate.Triggers>
-                                                            <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter TargetName="Gb" Property="BorderBrush" Value="#CC785C"/>
-                                                                <Setter TargetName="Gb" Property="Background" Value="#2F2C28"/>
-                                                            </Trigger>
-                                                        </ControlTemplate.Triggers>
-                                                    </ControlTemplate>
-                                                </Button.Template>
-                                            </Button>
+                                            <!-- 安装 / 取消 并排：安装中隐藏"安装"显示"取消"（取消触发令牌 + 杀进程树） -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                                <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                                        Command="{Binding InstallSkillCommand}"
+                                                        Visibility="{Binding IsSkillInstalling, Converter={StaticResource InvBoolToVis}}">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="Gb" Background="#252320" BorderBrush="#3A3631"
+                                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                                <TextBlock Text="{Binding [Island_InstallSkill_Go], Source={x:Static svc:Loc.Instance}}"
+                                                                           Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="Gb" Property="BorderBrush" Value="#CC785C"/>
+                                                                    <Setter TargetName="Gb" Property="Background" Value="#2F2C28"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                                <!-- 取消：仅安装中可见（CanExecute 亦受 IsSkillInstalling 约束） -->
+                                                <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                                        Command="{Binding CancelSkillInstallCommand}"
+                                                        Visibility="{Binding IsSkillInstalling, Converter={StaticResource BoolToVis}}">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="Cxb" Background="#252320" BorderBrush="#3A3631"
+                                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                                <TextBlock Text="{Binding SkillCancelLabel}"
+                                                                           Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="Cxb" Property="BorderBrush" Value="#CC785C"/>
+                                                                    <Setter TargetName="Cxb" Property="Background" Value="#2F2C28"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                            </StackPanel>
                                             <TextBlock Text="{Binding SkillInstallStatus}" Foreground="#9AA0A6"
                                                        FontSize="11" TextWrapping="Wrap" MaxWidth="280" Margin="0,6,0,0"/>
                                         </StackPanel>
@@ -747,6 +770,110 @@
                                         </ControlTemplate>
                                     </Button.Template>
                                 </Button>
+
+                                <!-- 检查更新：点开"发现新版"小面板；有新版时按钮右上角亮一颗小红点 -->
+                                <ToggleButton x:Name="UpdateBtn" Cursor="Hand" Margin="6,0,0,0"
+                                              FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                              IsChecked="{Binding UpdateMenuOpen, Mode=TwoWay}"
+                                              ToolTip="{Binding [Island_CheckUpdate_Tip], Source={x:Static svc:Loc.Instance}}"
+                                              Command="{Binding CheckUpdateCommand}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Grid>
+                                                <Border x:Name="Ub" Background="#252320" BorderBrush="#3A3631"
+                                                        BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                                    <TextBlock Text="&#xE777;" FontFamily="Segoe MDL2 Assets"
+                                                               Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <!-- 小红点：仅有新版时可见，提示有更新可装 -->
+                                                <Ellipse Width="7" Height="7" Fill="#FF5252"
+                                                         HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                         Margin="0,-2,-2,0"
+                                                         Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"/>
+                                            </Grid>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Ub" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Ub" Property="Background" Value="#2F2C28"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+
+                                <!-- "发现新版"弹出面板：版本标题 + 可滚动更新日志 + 立即更新/稍后 + 下载进度（写法对齐安装 Skill 面板） -->
+                                <Popup PlacementTarget="{Binding ElementName=UpdateBtn}" Placement="Bottom"
+                                       VerticalOffset="4" IsOpen="{Binding UpdateMenuOpen, Mode=TwoWay}"
+                                       StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
+                                    <Border Background="#252320" BorderBrush="#3A3631" BorderThickness="1"
+                                            CornerRadius="8" Padding="10" Width="300">
+                                        <StackPanel>
+                                            <!-- 标题：发现新版本 v{LatestVersion}；无新版时隐藏，只显示状态行 -->
+                                            <TextBlock Text="{Binding LatestVersion, StringFormat={}发现新版本 v{0}}"
+                                                       Foreground="#FAF9F5" FontSize="13" FontWeight="SemiBold"
+                                                       Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}"/>
+                                            <!-- 更新日志：可滚动（日志可能较长），固定最大高度 -->
+                                            <ScrollViewer MaxHeight="120" Margin="0,6,0,0"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding UpdateNotes}" Foreground="#C8C8C8"
+                                                           FontSize="11" TextWrapping="Wrap"/>
+                                            </ScrollViewer>
+                                            <!-- 立即更新 / 稍后 并排：仅有新版时显示 -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                                                <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                                        Command="{Binding InstallUpdateCommand}">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="Uib" Background="#252320" BorderBrush="#3A3631"
+                                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                                <TextBlock Text="{Binding [Update_Install], Source={x:Static svc:Loc.Instance}}"
+                                                                           Foreground="#FAF9F5" FontSize="12" VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="Uib" Property="BorderBrush" Value="#CC785C"/>
+                                                                    <Setter TargetName="Uib" Property="Background" Value="#2F2C28"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                                <Button Cursor="Hand" FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                                        Margin="8,0,0,0" Command="{Binding DismissUpdateCommand}">
+                                                    <Button.Template>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="Ulb" Background="#252320" BorderBrush="#3A3631"
+                                                                    BorderThickness="1" CornerRadius="8" Padding="12,5">
+                                                                <TextBlock Text="{Binding [Update_Later], Source={x:Static svc:Loc.Instance}}"
+                                                                           Foreground="#9AA0A6" FontSize="12" VerticalAlignment="Center"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="Ulb" Property="BorderBrush" Value="#CC785C"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                            </StackPanel>
+                                            <!-- 下载进度条：仅下载/安装中显示 -->
+                                            <ProgressBar Height="4" Minimum="0" Maximum="1"
+                                                         Value="{Binding UpdateProgress}"
+                                                         Background="#26FFFFFF" Foreground="#CC785C"
+                                                         BorderThickness="0" Margin="0,8,0,0"
+                                                         Visibility="{Binding IsUpdating, Converter={StaticResource BoolToVis}}"/>
+                                            <!-- 状态行：检查中 / 已是最新 / 下载中 xx% / 失败 -->
+                                            <TextBlock Text="{Binding UpdateStatus}" Foreground="#9AA0A6"
+                                                       FontSize="11" TextWrapping="Wrap" MaxWidth="280" Margin="0,6,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Popup>
 
                                 </StackPanel>
 
