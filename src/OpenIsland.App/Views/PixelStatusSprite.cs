@@ -150,8 +150,8 @@ public class PixelStatusSprite : Image
             Height = sheet.PixelHeight * Scale;
             Source = _frames[0];
             if (_frames.Length > 1) { _loop = true; _timer.Start(); }
-            // Running 额外叠加上下跳动（保留旧占位图手感）；Attention 不跳
-            if (phase == SessionPhase.Running) StartBounce();
+            // Running 固定位置，不再叠加上下浮动（用户要求取消浮动效果）。
+            // 帧动画（敲键盘）照常播放，整体不再上下平移。
             return;
         }
 

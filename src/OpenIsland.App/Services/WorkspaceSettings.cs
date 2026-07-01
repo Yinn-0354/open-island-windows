@@ -27,6 +27,13 @@ public class WorkspaceSettings
     /// </summary>
     public bool SoundEnabled { get; private set; } = true;
 
+    /// <summary>
+    /// 灵动岛胶囊背景是否用液态玻璃（折射真实桌面）。默认 false = 纯黑 #0D0D0D（保留原观感、零额外开销）。
+    /// true = LiquidGlassService 离屏渲染玻璃并当 MainBorder 背景；菜单里的"背景样式"按钮切换。
+    /// json key = "liquidGlassEnabled"。Capsule background: solid black (default) vs liquid-glass.
+    /// </summary>
+    public bool LiquidGlassEnabled { get; private set; }
+
     /// <summary>用户在控制中心保存的第三方模型档案（含 API key）。内置 Claude 档不存这里。</summary>
     public List<ModelProfile> ModelProfiles { get; private set; } = new();
 
@@ -135,6 +142,14 @@ public class WorkspaceSettings
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>设置胶囊背景样式（液态玻璃 / 纯黑）+ 持久化 + 通知监听者。</summary>
+    public void SetLiquidGlassEnabled(bool v)
+    {
+        LiquidGlassEnabled = v;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <summary>设置界面语言（"auto"/"zh"/"en"）+ 持久化 + 通知监听者。</summary>
     public void SetLanguage(string lang)
     {
@@ -233,6 +248,12 @@ public class WorkspaceSettings
             {
                 SoundEnabled = snd.GetBoolean();
             }
+            // liquidGlassEnabled 缺失 → 保持默认 false（纯黑），旧 settings.json 不受影响
+            if (doc.RootElement.TryGetProperty("liquidGlassEnabled", out var lge)
+                && (lge.ValueKind == JsonValueKind.True || lge.ValueKind == JsonValueKind.False))
+            {
+                LiquidGlassEnabled = lge.GetBoolean();
+            }
             if (doc.RootElement.TryGetProperty("modelProfiles", out var mp)
                 && mp.ValueKind == JsonValueKind.Array)
             {
@@ -307,6 +328,7 @@ public class WorkspaceSettings
                     workspaces = Workspaces,
                     plan5hTokenBudget = Plan5hTokenBudget,
                     soundEnabled = SoundEnabled,
+                    liquidGlassEnabled = LiquidGlassEnabled,
                     modelProfiles = profilesForDisk,
                     activeModelProfileId = ActiveModelProfileId,
                     language = Language,

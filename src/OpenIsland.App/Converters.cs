@@ -144,3 +144,26 @@ public class HumanNumberConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotImplementedException();
 }
+
+/// <summary>
+/// 胶囊背景画刷：[LiquidGlassEnabled(bool), GlassFrame(ImageSource)] →
+///   · 开启 且 有玻璃帧 ⇒ ImageBrush(玻璃帧, Stretch=Fill)（MainBorder 自动按 CornerRadius 裁圆角）
+///   · 否则（关闭 / 还没出帧 / 渲染失败）⇒ 纯黑 #0D0D0D（原灵动岛观感、安全兜底）
+/// </summary>
+public class GlassBackgroundConverter : IMultiValueConverter
+{
+    private static readonly SolidColorBrush Black =
+        new(Color.FromRgb(0x0D, 0x0D, 0x0D));
+
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        bool enabled = values.Length > 0 && values[0] is bool b && b;
+        var frame = values.Length > 1 ? values[1] as ImageSource : null;
+        if (enabled && frame != null)
+            return new ImageBrush(frame) { Stretch = Stretch.Fill };
+        return Black;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotImplementedException();
+}

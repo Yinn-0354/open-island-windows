@@ -1,8 +1,11 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using OpenIsland.App.Services;
 using OpenIsland.App.ViewModels;
 
@@ -12,8 +15,26 @@ public partial class DynamicIslandWindow : Window
 {
     private readonly DynamicIslandViewModel _viewModel;
     private readonly WorkspaceSettings _settings;
-    private bool _isDragging;
-    private Point _dragStartPoint;
+
+    // ── 自定义拖动 ──
+    // 不用 WPF 的 DragMove：它进 OS 模态移动循环、阻塞 UI 线程，拖动期间玻璃根本刷不动（就是"几fps"的根因）。
+    // 改成自己在 MouseMove 里改 Left/Top，UI 线程不阻塞，每次移动即时重渲玻璃 → 丝滑。
+    private bool _dragArmed;          // 头部已按下、待判定
+    private bool _dragMoved;          // 已越过阈值、确实在拖（区分"点一下"与"拖"）
+    private Point _dragMouseStart;    // 按下时鼠标屏幕物理坐标
+    private Point _dragWinStart;      // 按下时窗口 Left/Top（DIP）
+    private double _dpi = 1.0;        // 物理像素 / DIP
+
+    // ── 液态玻璃 CPU 渲染 ──
+    // 静止时 200ms 刷一帧（兜住背后内容变化）；拖动时在 MouseMove 里每次移动即时重渲 → 丝滑。
+    // CPU 折射单帧 ~1ms，同步渲染不阻塞观感（见 GlassRenderer）。
+    private readonly GlassRenderer _glass = new();
+    private DispatcherTimer? _glassTimer;
+    private bool _isGlassTimerHooked;
+    private bool _glassRendering;
+    [DllImport("user32.dll")] private static extern uint SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    private const uint WDA_NONE = 0x00;
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x11; // 排除出屏幕抓取：抓玻璃背景时抓不到灵动岛自己
 
     // 普通模式岛宽 vs 权限提示时的拓宽宽度。等"丝滑"动画 0.5s ease-out 在两者间过渡。
     // 加宽是为了让 "2. Yes, don't ask again for vibeisland.app this session" 这种长 label
@@ -38,7 +59,92 @@ public partial class DynamicIslandWindow : Window
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         // VM 请求播放一次小章鱼动画（媒体控制 → headphones 等）→ 转给精灵控件
         _viewModel.PlaySprite += name => Dispatcher.BeginInvoke(() => StatusSprite.PlayOnce(name));
-        Loaded += (_, _) => PositionAtTopCenter();
+        Loaded += (_, _) =>
+        {
+            PositionAtTopCenter();
+            _dpi = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+            if (_viewModel.LiquidGlassEnabled) StartGlass();
+        };
+    }
+
+    // ════════════════════════════ 液态玻璃 ════════════════════════════
+
+    /// <summary>开启玻璃：本窗口设为"抓取排除"（抓背景抓不到自己）+ 启动 200ms 兜底刷新 + 立即出一帧。</summary>
+    private void StartGlass()
+    {
+        SetCaptureExclusion(true);
+        ApplyGlassResources(true);
+        _glassTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        if (!_isGlassTimerHooked) { _glassTimer.Tick += (_, _) => RenderGlassNow(); _isGlassTimerHooked = true; }
+        _glassTimer.Start();
+        RenderGlassNow();
+    }
+
+    /// <summary>关闭玻璃：停循环 + 解除抓取排除 + 内部面板回纯黑 + 清掉玻璃帧（背景经转换器回退纯黑）。</summary>
+    private void StopGlass()
+    {
+        _glassTimer?.Stop();
+        SetCaptureExclusion(false);
+        ApplyGlassResources(false);
+        _viewModel.GlassFrame = null;
+    }
+
+    /// <summary>切换展开后内部面板/卡片的填充：玻璃开 → 半透明（透出毛玻璃），关 → 原黑色。
+    /// 改 DynamicResource 一处生效全部（含 DataTemplate 里的会话卡片）。</summary>
+    private void ApplyGlassResources(bool glass)
+    {
+        SolidColorBrush B(byte a, byte r, byte g, byte b) =>
+            new(System.Windows.Media.Color.FromArgb(a, r, g, b));
+        if (glass)
+        {
+            Resources["CardFill"] = B(0x1A, 0xFF, 0xFF, 0xFF);  // 半透明白 ~0.10
+            Resources["PanelFill"] = B(0x14, 0xFF, 0xFF, 0xFF); // ~0.08
+            Resources["CodeFill"] = B(0x38, 0x00, 0x00, 0x00);  // 半透明黑 ~0.22（代码块保持可读）
+            Resources["ChipFill"] = B(0x16, 0xFF, 0xFF, 0xFF);  // 按钮 chip 毛玻璃 ~0.085
+            Resources["ChipHover"] = B(0x30, 0xFF, 0xFF, 0xFF); // 悬停更亮
+        }
+        else
+        {
+            Resources["CardFill"] = B(0xFF, 0x11, 0x11, 0x11);
+            Resources["PanelFill"] = B(0xFF, 0x1C, 0x1C, 0x1E);
+            Resources["CodeFill"] = B(0xFF, 0x0F, 0x0F, 0x11);
+            Resources["ChipFill"] = B(0xFF, 0x25, 0x23, 0x20);
+            Resources["ChipHover"] = B(0xFF, 0x2F, 0x2C, 0x28);
+        }
+    }
+
+    private void SetCaptureExclusion(bool exclude)
+    {
+        try
+        {
+            var h = new WindowInteropHelper(this).Handle;
+            if (h != IntPtr.Zero) SetWindowDisplayAffinity(h, exclude ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+        }
+        catch { }
+    }
+
+    /// <summary>渲染一帧：抓灵动岛正下方真实桌面（自身已排除）→ CPU 折射 → 写回 GlassFrame。同步、~1ms。</summary>
+    private void RenderGlassNow()
+    {
+        if (_glassRendering || !_viewModel.LiquidGlassEnabled || !IsVisible) return;
+        if (MainBorder.ActualWidth < 8 || MainBorder.ActualHeight < 8) return;
+        _glassRendering = true;
+        try
+        {
+            // MainBorder 在屏幕上的物理像素矩形（= 胶囊背后那块桌面）
+            var tl = MainBorder.PointToScreen(new Point(0, 0));
+            var br = MainBorder.PointToScreen(new Point(MainBorder.ActualWidth, MainBorder.ActualHeight));
+            int x = (int)Math.Round(tl.X), y = (int)Math.Round(tl.Y);
+            int w = (int)Math.Round(br.X - tl.X), h = (int)Math.Round(br.Y - tl.Y);
+            if (w < 8 || h < 8) return;
+            var bg = ScreenGrab.CaptureBytes(x, y, w, h);
+            if (bg == null) return;
+
+            double rDev = (MainBorder.CornerRadius.TopLeft > 0 ? MainBorder.CornerRadius.TopLeft : 18) * _dpi;
+            _viewModel.GlassFrame = _glass.Render(bg, w, h, rDev);
+        }
+        catch { /* 单帧失败无所谓，下一拍再来 */ }
+        finally { _glassRendering = false; }
     }
 
     /// <summary>圆形关闭按钮：小章鱼挥手拜拜，约 3 秒后隐藏灵动岛（托盘菜单可再显示）。</summary>
@@ -59,24 +165,25 @@ public partial class DynamicIslandWindow : Window
 
     private void Header_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        _isDragging = true;
-        _dragStartPoint = e.GetPosition(this);
+        _dragArmed = true;
+        _dragMoved = false;
+        _dragMouseStart = PointToScreen(e.GetPosition(this)); // 屏幕物理坐标
+        _dragWinStart = new Point(Left, Top);
         (sender as UIElement)?.CaptureMouse();
     }
 
     private void Header_MouseMove(object sender, MouseEventArgs e)
     {
-        if (_isDragging)
+        if (!_dragArmed) return;
+        // PointToScreen(相对窗口点) 始终给出鼠标的绝对屏幕坐标（即便窗口已移动）→ 总位移稳定。
+        var cur = PointToScreen(e.GetPosition(this));
+        double dx = cur.X - _dragMouseStart.X, dy = cur.Y - _dragMouseStart.Y;
+        if (!_dragMoved && (Math.Abs(dx) > 5 || Math.Abs(dy) > 5)) _dragMoved = true;
+        if (_dragMoved)
         {
-            var currentPos = e.GetPosition(this);
-            var delta = currentPos - _dragStartPoint;
-            if (Math.Abs(delta.X) > 5 || Math.Abs(delta.Y) > 5)
-            {
-                _isDragging = false;
-                (sender as UIElement)?.ReleaseMouseCapture();
-                DragMove(); // 阻塞直到鼠标松开
-                CheckNotchSnap();
-            }
+            Left = _dragWinStart.X + dx / _dpi; // 物理 delta → DIP
+            Top = _dragWinStart.Y + dy / _dpi;
+            if (_viewModel.LiquidGlassEnabled) RenderGlassNow(); // 每次移动即时重渲 → 背景丝滑跟随
         }
     }
 
@@ -129,29 +236,28 @@ public partial class DynamicIslandWindow : Window
 
     private void Header_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (_isDragging)
-        {
-            // 短点（非拖拽）= 用户意图"点 Open Island"：一键清空下面所有栏目，谁活动谁再回来，
-            // 然后照旧 toggle 展开/收起（不破坏看列表的能力）。Notch 与默认形态行为一致。
-            // 清空逻辑见 DynamicIslandViewModel.ClearAllSessions（复用单卡叉号的 dismiss
-            // 状态机，未答的权限 prompt 不会被清掉）。
-            // A genuine tap (not a drag) on the "Open Island" header clears the session
-            // list (active ones reappear on their own) and then toggles expand/collapse as
-            // before — see DynamicIslandViewModel.OnHeaderTapped / ClearAllSessions.
-            // 例外：点在最左的小章鱼上 → 放一次"龟派气功"彩蛋，不展开/收起。
-            // （Grid 在 MouseDown 抓了鼠标，MouseUp 总落到 Grid，小章鱼自己的事件收不到，
-            //   所以在这里按命中位置分流。）
-            var pOnSprite = e.GetPosition(StatusSprite);
-            bool onSprite = pOnSprite.X >= 0 && pOnSprite.Y >= 0
-                            && pOnSprite.X < StatusSprite.ActualWidth
-                            && pOnSprite.Y < StatusSprite.ActualHeight;
-            if (onSprite)
-                StatusSprite.PlayOnce("kamehameha");
-            else
-                _viewModel.OnHeaderTapped();
-        }
-        _isDragging = false;
+        if (!_dragArmed) return;
+        _dragArmed = false;
         (sender as UIElement)?.ReleaseMouseCapture();
+
+        if (_dragMoved)
+        {
+            CheckNotchSnap();
+            if (_viewModel.LiquidGlassEnabled) RenderGlassNow(); // 落点后按新位置重渲
+            return;
+        }
+
+        // 短点（非拖拽）= 用户意图"点 Open Island"：一键清空下面所有栏目，谁活动谁再回来，
+        // 然后照旧 toggle 展开/收起（不破坏看列表的能力）。Notch 与默认形态行为一致。
+        // 例外：点在最左的小章鱼上 → 放一次"龟派气功"彩蛋，不展开/收起。
+        var pOnSprite = e.GetPosition(StatusSprite);
+        bool onSprite = pOnSprite.X >= 0 && pOnSprite.Y >= 0
+                        && pOnSprite.X < StatusSprite.ActualWidth
+                        && pOnSprite.Y < StatusSprite.ActualHeight;
+        if (onSprite)
+            StatusSprite.PlayOnce("kamehameha");
+        else
+            _viewModel.OnHeaderTapped();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -160,6 +266,8 @@ public partial class DynamicIslandWindow : Window
             Dispatcher.BeginInvoke(() => AnimateExpand(_viewModel.IsExpanded));
         else if (e.PropertyName == nameof(DynamicIslandViewModel.IsPermissionMode))
             Dispatcher.BeginInvoke(() => AnimateWidth(_viewModel.IsPermissionMode));
+        else if (e.PropertyName == nameof(DynamicIslandViewModel.LiquidGlassEnabled))
+            Dispatcher.BeginInvoke(() => { if (_viewModel.LiquidGlassEnabled) StartGlass(); else StopGlass(); });
     }
 
     /// <summary>

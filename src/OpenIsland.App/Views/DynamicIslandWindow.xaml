@@ -18,6 +18,23 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:InverseBoolToVisibilityConverter x:Key="InvBoolToVis"/>
         <local:StringToBrushConverter x:Key="StrToBrush"/>
+        <!-- 胶囊背景：液态玻璃帧 or 纯黑兜底（见 GlassBackgroundConverter） -->
+        <local:GlassBackgroundConverter x:Key="GlassBg"/>
+        <!-- 展开后内部面板/卡片填充：玻璃开 → 半透明（透出毛玻璃），关 → 原黑色。
+             用 DynamicResource 引用，代码后端 ApplyGlassResources 一处切换全部生效（含 DataTemplate 内的卡片）。 -->
+        <SolidColorBrush x:Key="CardFill" Color="#111111"/>
+        <SolidColorBrush x:Key="PanelFill" Color="#1C1C1E"/>
+        <SolidColorBrush x:Key="CodeFill" Color="#0F0F11"/>
+        <!-- 模型切换栏里那排按钮 chip：玻璃开 → 半透明毛玻璃，关 → 原暖深色。 -->
+        <SolidColorBrush x:Key="ChipFill" Color="#252320"/>
+        <SolidColorBrush x:Key="ChipHover" Color="#2F2C28"/>
+        <!-- 圆形 chip 的方向性高光环（仿 liquid-glass-react：135° 对角线，中下最亮） -->
+        <LinearGradientBrush x:Key="ChipRim" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#00FFFFFF" Offset="0"/>
+            <GradientStop Color="#26FFFFFF" Offset="0.32"/>
+            <GradientStop Color="#88FFFFFF" Offset="0.60"/>
+            <GradientStop Color="#00FFFFFF" Offset="1"/>
+        </LinearGradientBrush>
 
         <!-- 扁平 ScrollBar：去掉箭头按钮 + 滑道，仅保留一根细灰色 thumb。
              默认 WPF ScrollBar 自带 LineUp/LineDown 箭头 + 灰白滑道，跟岛的极简风冲突。 -->
@@ -165,9 +182,15 @@
             </Style>
         </Border.Style>
         <Border x:Name="MainBorder"
-                Background="#0D0D0D"
                 BorderBrush="#282828"
                 BorderThickness="1">
+            <!-- 背景：液态玻璃开 ⇒ 离屏渲染的玻璃帧；否则纯黑 #0D0D0D。Border 自动按 CornerRadius 裁圆角。 -->
+            <Border.Background>
+                <MultiBinding Converter="{StaticResource GlassBg}">
+                    <Binding Path="LiquidGlassEnabled"/>
+                    <Binding Path="GlassFrame"/>
+                </MultiBinding>
+            </Border.Background>
             <Border.Style>
                 <Style TargetType="Border">
                     <Setter Property="CornerRadius" Value="20"/>
@@ -328,7 +351,7 @@
                     <StackPanel Visibility="{Binding IsPermissionMode, Converter={StaticResource InvBoolToVis}}">
 
                         <!-- ── 系统状态栏：CPU / 内存 / GPU / 网速（夹在头部与会话列表之间） ── -->
-                        <Border Background="#111111"
+                        <Border Background="{DynamicResource CardFill}"
                                 CornerRadius="10"
                                 Margin="8,6,8,2"
                                 Padding="12,8">
@@ -431,7 +454,7 @@
                         </Border>
 
                         <!-- ── 媒体控制栏：上一首 / 播放暂停 / 下一首 / 音量（一行） ── -->
-                        <Border Background="#111111"
+                        <Border Background="{DynamicResource CardFill}"
                                 CornerRadius="10"
                                 Margin="8,0,8,2"
                                 Padding="10,6">
@@ -537,7 +560,7 @@
                         </Border>
 
                         <!-- ── 模型切换栏：一个按钮，点开弹出模型列表即切换（不显示当前模型）；最右 * 留空 ── -->
-                        <Border Background="#111111" CornerRadius="10" Margin="8,0,8,2" Padding="10,6">
+                        <Border Background="{DynamicResource CardFill}" CornerRadius="10" Margin="8,0,8,2" Padding="10,6">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
@@ -552,21 +575,15 @@
                                               ToolTip="{Binding [Island_SwitchModel], Source={x:Static svc:Loc.Instance}}">
                                     <ToggleButton.Template>
                                         <ControlTemplate TargetType="ToggleButton">
-                                            <Border x:Name="Bd" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="&#xE950;" FontFamily="Segoe MDL2 Assets"
-                                                               Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
-                                                    <Path Margin="5,2,0,0" VerticalAlignment="Center" Fill="#CC785C" Data="M0,0 L4,4 L8,0 Z"/>
-                                                </StackPanel>
+                                            <Border x:Name="Bd" Width="30" Height="30" Background="{DynamicResource ChipFill}"
+                                                    BorderBrush="{StaticResource ChipRim}" BorderThickness="1.3" CornerRadius="15">
+                                                <TextBlock Text="&#xE950;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#FFFFFF" FontSize="12"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
-                                                <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#CC785C"/>
-                                                </Trigger>
                                                 <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="#2F2C28"/>
-                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -607,6 +624,32 @@
                                 <!-- 截图按钮 + 清理任务：放在同一横排（Grid 第 1 列）。 -->
                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
 
+                                <!-- 背景样式：液态玻璃 ⇄ 纯黑。圆形玻璃 chip（与本行其它按钮同款）；
+                                     开启时 chip 底色变亮(ChipHover)作激活指示。点击切换，关闭/渲染失败回退纯黑。 -->
+                                <Button x:Name="GlassChip" Cursor="Hand" Margin="6,0,0,0"
+                                        FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                        Command="{Binding ToggleLiquidGlassCommand}"
+                                        ToolTip="背景样式：液态玻璃 / 纯黑">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Glb" Width="30" Height="30" Background="{DynamicResource ChipFill}"
+                                                    BorderBrush="{StaticResource ChipRim}" BorderThickness="1.3" CornerRadius="15">
+                                                <TextBlock Text="&#xE771;" FontFamily="Segoe MDL2 Assets"
+                                                           Foreground="#FFFFFF" FontSize="12"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Glb" Property="Background" Value="{DynamicResource ChipHover}"/>
+                                                </Trigger>
+                                                <DataTrigger Binding="{Binding LiquidGlassEnabled}" Value="True">
+                                                    <Setter TargetName="Glb" Property="Background" Value="{DynamicResource ChipHover}"/>
+                                                </DataTrigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+
                                 <!-- 区域截图：微信式拖拽框选 → 复制到剪贴板。快捷键默认 Ctrl+Q（设置中心可改）。
                      注意：本行四个按钮（切换模型/截图/清理任务/安装Skill）合计宽度贴近 320 宽
                      岛体的可用空间，间距/内边距都压过 —— 再加按钮前先量宽度。 -->
@@ -615,15 +658,15 @@
                                         Command="{Binding ScreenshotCommand}" ToolTip="{Binding [Island_Screenshot_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
-                                            <Border x:Name="Sb" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                            <Border x:Name="Sb" Width="30" Height="30" Background="{DynamicResource ChipFill}" BorderBrush="{StaticResource ChipRim}"
+                                                    BorderThickness="1.3" CornerRadius="15">
                                                 <TextBlock Text="&#xE924;" FontFamily="Segoe MDL2 Assets"
-                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                           Foreground="#FFFFFF" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Sb" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Sb" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Sb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Sb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -636,15 +679,15 @@
                                         Command="{Binding ClearTasksCommand}" ToolTip="{Binding [Island_ClearTasks_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
-                                            <Border x:Name="Cb" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                            <Border x:Name="Cb" Width="30" Height="30" Background="{DynamicResource ChipFill}" BorderBrush="{StaticResource ChipRim}"
+                                                    BorderThickness="1.3" CornerRadius="15">
                                                 <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets"
-                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                           Foreground="#FFFFFF" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Cb" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Cb" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Cb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Cb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -658,19 +701,19 @@
                                               ToolTip="{Binding [Island_InstallSkill_Tip], Source={x:Static svc:Loc.Instance}}">
                                     <ToggleButton.Template>
                                         <ControlTemplate TargetType="ToggleButton">
-                                            <Border x:Name="Kb" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                            <Border x:Name="Kb" Width="30" Height="30" Background="{DynamicResource ChipFill}" BorderBrush="{StaticResource ChipRim}"
+                                                    BorderThickness="1.3" CornerRadius="15">
                                                 <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets"
-                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                           Foreground="#FFFFFF" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Kb" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Kb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                                 <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Kb" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Kb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Kb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -746,25 +789,25 @@
                                         ToolTip="{Binding SourceFilterTip}">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
-                                            <Border x:Name="Fb" Background="#252320" BorderBrush="#3A3631"
-                                                    BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                            <Border x:Name="Fb" Width="30" Height="30" Background="{DynamicResource ChipFill}" BorderBrush="{StaticResource ChipRim}"
+                                                    BorderThickness="1.3" CornerRadius="15">
                                                 <TextBlock x:Name="FbIco" Text="&#xE71D;" FontFamily="Segoe MDL2 Assets"
-                                                           Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                           Foreground="#FFFFFF" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Fb" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Fb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                                 <!-- 1=仅终端：命令行字形；高亮边框提示"筛选生效中" -->
                                                 <DataTrigger Binding="{Binding SourceFilter}" Value="1">
                                                     <Setter TargetName="FbIco" Property="Text" Value="&#xE756;"/>
-                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
                                                 </DataTrigger>
                                                 <!-- 2=仅客户端：显示器字形 -->
                                                 <DataTrigger Binding="{Binding SourceFilter}" Value="2">
                                                     <Setter TargetName="FbIco" Property="Text" Value="&#xE7F4;"/>
-                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="#CC785C"/>
+                                                    <Setter TargetName="Fb" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
                                                 </DataTrigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -780,10 +823,10 @@
                                     <ToggleButton.Template>
                                         <ControlTemplate TargetType="ToggleButton">
                                             <Grid>
-                                                <Border x:Name="Ub" Background="#252320" BorderBrush="#3A3631"
-                                                        BorderThickness="1" CornerRadius="8" Padding="9,5">
+                                                <Border x:Name="Ub" Width="30" Height="30" Background="{DynamicResource ChipFill}" BorderBrush="{StaticResource ChipRim}"
+                                                        BorderThickness="1.3" CornerRadius="15">
                                                     <TextBlock Text="&#xE777;" FontFamily="Segoe MDL2 Assets"
-                                                               Foreground="#CC785C" FontSize="12" VerticalAlignment="Center"/>
+                                                               Foreground="#FFFFFF" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                 </Border>
                                                 <!-- 小红点：仅有新版时可见，提示有更新可装 -->
                                                 <Ellipse Width="7" Height="7" Fill="#FF5252"
@@ -793,12 +836,12 @@
                                             </Grid>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Ub" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Ub" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                                 <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="#CC785C"/>
-                                                    <Setter TargetName="Ub" Property="Background" Value="#2F2C28"/>
+                                                    <Setter TargetName="Ub" Property="BorderBrush" Value="{StaticResource ChipRim}"/>
+                                                    <Setter TargetName="Ub" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -888,7 +931,7 @@
                              API  模式：API · 1.24M tokens（无进度条/重置）
                              数据来自 /api/oauth/usage（= /usage 同源，零 message 配额）。
                              配色/间距对齐上方媒体行（#111111 / CornerRadius 10 / Margin 8,0,8,2）。 -->
-                        <Border Background="#111111"
+                        <Border Background="{DynamicResource CardFill}"
                                 CornerRadius="10"
                                 Margin="8,0,8,2"
                                 Padding="10,8"
@@ -1054,7 +1097,7 @@
                             <ItemsControl ItemsSource="{Binding Sessions}" Margin="8,6,8,2">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Border Background="#111111"
+                                        <Border Background="{DynamicResource CardFill}"
                                                 CornerRadius="12"
                                                 Padding="12,10"
                                                 Margin="0,2"
@@ -1332,7 +1375,7 @@
                          Visibility 必须挂在没有 DataContext 重写的外层 ContentControl 上。 -->
                     <ContentControl Visibility="{Binding IsPermissionMode, Converter={StaticResource BoolToVis}}">
                     <Border DataContext="{Binding PermissionSession}"
-                            Background="#1C1C1E"
+                            Background="{DynamicResource PanelFill}"
                             CornerRadius="14"
                             Padding="20,16"
                             Margin="10,8,10,10">
@@ -1378,7 +1421,7 @@
                                        Margin="0,0,0,8"/>
 
                             <!-- 入参展开块：monospace + 微深底，像参考图里的 diff/code 预览 -->
-                            <Border Background="#0F0F11"
+                            <Border Background="{DynamicResource CodeFill}"
                                     CornerRadius="8"
                                     Padding="12,10"
                                     Margin="0,0,0,14">

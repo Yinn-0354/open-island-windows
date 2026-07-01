@@ -239,6 +239,24 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>喇叭按钮命令：翻转开关（OnSoundEnabledChanged 负责落盘 + 同步）。</summary>
     [RelayCommand] private void ToggleSound() => SoundEnabled = !SoundEnabled;
 
+    // ── 胶囊背景样式：液态玻璃 / 纯黑（卡片菜单里的"背景样式"按钮）──
+    /// <summary>胶囊背景是否用液态玻璃。初值取自 WorkspaceSettings（构造时写 backing field）。
+    /// 改动经 OnLiquidGlassEnabledChanged 落盘；DynamicIslandWindow 监听本属性变化启/停离屏渲染循环。</summary>
+    [ObservableProperty] private bool _liquidGlassEnabled;
+
+    /// <summary>离屏渲染出的玻璃帧（MainBorder.Background 经 GlassBackgroundConverter 绑这里）。
+    /// 由 DynamicIslandWindow 每帧写入；null 或开关关闭 → 回退纯黑 #0D0D0D。</summary>
+    [ObservableProperty] private System.Windows.Media.ImageSource? _glassFrame;
+
+    partial void OnLiquidGlassEnabledChanged(bool value)
+    {
+        _settings.SetLiquidGlassEnabled(value);
+        if (!value) GlassFrame = null; // 关 → 立即丢掉玻璃帧，背景回纯黑
+    }
+
+    /// <summary>"背景样式"按钮命令：液态玻璃 ↔ 纯黑。</summary>
+    [RelayCommand] private void ToggleLiquidGlass() => LiquidGlassEnabled = !LiquidGlassEnabled;
+
     // ── 网页同步（手机/平板访问）：头部地球按钮，手动开关 ──
 
     /// <summary>网页同步是否开启（开 = 地球图标变绿）。刻意不持久化 —— 监听 0.0.0.0
@@ -361,6 +379,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         // 构造期回写一遍 settings（值没变，没必要落盘）。
         _soundEnabled = settings.SoundEnabled;
         SoundService.Enabled = settings.SoundEnabled;
+
+        // 胶囊背景样式对齐持久化值（写 backing field 不触发落盘）。DynamicIslandWindow 据此启/停玻璃渲染。
+        _liquidGlassEnabled = settings.LiquidGlassEnabled;
 
         // 余额行显示模式对齐持久化值（写 backing field 不触发落盘）。下次启动恢复关闭时的状态。
         _showUsageChart = settings.ShowUsageChart;
