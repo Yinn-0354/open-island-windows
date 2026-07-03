@@ -78,6 +78,8 @@ public partial class App : Application
         _hotkeyService?.Dispose();
         _trayIcon?.Dispose();
 
+        // ServiceProvider.Dispose() 下面这行本身就会把所有已解析的 IDisposable 单例（含 WebGlassRenderer）
+        // 一并 Dispose 掉，不用在这里手动再调一次。
         if (_serviceProvider is IDisposable disposable)
         {
             disposable.Dispose();
@@ -105,6 +107,7 @@ public partial class App : Application
         services.AddSingleton<SkillInstallService>();
         services.AddSingleton<UpdateService>();
         services.AddSingleton<WebSyncService>();
+        services.AddSingleton<WebGlassRenderer>();
 
         // UI服务
         services.AddSingleton<TrayIconService>();

@@ -25,16 +25,23 @@ public partial class DynamicIslandWindow : Window
     private Point _dragWinStart;      // 按下时窗口 Left/Top（DIP）
     private double _dpi = 1.0;        // 物理像素 / DIP
 
-    // ── 液态玻璃 CPU 渲染 ──
+    // ── 液态玻璃：离屏 WebView2 渲染 ──
     // 静止时 200ms 刷一帧（兜住背后内容变化）；拖动时在 MouseMove 里每次移动即时重渲 → 丝滑。
-    // CPU 折射单帧 ~1ms，同步渲染不阻塞观感（见 GlassRenderer）。
-    private readonly GlassRenderer _glass = new();
+    // WebView2 往返 ~30-90ms（见 WebGlassRenderer），不能再同步渲染，全部走 fire-and-forget async +
+    // _glassRendering 重入锁：渲染没跟上时新的 MouseMove 直接跳过，不排队、不阻塞拖动手感。
+    private readonly WebGlassRenderer _glass;
     private DispatcherTimer? _glassTimer;
     private bool _isGlassTimerHooked;
     private bool _glassRendering;
     [DllImport("user32.dll")] private static extern uint SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    [DllImport("user32.dll")] private static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
     private const uint WDA_NONE = 0x00;
     private const uint WDA_EXCLUDEFROMCAPTURE = 0x11; // 排除出屏幕抓取：抓玻璃背景时抓不到灵动岛自己
+    // 远程桌面/RDP 等环境下 WDA_EXCLUDEFROMCAPTURE 会静默失败（SetWindowDisplayAffinity 返回值
+    // 以前从没人检查过）——一旦失效，ScreenGrab 会截到灵动岛自己上一帧的玻璃背景，一路自我反馈
+    // 越叠越糊、颜色跑偏（实测会稳定跑到饱和橙红色）。这里在 StartGlass 时用 GetWindowDisplayAffinity
+    // 读回实际生效的值来验证，没生效就改用 ScreenGrab.CaptureBytesHideWindow（截屏瞬间隐藏自己）兜底。
+    private bool _captureExclusionWorks;
 
     // 普通模式岛宽 vs 权限提示时的拓宽宽度。等"丝滑"动画 0.5s ease-out 在两者间过渡。
     // 加宽是为了让 "2. Yes, don't ask again for vibeisland.app this session" 这种长 label
@@ -47,11 +54,12 @@ public partial class DynamicIslandWindow : Window
     private const double NotchSnapThreshold = 28;
     private const double NotchUnsnapThreshold = 48;
 
-    public DynamicIslandWindow(DynamicIslandViewModel viewModel, WorkspaceSettings settings)
+    public DynamicIslandWindow(DynamicIslandViewModel viewModel, WorkspaceSettings settings, WebGlassRenderer glass)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _settings = settings;
+        _glass = glass;
         DataContext = viewModel;
 
         Width = NormalWidth;
@@ -75,9 +83,9 @@ public partial class DynamicIslandWindow : Window
         SetCaptureExclusion(true);
         ApplyGlassResources(true);
         _glassTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
-        if (!_isGlassTimerHooked) { _glassTimer.Tick += (_, _) => RenderGlassNow(); _isGlassTimerHooked = true; }
+        if (!_isGlassTimerHooked) { _glassTimer.Tick += (_, _) => _ = RenderGlassNowAsync(); _isGlassTimerHooked = true; }
         _glassTimer.Start();
-        RenderGlassNow();
+        _ = RenderGlassNowAsync();
     }
 
     /// <summary>关闭玻璃：停循环 + 解除抓取排除 + 内部面板回纯黑 + 清掉玻璃帧（背景经转换器回退纯黑）。</summary>
@@ -113,18 +121,24 @@ public partial class DynamicIslandWindow : Window
         }
     }
 
+    /// <summary>设置排除并当场读回验证是否真的生效（远程桌面等环境该 API 会静默失败），
+    /// 结果存进 _captureExclusionWorks 给 RenderGlassNowAsync 决定要不要走隐藏兜底。</summary>
     private void SetCaptureExclusion(bool exclude)
     {
         try
         {
             var h = new WindowInteropHelper(this).Handle;
-            if (h != IntPtr.Zero) SetWindowDisplayAffinity(h, exclude ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+            if (h == IntPtr.Zero) return;
+            SetWindowDisplayAffinity(h, exclude ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+            _captureExclusionWorks = !exclude
+                || (GetWindowDisplayAffinity(h, out var readBack) && readBack == WDA_EXCLUDEFROMCAPTURE);
         }
-        catch { }
+        catch { _captureExclusionWorks = false; }
     }
 
-    /// <summary>渲染一帧：抓灵动岛正下方真实桌面（自身已排除）→ CPU 折射 → 写回 GlassFrame。同步、~1ms。</summary>
-    private void RenderGlassNow()
+    /// <summary>渲染一帧：抓灵动岛正下方真实桌面（自身已排除）→ 离屏 WebView2 折射 → 写回 GlassFrame。
+    /// 异步、~30-90ms 往返；_glassRendering 防重入，渲染没跟上时新调用直接跳过。</summary>
+    private async Task RenderGlassNowAsync()
     {
         if (_glassRendering || !_viewModel.LiquidGlassEnabled || !IsVisible) return;
         if (MainBorder.ActualWidth < 8 || MainBorder.ActualHeight < 8) return;
@@ -137,11 +151,14 @@ public partial class DynamicIslandWindow : Window
             int x = (int)Math.Round(tl.X), y = (int)Math.Round(tl.Y);
             int w = (int)Math.Round(br.X - tl.X), h = (int)Math.Round(br.Y - tl.Y);
             if (w < 8 || h < 8) return;
-            var bg = ScreenGrab.CaptureBytes(x, y, w, h);
+            var bg = _captureExclusionWorks
+                ? ScreenGrab.CaptureBytes(x, y, w, h)
+                : ScreenGrab.CaptureBytesHideWindow(new WindowInteropHelper(this).Handle, x, y, w, h);
             if (bg == null) return;
 
             double rDev = (MainBorder.CornerRadius.TopLeft > 0 ? MainBorder.CornerRadius.TopLeft : 18) * _dpi;
-            _viewModel.GlassFrame = _glass.Render(bg, w, h, rDev);
+            var frame = await _glass.RenderAsync(bg, w, h, rDev);
+            if (frame != null) _viewModel.GlassFrame = frame;
         }
         catch { /* 单帧失败无所谓，下一拍再来 */ }
         finally { _glassRendering = false; }
@@ -183,7 +200,7 @@ public partial class DynamicIslandWindow : Window
         {
             Left = _dragWinStart.X + dx / _dpi; // 物理 delta → DIP
             Top = _dragWinStart.Y + dy / _dpi;
-            if (_viewModel.LiquidGlassEnabled) RenderGlassNow(); // 每次移动即时重渲 → 背景丝滑跟随
+            if (_viewModel.LiquidGlassEnabled) _ = RenderGlassNowAsync(); // 每次移动即时重渲 → 背景丝滑跟随
         }
     }
 
@@ -243,7 +260,7 @@ public partial class DynamicIslandWindow : Window
         if (_dragMoved)
         {
             CheckNotchSnap();
-            if (_viewModel.LiquidGlassEnabled) RenderGlassNow(); // 落点后按新位置重渲
+            if (_viewModel.LiquidGlassEnabled) _ = RenderGlassNowAsync(); // 落点后按新位置重渲
             return;
         }
 

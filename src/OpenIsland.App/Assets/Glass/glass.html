@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Open Island Glass</title>
+<style>
+  /* 纯效果层：整张页面就是一枚胶囊，C# 侧把离屏 WebView2 窗口尺寸设成胶囊实际尺寸，
+     CapturePreviewAsync 把这一整页当结果帧读回去，直接当 MainBorder 背景（Stretch=Fill）。
+     没有真实鼠标会移到这个离屏窗口上，因此不做 liquid-glass-react 那套鼠标弹性/高光跟随，
+     只保留跟鼠标无关的部分：折射位移贴图 + 色散 + 磨砂模糊 + 静态高光边（对应 source 的
+     "Card" 预设：elasticity=0，非交互展示态），这些正是用户验证认可的观感来源。 */
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0d0d0d; }
+  #bg { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+
+  #pill { position:fixed; inset:0; width:100%; height:100%; overflow:hidden; }
+  #warp { position:absolute; inset:0; } /* 只有这层加折射滤镜 + backdrop-filter，source 里的 glass__warp */
+
+  /* 高光边框两层：静态版（无鼠标可跟随），对应 source 鼠标在胶囊正中心时的取值 */
+  #border1, #border2 {
+    position:fixed; inset:0; pointer-events:none;
+    padding:1.5px;
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude;
+    box-shadow:0 0 0 .5px rgba(255,255,255,.5) inset, 0 1px 3px rgba(255,255,255,.25) inset, 0 1px 4px rgba(0,0,0,.35);
+  }
+  #border1 { mix-blend-mode:screen; opacity:.2; background:linear-gradient(135deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.12) 33%, rgba(255,255,255,.4) 66%, rgba(255,255,255,0) 100%); }
+  #border2 { mix-blend-mode:overlay; background:linear-gradient(135deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.32) 33%, rgba(255,255,255,.6) 66%, rgba(255,255,255,0) 100%); }
+</style>
+</head>
+<body>
+<img id="bg" alt="">
+
+<!-- SVG 滤镜定义：与 index.tsx 的 GlassFilter 组件逐条对齐，数值按 "Button" 预设
+     （displacementScale=64, aberrationIntensity=2, standard 模式）预先算好写死——
+     折射/色散强度跟鼠标无关，这部分与交互式 demo 完全一致，是效果的核心来源。 -->
+<svg id="filterSvg" style="position:absolute;" aria-hidden="true">
+  <defs>
+    <filter id="glassFilter" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">
+      <feImage id="feimg" x="0" y="0" width="100%" height="100%" result="DISPLACEMENT_MAP" preserveAspectRatio="xMidYMid slice"/>
+
+      <feColorMatrix in="DISPLACEMENT_MAP" type="matrix"
+        values="0.3 0.3 0.3 0 0
+                0.3 0.3 0.3 0 0
+                0.3 0.3 0.3 0 0
+                0 0 0 1 0" result="EDGE_INTENSITY"/>
+      <feComponentTransfer in="EDGE_INTENSITY" result="EDGE_MASK">
+        <feFuncA type="discrete" tableValues="0 0.1 1"/>
+      </feComponentTransfer>
+
+      <feOffset in="SourceGraphic" dx="0" dy="0" result="CENTER_ORIGINAL"/>
+
+      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-64" xChannelSelector="R" yChannelSelector="B" result="RED_DISPLACED"/>
+      <feColorMatrix in="RED_DISPLACED" type="matrix"
+        values="1 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 1 0" result="RED_CHANNEL"/>
+
+      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-70.4" xChannelSelector="R" yChannelSelector="B" result="GREEN_DISPLACED"/>
+      <feColorMatrix in="GREEN_DISPLACED" type="matrix"
+        values="0 0 0 0 0
+                0 1 0 0 0
+                0 0 0 0 0
+                0 0 0 1 0" result="GREEN_CHANNEL"/>
+
+      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-76.8" xChannelSelector="R" yChannelSelector="B" result="BLUE_DISPLACED"/>
+      <feColorMatrix in="BLUE_DISPLACED" type="matrix"
+        values="0 0 0 0 0
+                0 0 0 0 0
+                0 0 1 0 0
+                0 0 0 1 0" result="BLUE_CHANNEL"/>
+
+      <feBlend in="GREEN_CHANNEL" in2="BLUE_CHANNEL" mode="screen" result="GB_COMBINED"/>
+      <feBlend in="RED_CHANNEL" in2="GB_COMBINED" mode="screen" result="RGB_COMBINED"/>
+
+      <feGaussianBlur in="RGB_COMBINED" stdDeviation="0.3" result="ABERRATED_BLURRED"/>
+      <feComposite in="ABERRATED_BLURRED" in2="EDGE_MASK" operator="in" result="EDGE_ABERRATION"/>
+
+      <feComponentTransfer in="EDGE_MASK" result="INVERTED_MASK">
+        <feFuncA type="table" tableValues="1 0"/>
+      </feComponentTransfer>
+      <feComposite in="CENTER_ORIGINAL" in2="INVERTED_MASK" operator="in" result="CENTER_CLEAN"/>
+
+      <feComposite in="EDGE_ABERRATION" in2="CENTER_CLEAN" operator="over"/>
+    </filter>
+  </defs>
+</svg>
+
+<div id="pill">
+  <span id="warp"></span>
+</div>
+<span id="border1"></span>
+<span id="border2"></span>
+
+<script src="displacement-maps.js"></script>
+<script>
+  document.getElementById('feimg').setAttribute('href', displacementMap);
+
+  var pill = document.getElementById('pill');
+  var warp = document.getElementById('warp');
+  var border1 = document.getElementById('border1');
+  var border2 = document.getElementById('border2');
+  var svg = document.getElementById('filterSvg');
+
+  // backdrop-filter 公式抄 index.tsx："Button" 预设 blur((overLight?12:4) + blurAmount*32) = 4+0.1*32 = 7.2px
+  warp.style.filter = 'url(#glassFilter)';
+  warp.style.backdropFilter = 'blur(7.2px) saturate(130%)';
+  warp.style.webkitBackdropFilter = 'blur(7.2px) saturate(130%)';
+
+  /// C# 每帧调一次：塞入最新桌面背景 + 当前胶囊圆角（px，与 MainBorder.CornerRadius 对齐）。
+  window.setGlass = function (dataUri, radiusPx) {
+    document.getElementById('bg').src = dataUri;
+    if (typeof radiusPx === 'number') {
+      pill.style.borderRadius = radiusPx + 'px';
+      border1.style.borderRadius = border2.style.borderRadius = radiusPx + 'px';
+    }
+    syncSize();
+  };
+
+  // SVG 滤镜定义区 + 两层高光边框，尺寸跟 pill 实际渲染尺寸对齐
+  function syncSize() {
+    var r = pill.getBoundingClientRect();
+    svg.style.width = r.width + 'px';
+    svg.style.height = r.height + 'px';
+  }
+
+  window.addEventListener('resize', syncSize);
+  syncSize();
+</script>
+</body>
+</html>

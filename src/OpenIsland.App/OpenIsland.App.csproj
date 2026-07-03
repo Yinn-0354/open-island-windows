@@ -18,6 +18,12 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="System.Management" Version="8.0.0" />
+    <!-- 液态玻璃：离屏 WebView2 渲染 HTML/SVG 折射效果，CapturePreviewAsync 取帧当 GlassFrame -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
+    <!-- Fixed Version Runtime 打包进发布产物，不依赖用户机器上系统安装的 Evergreen Runtime
+         （见 WebGlassRenderer.InitializeAsync 的 browserExecutableFolder）。~240MB，来自
+         https://github.com/ProKn1fe/WebView2.Runtime 社区维护的官方 Fixed Version 打包。 -->
+    <PackageReference Include="WebView2.Runtime.X64" Version="150.0.4078.48" />
   </ItemGroup>
 
   <ItemGroup>
@@ -43,6 +49,16 @@
     <Resource Include="Assets\*.png" />
     <!-- 托盘 / 窗口图标：face.ico 也嵌成 Resource，TrayIconService 走 pack URI 读 -->
     <Resource Include="Assets\face.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 液态玻璃效果层：WebView2 用 file:// 直接 Navigate，必须是输出目录下的真实文件，不能走 pack URI -->
+    <Content Include="Assets\Glass\glass.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\Glass\displacement-maps.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
