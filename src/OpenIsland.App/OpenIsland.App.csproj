@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
+    <PackageReference Include="MdXaml" Version="1.22.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
@@ -24,6 +25,9 @@
          （见 WebGlassRenderer.InitializeAsync 的 browserExecutableFolder）。~240MB，来自
          https://github.com/ProKn1fe/WebView2.Runtime 社区维护的官方 Fixed Version 打包。 -->
     <PackageReference Include="WebView2.Runtime.X64" Version="150.0.4078.48" />
+    <!-- 波浪振幅驱动源：WasapiLoopbackCapture 抓系统混音输出 + NAudio.Dsp.FastFourierTransform
+         做响度包络分析（AudioLevelReactor）。算法思路照抄独立验证项目 TurbulencePreview。 -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>

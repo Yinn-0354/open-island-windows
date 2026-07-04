@@ -134,7 +134,7 @@ public class Program
             // 即使主应用未运行，Stop 事件仍能让用户听到。
             // 交互 hook 只在真正需要弹询问时（default 模式）才响；bypass/auto 下 Claude 自动放行，
             // 不该每次工具调用都"叮"一声。Stop（任务完成）始终响。
-            bool forceAsk = ClaudeHookPolicy.ShouldForceAsk(TryGetString(payload, "permission_mode"));
+            bool forceAsk = ClaudeHookPolicy.ShouldForceAsk(TryGetString(payload, "permission_mode"), TryGetString(payload, "tool_name"));
             if (IsStopEvent(source, payload) || (isInteractive && forceAsk))
             {
                 PlayBeep();

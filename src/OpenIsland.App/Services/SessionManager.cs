@@ -994,7 +994,7 @@ public class SessionManager : IDisposable
         var claudePid = ResolveClaudeProcessId(session);
         if (claudePid is not int pid) return false;
 
-        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, $"{digit}\r");
+        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, $"{digit}\r", GetProjectDirName(session));
         if (!sent) return false;
 
         // 立刻清岛上橙卡。1/2 视作 approved（"2" 不再持久化规则 —— 用户已经在 Claude 终端的
@@ -1057,12 +1057,107 @@ public class SessionManager : IDisposable
         // Claude Code 多会落到第一个选项；真正的 Esc 注入是已知后续项，
         // 与桌面端 Skip 一样标注 best-effort）。
         var keys = skip ? "\r" : $"{optionNumber}\r";
-        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, keys);
+        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, keys, GetProjectDirName(session));
         if (!sent) return false;
 
         // 立刻清岛上卡片（已回答）。不持久化任何规则 —— AskUserQuestion 不是权限。
         ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
         return true;
+    }
+
+    /// <summary>
+    /// 岛上 ExitPlanMode 计划审阅三按钮（1. Yes auto-accept / 2. Yes manually approve /
+    /// 3. No keep planning）→ 真实回答总入口。按 entrypoint 分流，结构镜像
+    /// <see cref="RespondToPermissionAsync"/>：
+    ///   - claude-desktop → 目前没实测过桌面端 ExitPlanMode 弹窗的 UIA 结构（跟当年权限
+    ///     按钮一样，得先摸出真实控件名字才能点）。先做"激活窗口 + 写诊断日志"，
+    ///     让用户至少能看到窗口被拉到前台去手动点，后续实测后再补真正的按钮点击。
+    ///   - cli / 缺失 → 终端注入 "{optionNumber}\r"（ExitPlanMode 的三个选项本质也是编号
+    ///     列表，跟 AskUserQuestion 一样输入数字 + Enter 选中）。
+    /// 成功后 ResolvePermission(approved:true) 清岛上卡片。
+    /// </summary>
+    public async Task<bool> RespondToPlanAsync(string sessionId, string optionKey)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || string.IsNullOrEmpty(optionKey)) return false;
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            // 桌面端：UIA 点 Electron 计划弹窗里的真实按钮（Accept / Accept and auto mode /
+            // Reject / Revise…，文案已由用户实测截图确认）。ClickPlanButtonInClaudeDesktop
+            // 内部自己 ActivateClaudeDesktopWindow(null)（不做侧边栏导航 —— 全桌面 UIA 重扫描
+            // 正是之前"点接受客户端卡死"的根因）。UIA 必须挪线程池（WPF STA 消息泵坑）。
+            var clicked = await Task.Run(() => _terminalJumpService.ClickPlanButtonInClaudeDesktop(optionKey));
+            if (clicked && optionKey != "revise")
+            {
+                // Revise 不清卡：点它只是让桌面端进入修订输入态，计划 prompt 还没被回答，
+                // 卡片留着（transcript 推进后由水位解锁自动清）。其余三个是终态，清卡。
+                ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+            }
+            return clicked;
+        }
+
+        // CLI / 缺失 entrypoint：终端注入路径（optionKey 就是要注入的数字 "1"/"2"/"3"）。
+        if (optionKey is not ("1" or "2" or "3")) return false;
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid) return false;
+
+        var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, $"{optionKey}\r", GetProjectDirName(session));
+        if (!sent) return false;
+
+        ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+        return true;
+    }
+
+    /// <summary>
+    /// 岛上 ExitPlanMode 计划审阅的"反馈"输入框 → 发送总入口。
+    /// 流程（仅 CLI / 缺失 entrypoint 支持）：先选 3（"No, keep planning"）退出计划选项
+    /// 菜单 → 等终端 UI 状态切换稳定 → 把反馈当一条正常消息发出去，效果等价于用户在终端
+    /// 选 3 然后手动打字，只是全程不用离开灵动岛。
+    /// claude-desktop：退出计划菜单的机制跟 CLI 的"选 3"完全不同，UIA 结构还没实测过，
+    /// 先 no-op + 写诊断日志，等后续实测出桌面端菜单交互再补（同 <see cref="RespondToPlanAsync"/>
+    /// 桌面分支的 caveat）。
+    /// </summary>
+    public async Task<bool> RespondToPlanFeedbackAsync(string sessionId, string feedbackText)
+    {
+        var session = GetSession(sessionId);
+        if (session == null || string.IsNullOrWhiteSpace(feedbackText)) return false;
+
+        var entrypoint = session.ClaudeMetadata?.Entrypoint;
+        if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            // 桌面端反馈 = 点 "Revise…" 按钮（让弹窗进入修订/输入态）→ 等 UI 切换 →
+            // 复用快捷回复通路把反馈粘贴进输入框发送。与 CLI 的"选 3 → 打字"逻辑同构。
+            var revised = await Task.Run(() => _terminalJumpService.ClickPlanButtonInClaudeDesktop("revise"));
+            if (!revised) return false;
+            await Task.Delay(600); // Electron 弹窗切换到输入态比终端慢一拍，多等一点
+
+            var deskResult = await SendQuickReplyAsync(sessionId, feedbackText);
+            if (deskResult.Ok)
+            {
+                ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+            }
+            return deskResult.Ok;
+        }
+
+        // CLI / 缺失 entrypoint：先选 3 退出计划选项菜单。
+        var claudePid = ResolveClaudeProcessId(session);
+        if (claudePid is not int pid) return false;
+
+        var sentExit = await _terminalJumpService.SendKeysToTerminalAsync(pid, "3\r", GetProjectDirName(session));
+        if (!sentExit) return false;
+
+        // 等终端从"选项菜单"态切回"可输入"态稳定下来，再把反馈粘进去发送。
+        await Task.Delay(400);
+
+        // 复用现成的"快捷回复"注入路径 —— 粘贴 + 回车，内部已处理好前台校验等细节。
+        var result = await SendQuickReplyAsync(sessionId, feedbackText);
+        if (result.Ok)
+        {
+            ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+        }
+        return result.Ok;
     }
 
     /// <summary>
@@ -1150,7 +1245,15 @@ public class SessionManager : IDisposable
         }
 
         // 注意：发的是 Shift+Tab *循环*，不是"设为 {kind}"——精确落点不保证（见上方注释）。
-        return await _terminalJumpService.SendShiftTabToTerminalAsync(pid);
+        return await _terminalJumpService.SendShiftTabToTerminalAsync(pid, 1, GetProjectDirName(GetSession(sessionId)));
+    }
+
+    /// <summary>会话工作目录的最后一段（项目目录名），给终端窗口启发式兜底当匹配线索；拿不到返回 null。</summary>
+    private static string? GetProjectDirName(AgentSession? session)
+    {
+        var cwd = session?.JumpTarget?.WorkingDirectory;
+        if (string.IsNullOrEmpty(cwd)) return null;
+        try { return Path.GetFileName(cwd.TrimEnd('\\', '/')); } catch { return null; }
     }
 
     /// <summary>
@@ -1234,7 +1337,7 @@ public class SessionManager : IDisposable
         var claudePid = ResolveClaudeProcessId(session);
         if (claudePid is not int pid) return (false, "no-terminal");
 
-        var sent = await _terminalJumpService.SendShiftTabToTerminalAsync(pid, steps);
+        var sent = await _terminalJumpService.SendShiftTabToTerminalAsync(pid, steps, GetProjectDirName(session));
         if (!sent) return (false, "inject-failed");
 
         UpdateSessionPermissionMode(sessionId, targetMode);
@@ -1488,7 +1591,8 @@ public class SessionManager : IDisposable
     public async Task JumpToSessionAsync(string sessionId)
     {
         var session = GetSession(sessionId);
-        if (session == null) return;
+        if (session == null) { TerminalJumpService.JumpDiag($"JumpToSessionAsync: GetSession('{sessionId}') = null -> return (did nothing)"); return; }
+        TerminalJumpService.JumpDiag($"JumpToSessionAsync: id={sessionId} entrypoint={session.ClaudeMetadata?.Entrypoint ?? "(null)"} jumpTargetCwd={session.JumpTarget?.WorkingDirectory ?? "(null)"}");
 
         // 1) entrypoint 决定路径 —— Claude 有两种运行方式，宿主窗口完全不同：
         //    - "claude-desktop": Anthropic 桌面端应用（C:\Program Files\WindowsApps\
@@ -1502,6 +1606,7 @@ public class SessionManager : IDisposable
         var entrypoint = session.ClaudeMetadata?.Entrypoint;
         if (string.Equals(entrypoint, "claude-desktop", StringComparison.OrdinalIgnoreCase))
         {
+            TerminalJumpService.JumpDiag("  -> branch: claude-desktop (ActivateClaudeDesktopWindow)");
             // 传 session.Title 让 UIA 在 Claude Desktop 侧边栏点对应 session 按钮 ——
             // 不传只是激活到桌面端 home 页面，用户得自己再点一次。
             //
@@ -1516,10 +1621,12 @@ public class SessionManager : IDisposable
         // 2) CLI 路径：先试激活当前还活着的 claude 所在的终端窗口。
         //    所有同步 Win32 调用（toolhelp 父链、EnumWindows、AttachConsole、窗口标题打分）
         //    挪到线程池，避免阻塞 UI（toolhelp 已经很快但 EnumWindows 还可能慢一点）。
+        TerminalJumpService.JumpDiag("  -> branch: cli (TryActivateLiveTerminal)");
         var activated = await Task.Run(() => TryActivateLiveTerminal(session));
         if (activated) return;
 
         // 3) CLI claude 已退 / 找不到：在用户现有 WT 里新开 tab 跑 `claude --resume`
+        TerminalJumpService.JumpDiag("  -> live-terminal failed, falling to LaunchClaudeResume (opens NEW terminal)");
         var resumeCwd = session.JumpTarget?.WorkingDirectory
                         ?? ResolveFallbackWorkingDirectory(session);
         if (await _terminalJumpService.LaunchClaudeResumeAsync(sessionId, resumeCwd))
@@ -1547,13 +1654,21 @@ public class SessionManager : IDisposable
     private bool TryActivateLiveTerminal(AgentSession session)
     {
         var claudePid = ResolveClaudeProcessId(session);
-        if (claudePid is not int pid) return false;
+        TerminalJumpService.JumpDiag($"TryActivateLiveTerminal: session='{session.Title}' resolvedClaudePid={(claudePid?.ToString() ?? "null")}");
+        if (claudePid is not int pid) { TerminalJumpService.JumpDiag("  -> no claude pid resolved, giving up live-terminal path"); return false; }
 
-        if (_terminalJumpService.ActivateTerminalByPidChain(pid)) return true;
+        if (_terminalJumpService.ActivateTerminalByPidChain(pid))
+        {
+            TerminalJumpService.JumpDiag("  -> ActivateTerminalByPidChain succeeded");
+            return true;
+        }
+        TerminalJumpService.JumpDiag("  -> ActivateTerminalByPidChain failed, trying window heuristic");
 
         var cwd = session.JumpTarget?.WorkingDirectory ?? ResolveFallbackWorkingDirectory(session);
         var projDir = !string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : null;
-        return _terminalJumpService.ActivateTerminalByWindowHeuristic(projDir);
+        var ok = _terminalJumpService.ActivateTerminalByWindowHeuristic(projDir);
+        TerminalJumpService.JumpDiag($"  -> ActivateTerminalByWindowHeuristic(projDir='{projDir}') = {ok}");
+        return ok;
     }
 
     /// <summary>

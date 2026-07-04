@@ -13,13 +13,22 @@ namespace OpenIsland.Core.Hooks;
 public static class ClaudeHookPolicy
 {
     /// <summary>
-    /// 给定 hook 输入里的 permission_mode 值，判断是否应让 hook 强制弹询问（输出 ask）。
+    /// 给定 hook 输入里的 permission_mode（+ 可选 tool_name）值，判断是否应让 hook 强制弹询问（输出 ask）。
     /// 仅 "default" 返回 true；其余已知模式（plan/acceptEdits/auto/dontAsk/bypassPermissions）返回 false。
     /// 缺失/空 → true：旧版 Claude Code 不带此字段，那时只可能是 default，保持原有行为（向后兼容）。
     /// 比较大小写不敏感，避免大小写差异把 bypass 误判成 default 而重新触发恶性 bug。
+    ///
+    /// 特例：toolName 为 "ExitPlanMode" 时无条件返回 true，不看 permissionMode。
+    /// 原因：ExitPlanMode 本身就是"请求用户批准计划"这个交互动作，不是一次可以被自动放行模式
+    /// 跳过的普通工具调用——如果照常规逻辑在 plan/auto/bypassPermissions 等模式下被丢弃，就等于
+    /// 计划完全没人审阅就自动通过，直接违背这个工具存在的意义。所以它必须永远强制走 ask，
+    /// 让灵动岛镜像 + 用户确认这一步不可被任何权限模式绕过。
     /// </summary>
-    public static bool ShouldForceAsk(string? permissionMode)
+    public static bool ShouldForceAsk(string? permissionMode, string? toolName = null)
     {
+        if (string.Equals(toolName?.Trim(), "ExitPlanMode", System.StringComparison.OrdinalIgnoreCase))
+            return true;
+
         if (string.IsNullOrWhiteSpace(permissionMode)) return true;
         return string.Equals(permissionMode.Trim(), "default", System.StringComparison.OrdinalIgnoreCase);
     }

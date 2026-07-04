@@ -87,6 +87,37 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Margin" Value="0,0,10,0"/>
         </Style>
+        <!-- 液态玻璃三个滑块共用的扁平样式，视觉上跟灵动岛的 VolSlider 一致 -->
+        <Style x:Key="GlassSlider" TargetType="Slider">
+            <Setter Property="IsMoveToPointEnabled" Value="True"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid VerticalAlignment="Center" Height="20">
+                            <Border Height="4" CornerRadius="2" Background="#3A3A3C" VerticalAlignment="Center"/>
+                            <Track x:Name="PART_Track">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Ellipse Width="14" Height="14" Fill="#0A84FF"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Opacity="0" Command="Slider.IncreaseLarge"/>
+                                </Track.IncreaseRepeatButton>
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Opacity="0" Command="Slider.DecreaseLarge"/>
+                                </Track.DecreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="22,18">
@@ -120,6 +151,48 @@
                     <Button x:Name="HotkeyBox" Width="180" HorizontalAlignment="Left"
                             Click="HotkeyBox_Click" PreviewKeyDown="HotkeyBox_PreviewKeyDown"/>
                 </StackPanel>
+
+                <!-- ── 液态玻璃 ── -->
+                <TextBlock Text="{Binding [Settings_Glass], Source={x:Static svc:Loc.Instance}}"
+                           FontSize="18" FontWeight="Bold" Foreground="#F2F2F7" Margin="0,22,0,0"/>
+                <TextBlock Margin="0,4,0,10" FontSize="12" Foreground="#8E8E93" TextWrapping="Wrap"
+                           Text="{Binding [Settings_Glass_Desc], Source={x:Static svc:Loc.Instance}}"/>
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="50"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding [Settings_Glass_Blur], Source={x:Static svc:Loc.Instance}}" Style="{StaticResource FieldLabel}"/>
+                    <Slider Grid.Column="1" x:Name="GlassBlurSlider" Style="{StaticResource GlassSlider}"
+                            Minimum="0" Maximum="20" ValueChanged="GlassBlur_Changed"/>
+                    <TextBlock Grid.Column="2" Foreground="#8E8E93" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"
+                               Text="{Binding ElementName=GlassBlurSlider, Path=Value, StringFormat={}{0:0.0}px}"/>
+                </Grid>
+                <Grid Margin="0,10,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="50"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding [Settings_Glass_Saturation], Source={x:Static svc:Loc.Instance}}" Style="{StaticResource FieldLabel}"/>
+                    <Slider Grid.Column="1" x:Name="GlassSaturationSlider" Style="{StaticResource GlassSlider}"
+                            Minimum="50" Maximum="200" ValueChanged="GlassSaturation_Changed"/>
+                    <TextBlock Grid.Column="2" Foreground="#8E8E93" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"
+                               Text="{Binding ElementName=GlassSaturationSlider, Path=Value, StringFormat={}{0:0}%}"/>
+                </Grid>
+                <Grid Margin="0,10,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="90"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="50"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding [Settings_Glass_Refraction], Source={x:Static svc:Loc.Instance}}" Style="{StaticResource FieldLabel}"/>
+                    <Slider Grid.Column="1" x:Name="GlassRefractionSlider" Style="{StaticResource GlassSlider}"
+                            Minimum="0" Maximum="200" ValueChanged="GlassRefraction_Changed"/>
+                    <TextBlock Grid.Column="2" Foreground="#8E8E93" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"
+                               Text="{Binding ElementName=GlassRefractionSlider, Path=Value, StringFormat={}{0:0}%}"/>
+                </Grid>
 
                 <!-- ── 工作区目录 ── -->
                 <TextBlock Text="{Binding [Settings_Workspaces], Source={x:Static svc:Loc.Instance}}"

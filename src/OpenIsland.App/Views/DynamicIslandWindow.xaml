@@ -4,7 +4,9 @@
         xmlns:local="clr-namespace:OpenIsland.App"
         xmlns:views="clr-namespace:OpenIsland.App.Views"
         xmlns:svc="clr-namespace:OpenIsland.App.Services"
-        Width="320"
+        xmlns:mdxaml="clr-namespace:MdXaml;assembly=MdXaml"
+        xmlns:ae="clr-namespace:ICSharpCode.AvalonEdit;assembly=ICSharpCode.AvalonEdit"
+        Width="384"
         SizeToContent="Height"
         Background="Transparent"
         AllowsTransparency="True"
@@ -35,6 +37,53 @@
             <GradientStop Color="#88FFFFFF" Offset="0.60"/>
             <GradientStop Color="#00FFFFFF" Offset="1"/>
         </LinearGradientBrush>
+
+        <!-- ══════════════════════════════════════════════════════════════════
+             ExitPlanMode 计划审阅：MdXaml MarkdownScrollViewer 深色主题适配。
+             MdXaml 自带的 "Standard" 文档样式是给白纸设计的（标题/代码块背景都刺眼的白/
+             接近纯黑文字），直接糊在岛的黑色胶囊卡片上会变成一坨刺眼白块或黑字糊黑底。
+             这里用两层手段：
+               1) PlanMdDocumentStyle：BasedOn 官方 Standard（保留其 FontFamily/对齐/
+                  页边距），只覆盖 Foreground 为浅色 —— 正文/列表/引用块都靠 FlowDocument
+                  的属性继承拿到这个浅色，不用逐个元素单独处理。
+               2) PlanMdH1..H6Style：MdXaml 标题另有一套内置的 Trigger（按 Paragraph.Tag
+                  =="Heading1".."Heading6" 触发），会把标题 Foreground 硬编码成黑色/半透明
+                  黑 —— Trigger 设的值优先级比继承高，光靠 (1) 盖不掉标题。所以显式提供
+                  Heading1Style..Heading6Style（挂在 MarkdownScrollViewer.Engine 那个
+                  Markdown 引擎对象上，见下方 XAML），整体替换掉那套内置 Trigger。
+             代码块（```lang```）由 MdXaml 转成内嵌的 AvalonEdit TextEditor 控件渲染，
+             它默认白底黑字 —— 这个反而不能单靠 XAML 资源覆盖：TextEditor 是运行时动态
+             创建、挂在 FlowDocument 的 BlockUIContainer 里，WPF 的隐式样式自动解析
+             （AncestorChanged 触发链）在这种宿主场景下不可靠地生效（实测：Window.Resources /
+             MarkdownScrollViewer.Resources 里声明的隐式 Style 均不会被拿去用，哪怕
+             TryFindResource 手动查证明资源链本身是通的）。因此代码块改由
+             DynamicIslandWindow.xaml.cs 里的 FixPlanCodeBlockColors 在每次 Document
+             变化时，直接对内嵌的 TextEditor 设本地属性值（本地值优先级最高，稳赢
+             AvalonEdit 自带主题样式）。
+             ══════════════════════════════════════════════════════════════════ -->
+        <Style x:Key="PlanMdDocumentStyle" TargetType="{x:Type FlowDocument}"
+               BasedOn="{x:Static mdxaml:MarkdownStyle.Standard}">
+            <Setter Property="Foreground" Value="#E5E5EA"/>
+            <Setter Property="FontSize" Value="12.5"/>
+        </Style>
+        <Style x:Key="PlanMdH1Style" TargetType="{x:Type Paragraph}">
+            <Setter Property="Foreground" Value="#F2F2F7"/>
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Margin" Value="0,2,0,8"/>
+        </Style>
+        <Style x:Key="PlanMdH2Style" TargetType="{x:Type Paragraph}" BasedOn="{StaticResource PlanMdH1Style}">
+            <Setter Property="FontSize" Value="16"/>
+        </Style>
+        <Style x:Key="PlanMdH3Style" TargetType="{x:Type Paragraph}" BasedOn="{StaticResource PlanMdH1Style}">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Foreground" Value="#E5E5EA"/>
+        </Style>
+        <Style x:Key="PlanMdH4Style" TargetType="{x:Type Paragraph}" BasedOn="{StaticResource PlanMdH3Style}">
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style x:Key="PlanMdH5Style" TargetType="{x:Type Paragraph}" BasedOn="{StaticResource PlanMdH4Style}"/>
+        <Style x:Key="PlanMdH6Style" TargetType="{x:Type Paragraph}" BasedOn="{StaticResource PlanMdH4Style}"/>
 
         <!-- 扁平 ScrollBar：去掉箭头按钮 + 滑道，仅保留一根细灰色 thumb。
              默认 WPF ScrollBar 自带 LineUp/LineDown 箭头 + 灰白滑道，跟岛的极简风冲突。 -->
@@ -202,6 +251,32 @@
                 </Style>
             </Border.Style>
 
+            <Grid>
+                <!-- 正在播放·波浪律动：叠加在 MainBorder 背景之上、其余内容之下的一层装饰层
+                     （不改 MainBorder.Background 本身的黑色/玻璃切换逻辑，两者共存）。
+                     OpacityMask 用 VisualBrush 绑 MainBorder 的实时尺寸 + CornerRadius 做圆角裁剪——
+                     CornerRadius 在 Notch 模式下是非对称的(0,0,18,18)，Border 自身渲染背景能正确处理
+                     这种混合圆角，借它的内部 chrome 当遮罩比自建 RectangleGeometry（只能统一圆角）更准确，
+                     且随 MainBorder 尺寸/圆角变化自动联动，不用另写代码同步。 -->
+                <views:WaveVisual x:Name="NowPlayingWave"
+                                  IsHitTestVisible="False"
+                                  Color1="{Binding WaveColor1}"
+                                  Color2="{Binding WaveColor2}"
+                                  Color3="{Binding WaveColor3}"
+                                  Amplitude="{Binding WaveAmplitude}"
+                                  Visibility="{Binding ShowNowPlayingWave, Converter={StaticResource BoolToVis}}">
+                    <views:WaveVisual.OpacityMask>
+                        <VisualBrush>
+                            <VisualBrush.Visual>
+                                <Border Width="{Binding ActualWidth, ElementName=MainBorder}"
+                                        Height="{Binding ActualHeight, ElementName=MainBorder}"
+                                        CornerRadius="{Binding CornerRadius, ElementName=MainBorder}"
+                                        Background="White"/>
+                            </VisualBrush.Visual>
+                        </VisualBrush>
+                    </views:WaveVisual.OpacityMask>
+                </views:WaveVisual>
+
             <StackPanel>
 
                 <!-- ── 折叠头部（始终可见，点击展开/收起） ── -->
@@ -232,15 +307,26 @@
                                                  Cursor="Hand"
                                                  ToolTip="点我一下试试 / Click me"/>
 
-                        <TextBlock Text="Open Island"
-                                   Foreground="#E0E0E0"
-                                   FontSize="13"
-                                   FontWeight="SemiBold"
-                                   FontFamily="Segoe UI"
-                                   VerticalAlignment="Center"/>
+                        <!-- 头部标题：默认 "Open Island"；正在播放时切成曲名。曲名可能比容器宽，
+                             用定宽 + ClipToBounds 容器 + TranslateTransform 做跑马灯（DynamicIslandWindow.xaml.cs
+                             的 UpdateTitleMarquee 按文字实际宽度决定要不要起循环动画）。 -->
+                        <Border x:Name="TitleClip" Width="140" ClipToBounds="True" VerticalAlignment="Center">
+                            <TextBlock x:Name="TitleText"
+                                       Text="{Binding HeaderTitleText}"
+                                       Foreground="#E0E0E0"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       FontFamily="Segoe UI"
+                                       VerticalAlignment="Center"
+                                       RenderTransformOrigin="0,0.5">
+                                <TextBlock.RenderTransform>
+                                    <TranslateTransform x:Name="TitleTranslate" X="0"/>
+                                </TextBlock.RenderTransform>
+                            </TextBlock>
+                        </Border>
 
-                        <!-- 运行中的会话数量 -->
-                        <Border Background="#1E1E1E" CornerRadius="8"
+                        <!-- 运行中的会话数量：Background 跟 ChipFill 走，液态玻璃开启时随之磨砂化 -->
+                        <Border Background="{DynamicResource ChipFill}" CornerRadius="8"
                                 Padding="6,1" Margin="8,0,0,0"
                                 VerticalAlignment="Center"
                                 Visibility="{Binding HasAnySessions, Converter={StaticResource BoolToVis}}">
@@ -283,7 +369,7 @@
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Wc" Width="18" Height="18" CornerRadius="9"
-                                            Background="#2A2A2A">
+                                            Background="{DynamicResource ChipFill}">
                                         <TextBlock x:Name="WebGlyph" Text="&#xE774;"
                                                    FontFamily="Segoe MDL2 Assets"
                                                    FontSize="10" Foreground="#9AA0A6"
@@ -292,7 +378,7 @@
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="Wc" Property="Background" Value="#3A3A3A"/>
+                                            <Setter TargetName="Wc" Property="Background" Value="{DynamicResource ChipHover}"/>
                                         </Trigger>
                                         <DataTrigger Binding="{Binding WebSyncOn}" Value="True">
                                             <Setter TargetName="WebGlyph" Property="Foreground" Value="#4CAF50"/>
@@ -313,7 +399,7 @@
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border x:Name="Cc" Width="18" Height="18" CornerRadius="9"
-                                            Background="#2A2A2A">
+                                            Background="{DynamicResource ChipFill}">
                                         <!-- 用 Canvas 绝对坐标在 18x18 空间里画电源符号：环心精确落在圆心 (9,9)，
                                              竖线从顶部缺口穿入。避免 Path bbox 对齐导致的偏下偏移。 -->
                                         <Canvas Width="18" Height="18">
@@ -642,9 +728,40 @@
                                                 <Trigger Property="IsMouseOver" Value="True">
                                                     <Setter TargetName="Glb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </Trigger>
-                                                <DataTrigger Binding="{Binding LiquidGlassEnabled}" Value="True">
+                                <DataTrigger Binding="{Binding LiquidGlassEnabled}" Value="True">
                                                     <Setter TargetName="Glb" Property="Background" Value="{DynamicResource ChipHover}"/>
                                                 </DataTrigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+
+                                <!-- 正在播放·波浪律动：开 ⇄ 关。开启时读 SMTC 曲名 + 系统混音响度，
+                                     胶囊内叠加音浪、头部标题跑马灯显示曲名；关闭时两个后台服务都停掉省资源。
+                                     不靠变色区分开关——关闭时图标上叠一道斜杠（跟提示音静音同款语义）。 -->
+                                <Button x:Name="WaveChip" Cursor="Hand" Margin="6,0,0,0"
+                                        FocusVisualStyle="{x:Null}" local:Anim.PressScale="True"
+                                        Command="{Binding ToggleNowPlayingWaveCommand}"
+                                        ToolTip="正在播放·波浪律动：开 / 关">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Wvb" Width="30" Height="30" Background="{DynamicResource ChipFill}"
+                                                    BorderBrush="{StaticResource ChipRim}" BorderThickness="1.3" CornerRadius="15">
+                                                <Grid Width="30" Height="30">
+                                                    <TextBlock Text="&#xEC4F;" FontFamily="Segoe MDL2 Assets"
+                                                               Foreground="#FFFFFF" FontSize="12"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    <!-- 关闭时才显示这道斜杠；开启时收起（InvBoolToVis 反转） -->
+                                                    <Line X1="8" Y1="21" X2="21" Y2="8"
+                                                          Stroke="#FFFFFF" StrokeThickness="1.6"
+                                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                          Visibility="{Binding NowPlayingWaveEnabled, Converter={StaticResource InvBoolToVis}}"/>
+                                                </Grid>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Wvb" Property="Background" Value="{DynamicResource ChipHover}"/>
+                                                </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
                                     </Button.Template>
@@ -1141,17 +1258,32 @@
                                                 <StackPanel Grid.Column="1"
                                                             Orientation="Horizontal"
                                                             VerticalAlignment="Center">
+                                                    <!-- 显示态标题（用户改过名就显示自定义名） -->
                                                     <TextBlock Text="{Binding Title}"
                                                                Foreground="#DDDDDD"
                                                                FontSize="12"
                                                                FontWeight="SemiBold"
                                                                TextTrimming="CharacterEllipsis"
-                                                               MaxWidth="200"/>
+                                                               MaxWidth="200"
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding IsEditingTitle, Converter={StaticResource InvBoolToVis}}"/>
+                                                    <!-- 编辑态：内联改名输入框。Enter 保存 / Esc 取消 / 失焦保存（见 code-behind） -->
+                                                    <TextBox Text="{Binding EditableTitle, UpdateSourceTrigger=PropertyChanged}"
+                                                             Visibility="{Binding IsEditingTitle, Converter={StaticResource BoolToVis}}"
+                                                             MinWidth="120" MaxWidth="200"
+                                                             Background="#2A2A2A" Foreground="#FFFFFF"
+                                                             BorderBrush="#CC785C" BorderThickness="1"
+                                                             CaretBrush="#FFFFFF" FontSize="12" Padding="4,1"
+                                                             VerticalAlignment="Center"
+                                                             IsVisibleChanged="RenameBox_IsVisibleChanged"
+                                                             KeyDown="RenameBox_KeyDown"
+                                                             LostKeyboardFocus="RenameBox_LostFocus"/>
                                                     <TextBlock Text="{Binding Elapsed}"
                                                                Foreground="#484848"
                                                                FontSize="11"
                                                                Margin="8,0,0,0"
-                                                               VerticalAlignment="Center"/>
+                                                               VerticalAlignment="Center"
+                                                               Visibility="{Binding IsEditingTitle, Converter={StaticResource InvBoolToVis}}"/>
                                                     <!-- Running 时的"思考中"3 点脉冲（AI-Native 风），Idle/完成自动隐藏不耗 CPU -->
                                                     <local:TypingDots VerticalAlignment="Center" Margin="8,0,0,0"
                                                                       Visibility="{Binding IsRunningPhase, Converter={StaticResource BoolToVis}}"/>
@@ -1204,28 +1336,12 @@
                                                         </Style>
                                                     </StackPanel.Resources>
 
-                                                    <!-- accept edits（接受编辑模式）E73E = 勾选框字形 -->
+                                                    <!-- 重命名（E70F = 铅笔字形）：点击进入内联编辑，改完 Enter 保存。
+                                                         自定义名按会话 id 持久化到 settings.json，下次启动仍记得。
+                                                         （原 accept edits / auto / plan 三个模式按钮已按需求移除。） -->
                                                     <Button Style="{StaticResource CardIconBtn}"
-                                                            Command="{Binding AcceptEditsCommand}"
-                                                            ToolTip="accept edits">
-                                                        <TextBlock Text="&#xE73E;"
-                                                                   FontFamily="Segoe MDL2 Assets"
-                                                                   FontSize="11"
-                                                                   Foreground="#5A5A5A"/>
-                                                    </Button>
-                                                    <!-- auto mode（自动模式）E945 = 闪电字形 -->
-                                                    <Button Style="{StaticResource CardIconBtn}"
-                                                            Command="{Binding AutoModeCommand}"
-                                                            ToolTip="auto mode">
-                                                        <TextBlock Text="&#xE945;"
-                                                                   FontFamily="Segoe MDL2 Assets"
-                                                                   FontSize="11"
-                                                                   Foreground="#5A5A5A"/>
-                                                    </Button>
-                                                    <!-- plan mode（计划模式）E70F = 编辑/铅笔字形 -->
-                                                    <Button Style="{StaticResource CardIconBtn}"
-                                                            Command="{Binding PlanModeCommand}"
-                                                            ToolTip="plan mode">
+                                                            Command="{Binding RenameCommand}"
+                                                            ToolTip="重命名 / Rename">
                                                         <TextBlock Text="&#xE70F;"
                                                                    FontFamily="Segoe MDL2 Assets"
                                                                    FontSize="11"
@@ -1412,109 +1528,353 @@
                                 </Border>
                             </StackPanel>
 
-                            <!-- Tool tag + headline：⚠ 工具 + 关键参数 -->
-                            <TextBlock Text="{Binding PermissionHeadline}"
-                                       Foreground="#FFCC8A"
-                                       FontSize="13"
-                                       FontWeight="SemiBold"
-                                       TextWrapping="Wrap"
-                                       Margin="0,0,0,8"/>
-
-                            <!-- 入参展开块：monospace + 微深底，像参考图里的 diff/code 预览 -->
-                            <Border Background="{DynamicResource CodeFill}"
-                                    CornerRadius="8"
-                                    Padding="12,10"
-                                    Margin="0,0,0,14">
-                                <TextBlock Text="{Binding PermissionFullDetail}"
-                                           Foreground="#B5B5BA"
-                                           FontSize="11"
-                                           FontFamily="Consolas, Cascadia Code, Menlo"
-                                           TextWrapping="Wrap"
-                                           MaxHeight="160"/>
-                            </Border>
-
                             <!-- ===========================================================
-                                 选项区两套互斥（IsQuestion 切换，绑在 PermissionSession
-                                 这个 DataContext 上 —— 与 YesButtonLabel 等同级，可达）：
-                                  · IsQuestion=false → 普通工具权限：Allow once / (Always) /
-                                    Deny，文案按 entrypoint 走（行为 100% 不变）。
-                                  · IsQuestion=true  → AskUserQuestion：每个候选答案一个
-                                    按钮（"{Number}. {Label}"，description 作副文案 + ToolTip），
-                                    竖排可滚，末尾一个 Skip。点击 → AnswerQuestionCommand
-                                    (CommandParameter=Number) / SkipQuestionCommand。
+                                 三条分支互斥，均绑在 PermissionSession 这个 DataContext 上：
+                                  · IsPlanReview=true  → ExitPlanMode 计划审阅：完整渲染
+                                    PlanMarkdown（见下方独立分支），不显示这里的原始入参块 /
+                                    Allow-Deny / AskUserQuestion 选项。
+                                  · IsPlanReview=false 时，走下面这个容器，内部再按 IsQuestion
+                                    二选一：
+                                    - IsQuestion=false → 普通工具权限：Allow once / (Always) /
+                                      Deny，文案按 entrypoint 走（行为 100% 不变）。
+                                    - IsQuestion=true  → AskUserQuestion：每个候选答案一个
+                                      按钮（"{Number}. {Label}"，description 作副文案 + ToolTip），
+                                      竖排可滚，末尾一个 Skip。点击 → AnswerQuestionCommand
+                                      (CommandParameter=Number) / SkipQuestionCommand。
                                  =========================================================== -->
 
-                            <!-- 普通权限按钮组（IsQuestion=false 时显示） -->
-                            <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource InvBoolToVis}}">
-                                <Button Content="{Binding YesButtonLabel}"
-                                        Command="{Binding RespondYesCommand}"
-                                        Style="{StaticResource AppleButtonPrimary}"
-                                        Margin="0,0,0,7"/>
-                                <Button Content="{Binding AlwaysButtonLabel}"
-                                        Command="{Binding RespondAlwaysCommand}"
-                                        Visibility="{Binding ShowAlwaysButton, Converter={StaticResource BoolToVis}}"
-                                        Style="{StaticResource AppleButtonPrimary}"
-                                        Margin="0,0,0,7"/>
-                                <Button Content="{Binding NoButtonLabel}"
-                                        Command="{Binding RespondNoCommand}"
-                                        Style="{StaticResource AppleButtonSecondary}"/>
+                            <StackPanel Visibility="{Binding IsPlanReview, Converter={StaticResource InvBoolToVis}}">
+                                <!-- Tool tag + headline：⚠ 工具 + 关键参数 -->
+                                <TextBlock Text="{Binding PermissionHeadline}"
+                                           Foreground="#FFCC8A"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,8"/>
+
+                                <!-- 入参展开块：monospace + 微深底，像参考图里的 diff/code 预览。
+                                     HasCodeReviewDiff=false 时显示——包括非 Edit/MultiEdit/Write
+                                     的普通工具，也包括 diff 构建失败的兜底（这两个块必须互斥绑
+                                     同一个属性，不能各自绑 IsCodeReview 的正反面：diff 构建失败
+                                     时 IsCodeReview 仍是 true，若这块绑 IsCodeReview 的反面就会
+                                     两块都不显示，卡片变成空白，用户看不到任何信息）。 -->
+                                <Border Visibility="{Binding HasCodeReviewDiff, Converter={StaticResource InvBoolToVis}}"
+                                        Background="{DynamicResource CodeFill}"
+                                        CornerRadius="8"
+                                        Padding="12,10"
+                                        Margin="0,0,0,14">
+                                    <TextBlock Text="{Binding PermissionFullDetail}"
+                                               Foreground="#B5B5BA"
+                                               FontSize="11"
+                                               FontFamily="Consolas, Cascadia Code, Menlo"
+                                               TextWrapping="Wrap"
+                                               MaxHeight="160"/>
+                                </Border>
+
+                                <!-- ===================================================
+                                     代码审阅 diff 块（IsCodeReview=true 时显示，即
+                                     Edit/MultiEdit/Write 三个工具）：红底删除行/绿底新增行/
+                                     普通上下文行 + 行号，对齐 GitHub PR diff 观感。
+                                     CodeReviewDiff 由 DiffBuilder 从 tool_input 构建
+                                     （见该类注释），批准/拒绝仍走下面同一套 Allow once/
+                                     Always/Deny 按钮组，这个功能只换"详情怎么展示"。
+                                     =================================================== -->
+                                <StackPanel Visibility="{Binding HasCodeReviewDiff, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,0,0,14">
+                                    <TextBlock Text="{Binding CodeReviewHeaderText}"
+                                               Foreground="#B5B5BA"
+                                               FontSize="11"
+                                               FontFamily="Consolas, Cascadia Code, Menlo"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,6"/>
+
+                                    <Border Background="{DynamicResource CodeFill}"
+                                            CornerRadius="8"
+                                            Padding="0,8">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                      HorizontalScrollBarVisibility="Disabled"
+                                                      MaxHeight="280">
+                                            <ItemsControl ItemsSource="{Binding CodeReviewDiff.Hunks}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <!-- 每个 hunk（连续改动区块）之间留一点间距，
+                                                             视觉上跟相邻 hunk 区分开 -->
+                                                        <ItemsControl ItemsSource="{Binding Lines}" Margin="0,0,0,6">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Padding="12,1">
+                                                                        <Border.Style>
+                                                                            <Style TargetType="Border">
+                                                                                <Setter Property="Background" Value="Transparent"/>
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding Kind}" Value="Added">
+                                                                                        <Setter Property="Background" Value="#1E3A24"/>
+                                                                                    </DataTrigger>
+                                                                                    <DataTrigger Binding="{Binding Kind}" Value="Removed">
+                                                                                        <Setter Property="Background" Value="#3A1E22"/>
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </Border.Style>
+                                                                        <Grid>
+                                                                            <Grid.ColumnDefinitions>
+                                                                                <ColumnDefinition Width="30"/>
+                                                                                <ColumnDefinition Width="30"/>
+                                                                                <ColumnDefinition Width="14"/>
+                                                                                <ColumnDefinition Width="*"/>
+                                                                            </Grid.ColumnDefinitions>
+                                                                            <TextBlock Grid.Column="0"
+                                                                                       Text="{Binding OldLineNumber}"
+                                                                                       Foreground="#5C5C60"
+                                                                                       FontSize="10"
+                                                                                       FontFamily="Consolas, Cascadia Code, Menlo"
+                                                                                       HorizontalAlignment="Right"
+                                                                                       Margin="0,0,6,0"/>
+                                                                            <TextBlock Grid.Column="1"
+                                                                                       Text="{Binding NewLineNumber}"
+                                                                                       Foreground="#5C5C60"
+                                                                                       FontSize="10"
+                                                                                       FontFamily="Consolas, Cascadia Code, Menlo"
+                                                                                       HorizontalAlignment="Right"
+                                                                                       Margin="0,0,6,0"/>
+                                                                            <TextBlock Grid.Column="2"
+                                                                                       FontSize="11"
+                                                                                       FontFamily="Consolas, Cascadia Code, Menlo">
+                                                                                <TextBlock.Style>
+                                                                                    <Style TargetType="TextBlock">
+                                                                                        <Setter Property="Text" Value=""/>
+                                                                                        <Setter Property="Foreground" Value="#5C5C60"/>
+                                                                                        <Style.Triggers>
+                                                                                            <DataTrigger Binding="{Binding Kind}" Value="Added">
+                                                                                                <Setter Property="Text" Value="+"/>
+                                                                                                <Setter Property="Foreground" Value="#5FD076"/>
+                                                                                            </DataTrigger>
+                                                                                            <DataTrigger Binding="{Binding Kind}" Value="Removed">
+                                                                                                <Setter Property="Text" Value="−"/>
+                                                                                                <Setter Property="Foreground" Value="#F07178"/>
+                                                                                            </DataTrigger>
+                                                                                        </Style.Triggers>
+                                                                                    </Style>
+                                                                                </TextBlock.Style>
+                                                                            </TextBlock>
+                                                                            <TextBlock Grid.Column="3"
+                                                                                       Text="{Binding Text}"
+                                                                                       FontSize="11"
+                                                                                       FontFamily="Consolas, Cascadia Code, Menlo"
+                                                                                       TextWrapping="Wrap">
+                                                                                <TextBlock.Style>
+                                                                                    <Style TargetType="TextBlock">
+                                                                                        <Setter Property="Foreground" Value="#B5B5BA"/>
+                                                                                        <Style.Triggers>
+                                                                                            <DataTrigger Binding="{Binding Kind}" Value="Added">
+                                                                                                <Setter Property="Foreground" Value="#C9F0CE"/>
+                                                                                            </DataTrigger>
+                                                                                            <DataTrigger Binding="{Binding Kind}" Value="Removed">
+                                                                                                <Setter Property="Foreground" Value="#F0C9CC"/>
+                                                                                            </DataTrigger>
+                                                                                        </Style.Triggers>
+                                                                                    </Style>
+                                                                                </TextBlock.Style>
+                                                                            </TextBlock>
+                                                                        </Grid>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </Border>
+
+                                    <!-- 截断提示：只有 CodeReviewTruncatedText 非空（即真的截断了）才显示 -->
+                                    <TextBlock Text="{Binding CodeReviewTruncatedText}"
+                                               Foreground="#6C6C70"
+                                               FontSize="10.5"
+                                               Margin="0,6,0,0"
+                                               TextWrapping="Wrap">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CodeReviewTruncatedText}" Value="">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <!-- 普通权限按钮组（IsQuestion=false 时显示） -->
+                                <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource InvBoolToVis}}">
+                                    <Button Content="{Binding YesButtonLabel}"
+                                            Command="{Binding RespondYesCommand}"
+                                            Style="{StaticResource AppleButtonPrimary}"
+                                            Margin="0,0,0,7"/>
+                                    <Button Content="{Binding AlwaysButtonLabel}"
+                                            Command="{Binding RespondAlwaysCommand}"
+                                            Visibility="{Binding ShowAlwaysButton, Converter={StaticResource BoolToVis}}"
+                                            Style="{StaticResource AppleButtonPrimary}"
+                                            Margin="0,0,0,7"/>
+                                    <Button Content="{Binding NoButtonLabel}"
+                                            Command="{Binding RespondNoCommand}"
+                                            Style="{StaticResource AppleButtonSecondary}"/>
+                                </StackPanel>
+
+                                <!-- AskUserQuestion 选项按钮组（IsQuestion=true 时显示） -->
+                                <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
+                                    <!-- 选项可能较多 —— 限高滚动（复用全局扁平 ScrollBar 样式） -->
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  MaxHeight="260">
+                                        <ItemsControl ItemsSource="{Binding QuestionOptions}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <!-- 整行一个按钮：主行 "{Number}. {Label}" +
+                                                         description 小字副行；description 同时挂
+                                                         ToolTip（长描述行内省略后仍可悬停看全文）。
+                                                         复用 Apple 主按钮观感（白底深字 + 圆角 9）。 -->
+                                                    <Button Command="{Binding DataContext.AnswerQuestionCommand,
+                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding Number}"
+                                                            Style="{StaticResource AppleButtonPrimary}"
+                                                            HorizontalContentAlignment="Left"
+                                                            Margin="0,0,0,7"
+                                                            ToolTip="{Binding Description}">
+                                                        <StackPanel>
+                                                            <TextBlock FontSize="13"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="#1C1C1E"
+                                                                       TextWrapping="Wrap">
+                                                                <Run Text="{Binding Number, Mode=OneWay}"/><Run Text=". "/><Run Text="{Binding Label, Mode=OneWay}"/>
+                                                            </TextBlock>
+                                                            <TextBlock Text="{Binding Description}"
+                                                                       FontSize="11"
+                                                                       Foreground="#6C6C70"
+                                                                       TextWrapping="Wrap"
+                                                                       Margin="0,3,0,0">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Style.Triggers>
+                                                                            <!-- 没 description 就整行折叠，不留空白 -->
+                                                                            <DataTrigger Binding="{Binding Description}" Value="">
+                                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </StackPanel>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+
+                                    <!-- Skip：跳过该问题（深底浅字次按钮，与 Deny 同观感） -->
+                                    <Button Content="Skip"
+                                            Command="{Binding SkipQuestionCommand}"
+                                            Style="{StaticResource AppleButtonSecondary}"
+                                            Margin="0,3,0,0"/>
+                                </StackPanel>
                             </StackPanel>
 
-                            <!-- AskUserQuestion 选项按钮组（IsQuestion=true 时显示） -->
-                            <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
-                                <!-- 选项可能较多 —— 限高滚动（复用全局扁平 ScrollBar 样式） -->
-                                <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                              HorizontalScrollBarVisibility="Disabled"
-                                              MaxHeight="260">
-                                    <ItemsControl ItemsSource="{Binding QuestionOptions}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <!-- 整行一个按钮：主行 "{Number}. {Label}" +
-                                                     description 小字副行；description 同时挂
-                                                     ToolTip（长描述行内省略后仍可悬停看全文）。
-                                                     复用 Apple 主按钮观感（白底深字 + 圆角 9）。 -->
-                                                <Button Command="{Binding DataContext.AnswerQuestionCommand,
-                                                                  RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                        CommandParameter="{Binding Number}"
-                                                        Style="{StaticResource AppleButtonPrimary}"
-                                                        HorizontalContentAlignment="Left"
-                                                        Margin="0,0,0,7"
-                                                        ToolTip="{Binding Description}">
-                                                    <StackPanel>
-                                                        <TextBlock FontSize="13"
-                                                                   FontWeight="SemiBold"
-                                                                   Foreground="#1C1C1E"
-                                                                   TextWrapping="Wrap">
-                                                            <Run Text="{Binding Number, Mode=OneWay}"/><Run Text=". "/><Run Text="{Binding Label, Mode=OneWay}"/>
-                                                        </TextBlock>
-                                                        <TextBlock Text="{Binding Description}"
-                                                                   FontSize="11"
-                                                                   Foreground="#6C6C70"
-                                                                   TextWrapping="Wrap"
-                                                                   Margin="0,3,0,0">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Style.Triggers>
-                                                                        <!-- 没 description 就整行折叠，不留空白 -->
-                                                                        <DataTrigger Binding="{Binding Description}" Value="">
-                                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
-                                                    </StackPanel>
-                                                </Button>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </ScrollViewer>
+                            <!-- ===========================================================
+                                 ExitPlanMode 计划审阅分支（IsPlanReview=true 时显示）：
+                                 完整渲染 PlanMarkdown（标题/列表/代码块/粗体等正确显示），
+                                 而不是走上面的原始 JSON 详情块 / Allow-Deny / AskUserQuestion。
+                                 三个按钮文案照抄 Claude Code 终端 ExitPlanMode 提示原文，
+                                 Command/CommandParameter 先绑定占位名字，由下一步接上真正实现：
+                                   RespondPlanCommand(int 1/2/3) — 对应三个按钮。
+                                   PlanFeedbackText / SendPlanFeedbackCommand — 反馈输入框。
+                                 =========================================================== -->
+                            <StackPanel Visibility="{Binding IsPlanReview, Converter={StaticResource BoolToVis}}">
+                                <!-- Markdown 渲染区：MaxHeight 限高防止纵向撑爆岛体，MarkdownScrollViewer
+                                     自带滚动（内部就是 FlowDocumentScrollViewer），不用再套一层 ScrollViewer。
+                                     深色主题适配见上方 Window.Resources 里 PlanMd* 系列 Style 的注释。 -->
+                                <Border Background="{DynamicResource CodeFill}"
+                                        CornerRadius="8"
+                                        Padding="12,8"
+                                        Margin="0,0,0,14">
+                                    <mdxaml:MarkdownScrollViewer x:Name="PlanMarkdownViewer"
+                                                                  Markdown="{Binding PlanMarkdown}"
+                                                                  MaxHeight="420"
+                                                                  Background="Transparent"
+                                                                  Foreground="#E5E5EA"
+                                                                  IsToolBarVisible="False"
+                                                                  VerticalScrollBarVisibility="Auto"
+                                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <mdxaml:MarkdownScrollViewer.Engine>
+                                            <mdxaml:Markdown DocumentStyle="{StaticResource PlanMdDocumentStyle}"
+                                                             Heading1Style="{StaticResource PlanMdH1Style}"
+                                                             Heading2Style="{StaticResource PlanMdH2Style}"
+                                                             Heading3Style="{StaticResource PlanMdH3Style}"
+                                                             Heading4Style="{StaticResource PlanMdH4Style}"
+                                                             Heading5Style="{StaticResource PlanMdH5Style}"
+                                                             Heading6Style="{StaticResource PlanMdH6Style}"/>
+                                        </mdxaml:MarkdownScrollViewer.Engine>
+                                    </mdxaml:MarkdownScrollViewer>
+                                </Border>
 
-                                <!-- Skip：跳过该问题（深底浅字次按钮，与 Deny 同观感） -->
-                                <Button Content="Skip"
-                                        Command="{Binding SkipQuestionCommand}"
-                                        Style="{StaticResource AppleButtonSecondary}"
-                                        Margin="0,3,0,0"/>
+                                <!-- 选项按钮：按宿主动态镜像（PlanOptions 按 entrypoint 生成）——
+                                     CLI = 终端的 "1./2./3." 编号菜单；Claude Desktop = Electron
+                                     弹窗的真实按钮 Accept / Accept and auto mode / Reject / Revise…
+                                     （用户实测截图确认的文案）。Key 透传给 RespondToPlanAsync 分流。 -->
+                                <ItemsControl ItemsSource="{Binding PlanOptions}" Margin="0,0,0,3">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Content="{Binding Label}"
+                                                    Command="{Binding DataContext.RespondPlanCommand,
+                                                              RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding Key}"
+                                                    Style="{StaticResource AppleButtonPrimary}"
+                                                    Margin="0,0,0,7"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- 反馈输入框：多行、深色底浅字，占位提示文字叠一层浅灰 TextBlock
+                                     （同 QuickReplyInput 那套"按内容是否为空控制显隐"写法）。
+                                     Text 绑 PlanFeedbackText，下一步接上 VM 里的同名属性。 -->
+                                <Grid Margin="0,0,0,7">
+                                    <TextBox Text="{Binding PlanFeedbackText, UpdateSourceTrigger=PropertyChanged}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             Background="{DynamicResource CodeFill}"
+                                             Foreground="#F2F2F7"
+                                             CaretBrush="#F2F2F7"
+                                             BorderThickness="0"
+                                             FontSize="12"
+                                             Padding="10,8"
+                                             MinHeight="56"
+                                             MaxHeight="120"
+                                             VerticalScrollBarVisibility="Auto"/>
+                                    <TextBlock Text="对这份计划有想法？写点反馈…"
+                                               Foreground="#6C6C70"
+                                               FontSize="12"
+                                               Margin="12,10,0,0"
+                                               IsHitTestVisible="False">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding PlanFeedbackText}" Value="">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding PlanFeedbackText}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+
+                                <!-- 发送反馈：下一步接上 VM 里的 SendPlanFeedbackCommand -->
+                                <Button Content="发送反馈"
+                                        Command="{Binding SendPlanFeedbackCommand}"
+                                        Style="{StaticResource AppleButtonSecondary}"/>
                             </StackPanel>
 
                             <TextBlock Text="{Binding PermissionHintText}"
@@ -1529,6 +1889,7 @@
                 </StackPanel>
 
             </StackPanel>
+            </Grid>
         </Border>
     </Border>
 </Window>

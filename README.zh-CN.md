@@ -27,6 +27,9 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 - 🔔 **提示音** —— 任务完成、会话需关注时各响一声；状态栏有喇叭开关静音
 - 🎵 **媒体控制** —— 上一首 / 播放暂停 / 下一首 + 系统音量滑块，网易云 / Spotify / 浏览器 / 任意播放器通用
 - 📡 **实时镜像** Claude Code 的权限询问，让你不用切回终端就能 `1/2/3` 决策
+- 📝 **Plan 审阅** —— Claude 退出计划模式请求批准时，完整计划以 **Markdown** 渲染在岛上（标题 / 列表 / 代码块），配批准 / 继续规划按钮和反馈输入框
+- 🔍 **代码审阅** —— Edit / Write / MultiEdit 的权限卡直接渲染**行级红绿 diff**（像 GitHub PR），批准前一眼看清改了什么，而不只是一个文件路径
+- 🎨 **音乐 Clauding（随专辑变色的液态玻璃）** —— 液态玻璃胶囊皮肤与底部波浪随当前曲目专辑封面实时变色，波浪跟着音乐响度起伏
 - ⚡ **每会话模式按钮** —— 会话卡上的快捷图标按钮，一键切该会话的权限模式（accept edits / auto / plan）
 - 📊 **统计面板** —— sessions / token / 模型占比 / 活跃热力图，全部 / 30 天 / 7 天三档可切
 - 🚀 **一键跳回** —— 点卡片直接 `claude --resume {sessionId}` 恢复历史会话；桌面端会话则把客户端窗口拉前台
@@ -43,10 +46,21 @@ Open Island 是一个常驻托盘的桌面助手，把 Claude Code 等 AI 编码
 |---|---|
 | **🏝 灵动岛本体** | 像素宠物状态精灵 · 系统状态栏（CPU / RAM / GPU / 网速）· 媒体控制 + 音量滑块 · 任务完成 / 需关注提示音 · 区域截图（全局快捷键）· 5h 订阅余额 ↔ 七天用量柱状图 · 屏顶 Notch 吸附 · 中英双语 |
 | **🗂 会话管理** | 权限询问镜像（1/2/3 一键回）· AskUserQuestion 选项按钮 · 每会话权限模式快切 · 快捷回复 · 一键跳回终端 / 客户端 · 图钉固定 · 清理任务（有新活动才重现）· 来源筛选（全部 / 终端 / 客户端）· Skill 一键安装 |
+| **📝 Plan / 代码审阅** | ExitPlanMode 计划以完整 Markdown 渲染（标题 / 列表 / 代码块）· Edit/Write/MultiEdit 渲染行级红绿 diff + 真实行号 · 选项按钮按宿主镜像（终端 1/2/3 · 客户端 Accept / Reject / Revise）· 反馈框回给 Claude · 批准/拒绝走既有通路 |
+| **🎨 音乐 Clauding** | 液态玻璃胶囊皮肤（离屏 WebView2 折射 + 磨砂 + 渐变高光边）· 专辑封面主色实时给玻璃与波浪上色 · 三层波浪跟随实时音频响度（WASAPI loopback）|
 | **📱 网页同步** | 手机平板局域网访问 · SSE 实时推送 · 聊天式回复 + `/` 命令补全 · 权限一键审批 · 提问选项作答 · 切模型 / 切权限模式 · 声音 + 标题提醒 · 日夜主题 · 添加到主屏幕 |
 | **🤖 模型与统计** | 一键切换模型（官方全系 + 第三方档，API Key DPAPI 加密）· 控制中心三 Tab（Sessions / Overview / Models）· 84 天活跃热力图 · 工作区过滤 |
 
 ## ✨ Features
+
+- **📝 Plan 审阅（岛上直接看计划）** —— Claude 调 `ExitPlanMode` 请你拍板时，岛上把完整计划以 **Markdown** 渲染（标题分级、无序列表、代码块、粗体，深色主题适配），而不是甩一堆原始 JSON。选项按钮按宿主真实呈现镜像：终端会话给 `1. Yes… / 2. … / 3. No, keep planning` 编号菜单，Claude Desktop 会话给它自己的 **Accept / Accept and auto mode / Reject / Revise…** 按钮。底部反馈输入框可以直接写想法回给 Claude 继续规划，全程不用离开岛
+- **🔍 代码审阅（岛上直接看 diff）** —— Edit / Write / MultiEdit 的权限卡不再只是一个文件路径，而是渲染成**行级红绿 diff**（红底删除 / 绿底新增 / 灰色未变上下文 + 真实行号），像迷你 GitHub PR。读磁盘旧内容做行级对齐、前后各留 3 行上下文；Write 整篇覆写抽取「改动附近的 hunk」，即便只改了大文件末尾一行也一定看得到。批准 / 拒绝仍走既有的 Allow once / Always / Deny 通路 —— 只换了**呈现方式**
+
+  <video src="https://github.com/ludiwangfpga/open-island-windows/raw/main/docs/videos/plan-and-code-review-demo.mp4" width="320"></video>
+
+  *（视频若不能内嵌播放，见 [`docs/videos/plan-and-code-review-demo.mp4`](docs/videos/plan-and-code-review-demo.mp4)。）*
+
+- **🎨 音乐 Clauding —— 胶囊跟着你的音乐律动** —— 液态玻璃胶囊皮肤由一个屏幕外的 WebView2 渲染（`glass.html`：SVG `feDisplacementMap` 色散折射 + `backdrop-filter` 磨砂 + 渐变高光边框）。播放音乐时，现在播放模块（SMTC）读取当前曲目封面缩略图，`AlbumPaletteExtractor` 提取主色三元组，玻璃色调与底部三层贝塞尔**波浪**都跟着专辑封面实时变色。波浪振幅取自 NAudio WASAPI loopback 采集的实时响度包络，随真实音频起伏
 
 - **📱 网页同步（手机 / 平板远程工作台）** —— 头部地球按钮一键开启本机 18686 端口迷你 HTTP 服务（零依赖、手动开关，开启时地址自动复制）。同一局域网的手机 / 平板打开即是一个完整的移动工作台：
   - **实时** —— SSE 推送（会话一有变化页面秒级更新），断线自动降级轮询、恢复自动切回

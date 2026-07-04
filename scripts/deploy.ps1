@@ -8,7 +8,11 @@ $ErrorActionPreference = 'Stop'
 $root      = Split-Path $PSScriptRoot -Parent
 $sln       = Join-Path $root 'OpenIsland.sln'
 $config    = 'Release'
-$appDir    = Join-Path $root "src\OpenIsland.App\bin\$config\net8.0-windows"
+# TFM 目录必须跟 OpenIsland.App.csproj 的 <TargetFramework> 一致。改成
+# net8.0-windows10.0.19041.0（为 WinRT SMTC/SDK API 加的 Windows SDK 版本后缀）后，
+# 构建产物落到 bin\$config\net8.0-windows10.0.19041.0\；若这里仍写 net8.0-windows，
+# 脚本会把 hooks 塞进旧目录并启动旧的 OpenIsland.exe（静默跑上一版，改动全都不生效）。
+$appDir    = Join-Path $root "src\OpenIsland.App\bin\$config\net8.0-windows10.0.19041.0"
 $appExe    = Join-Path $appDir 'OpenIsland.exe'
 $hooksSrc  = Join-Path $root "src\OpenIsland.Hooks\bin\$config\net8.0\open-island-hooks.exe"
 $hooksDest = Join-Path $appDir 'open-island-hooks.exe'

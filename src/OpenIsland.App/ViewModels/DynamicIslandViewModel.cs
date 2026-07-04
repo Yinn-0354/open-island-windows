@@ -257,6 +257,123 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>"背景样式"按钮命令：液态玻璃 ↔ 纯黑。</summary>
     [RelayCommand] private void ToggleLiquidGlass() => LiquidGlassEnabled = !LiquidGlassEnabled;
 
+    // ── 正在播放 · 波浪律动：头部标题跑马灯显示曲名 + 胶囊内叠加音浪 ──
+
+    private readonly NowPlayingService _nowPlaying = new();
+    private readonly AudioLevelReactor _audioReactor = new();
+    private readonly System.Windows.Threading.DispatcherTimer _waveAmplitudeTimer;
+
+    /// <summary>换封面判重用的指纹（长度 + 稀疏采样字节的 hash）。故意不比较 Title/Artist——
+    /// 网易云等播放器常常先把新曲名/歌手推给 SMTC，隔一拍才把新封面推上去；如果按曲名判重，
+    /// 封面姗姗来迟的那次事件会因为"曲名没变"被直接跳过，波浪颜色就会永远卡在换歌那一刻
+    /// 抓到的旧封面上（这正是"波浪颜色永远是上一首"这个 bug 的根因）。改成认封面内容本身
+    /// 变没变，不管曲名此刻是不是"新"的。</summary>
+    private int? _lastThumbnailFingerprint;
+
+    /// <summary>波浪律动总开关。初值取自 WorkspaceSettings（构造时写 backing field）。默认开启。
+    /// 改动经 OnNowPlayingWaveEnabledChanged 落盘 + 启停 NowPlayingService/AudioLevelReactor。</summary>
+    [ObservableProperty] private bool _nowPlayingWaveEnabled;
+
+    /// <summary>SMTC 报的当前曲名；没有播放/未开启时为空串。</summary>
+    [ObservableProperty] private string _nowPlayingTitle = "";
+
+    /// <summary>是否"真的在播放"：开关打开 && 有活动会话 && IsPlaying==true。驱动波浪显隐与头部标题。</summary>
+    [ObservableProperty] private bool _isNowPlayingActive;
+
+    /// <summary>波浪三层配色（从前到后），来自专辑封面主色提取（AlbumPaletteExtractor.ExtractTop3），
+    /// 换歌才重新算一次，不逐帧算。</summary>
+    [ObservableProperty] private System.Windows.Media.Color _waveColor1 = System.Windows.Media.Color.FromRgb(0x6a, 0x5a, 0xcd);
+    [ObservableProperty] private System.Windows.Media.Color _waveColor2 = System.Windows.Media.Color.FromRgb(0x40, 0x8a, 0xd6);
+    [ObservableProperty] private System.Windows.Media.Color _waveColor3 = System.Windows.Media.Color.FromRgb(0x2f, 0x4f, 0x8f);
+
+    /// <summary>0..1，波浪振幅；由 AudioLevelReactor.Level 经 50ms 定时器驱动。仅 IsNowPlayingActive
+    /// 为 true 时才非零，否则钉在 0。</summary>
+    [ObservableProperty] private double _waveAmplitude;
+
+    partial void OnNowPlayingWaveEnabledChanged(bool value)
+    {
+        _settings.SetNowPlayingWaveEnabled(value);
+        if (value)
+        {
+            _nowPlaying.Start();
+            _audioReactor.Start();
+            _waveAmplitudeTimer.Start();
+        }
+        else
+        {
+            // 关闭：两个服务都停掉省资源，波浪相关属性一并清零、不再更新。
+            _nowPlaying.Dispose();
+            _audioReactor.Dispose();
+            _waveAmplitudeTimer.Stop();
+            _lastThumbnailFingerprint = null;
+            NowPlayingTitle = "";
+            IsNowPlayingActive = false;
+            WaveAmplitude = 0;
+        }
+    }
+
+    /// <summary>命令栏"波浪律动"chip 命令：翻转开关。</summary>
+    [RelayCommand] private void ToggleNowPlayingWave() => NowPlayingWaveEnabled = !NowPlayingWaveEnabled;
+
+    partial void OnIsNowPlayingActiveChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HeaderTitleText));
+        OnPropertyChanged(nameof(ShowNowPlayingWave));
+    }
+    partial void OnNowPlayingTitleChanged(string value) => OnPropertyChanged(nameof(HeaderTitleText));
+    partial void OnIsExpandedChanged(bool value) => OnPropertyChanged(nameof(ShowNowPlayingWave));
+
+    /// <summary>头部标题：正在播放时显示曲名（跑马灯），否则显示 "Open Island"。</summary>
+    public string HeaderTitleText => IsNowPlayingActive && !string.IsNullOrEmpty(NowPlayingTitle)
+        ? NowPlayingTitle
+        : "Open Island";
+
+    /// <summary>波浪是否真的要画出来：正在播放 && 岛处于收起（胶囊）态。展开时波浪不显示，
+    /// 岛回到原来的样子——波浪只属于胶囊，不属于展开后的会话列表视图。</summary>
+    public bool ShowNowPlayingWave => IsNowPlayingActive && !IsExpanded;
+
+    /// <summary>NowPlayingService 的回调（可能来自非 UI 线程）：切回 UI 线程更新曲名/播放态；
+    /// 换封面（指纹变化，见 _lastThumbnailFingerprint 的注释）才重新跑一遍主色提取，不逐帧算。</summary>
+    private void OnNowPlayingChanged(object? sender, NowPlayingInfo? info)
+    {
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (info == null)
+            {
+                NowPlayingTitle = "";
+                IsNowPlayingActive = false;
+                return;
+            }
+
+            NowPlayingTitle = info.Title ?? "";
+            IsNowPlayingActive = NowPlayingWaveEnabled && info.IsPlaying;
+
+            if (info.ThumbnailBytes != null)
+            {
+                int fingerprint = ThumbnailFingerprint(info.ThumbnailBytes);
+                if (fingerprint != _lastThumbnailFingerprint)
+                {
+                    _lastThumbnailFingerprint = fingerprint;
+                    var colors = AlbumPaletteExtractor.ExtractTop3(info.ThumbnailBytes);
+                    WaveColor1 = colors[0];
+                    WaveColor2 = colors[1];
+                    WaveColor3 = colors[2];
+                }
+            }
+        });
+    }
+
+    /// <summary>封面 byte[] 的轻量指纹：长度 + 等间隔采样若干字节做 hash。只用来判断"封面
+    /// 内容变没变"，不追求密码学强度，算整张图的 hash 没必要。</summary>
+    private static int ThumbnailFingerprint(byte[] bytes)
+    {
+        var hash = new HashCode();
+        hash.Add(bytes.Length);
+        int step = Math.Max(1, bytes.Length / 64);
+        for (int i = 0; i < bytes.Length; i += step) hash.Add(bytes[i]);
+        return hash.ToHashCode();
+    }
+
     // ── 网页同步（手机/平板访问）：头部地球按钮，手动开关 ──
 
     /// <summary>网页同步是否开启（开 = 地球图标变绿）。刻意不持久化 —— 监听 0.0.0.0
@@ -385,6 +502,22 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
         // 余额行显示模式对齐持久化值（写 backing field 不触发落盘）。下次启动恢复关闭时的状态。
         _showUsageChart = settings.ShowUsageChart;
+
+        // 波浪律动开关对齐持久化值（写 backing field 不触发落盘），默认开启。
+        _nowPlayingWaveEnabled = settings.NowPlayingWaveEnabled;
+        _nowPlaying.NowPlayingChanged += OnNowPlayingChanged;
+        _waveAmplitudeTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(50)
+        };
+        _waveAmplitudeTimer.Tick += (_, _) => WaveAmplitude = IsNowPlayingActive ? _audioReactor.Level : 0;
+        // 只在开关打开时才启动这两个服务 + 定时器，关闭时不占用系统资源。
+        if (_nowPlayingWaveEnabled)
+        {
+            _nowPlaying.Start();
+            _audioReactor.Start();
+            _waveAmplitudeTimer.Start();
+        }
 
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
@@ -712,11 +845,33 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         // 会话"列表用，把 ProcessMonitor 的运行进程数仅当作"应该显示几条"的依据。
         var withMtime = _sessionManager.GetAllSessions()
             .Where(s => s.Tool == AgentTool.ClaudeCode && !string.IsNullOrEmpty(s.ClaudeMetadata?.TranscriptPath))
+            .Where(s => !IsTokenProbeSession(s)) // 滤掉 token 探针 ping 会话（历史 + 未来）
             .Select(s => new { Session = s, Mtime = TryGetMtime(s.ClaudeMetadata!.TranscriptPath!) })
             .Where(x => x.Mtime.HasValue)
+            // 只保留活动时间 ≥ 启动锚定 cutoff（启动前 10 分钟）的会话。整个候选池就此收口，
+            // 后面无论 cwd 精确匹配还是按新鲜度凑对，都只可能挑到这些会话——一次性把启动时
+            // 一堆陈年历史会话挡在外面（见 _activityCutoffUtc 的说明）。
+            .Where(x => x.Mtime!.Value >= _activityCutoffUtc)
             .OrderByDescending(x => x.Mtime!.Value)
             .ToList();
         var sessionsByRecency = withMtime.Select(x => x.Session).ToList();
+        // 折叠"同一对话被拆成多个 transcript"的重复分身：Claude Code 上下文溢出后继续会
+        // 新建一个 transcript 文件（新 sessionId），但逻辑上还是同一个对话 —— 同 cwd、同
+        // 标题（都取自同一条首条用户消息）。列表已按 mtime 降序，这里保留最新那个（当前
+        // 还在写的），丢掉旧分身，避免同一个对话在灵动岛上冒出两张卡（用户报的"两个
+        // https://github.com/... 项目"根因：991cef1e 当前会话 + 3a018db1 溢出前的旧 transcript）。
+        if (sessionsByRecency.Count > 1)
+        {
+            var seenLogical = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var deduped = new List<AgentSession>(sessionsByRecency.Count);
+            foreach (var s in sessionsByRecency)
+            {
+                var cwd = (s.JumpTarget?.WorkingDirectory ?? "").TrimEnd('\\', '/');
+                var key = cwd + "\n" + (s.Title ?? "");
+                if (seenLogical.Add(key)) deduped.Add(s);
+            }
+            sessionsByRecency = deduped;
+        }
         // id → 转录 mtime（UTC），给收起状态机做内容水位比对
         var mtimeById = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         foreach (var x in withMtime) mtimeById[x.Session.Id] = x.Mtime!.Value;
@@ -728,7 +883,9 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         {
             AgentSession? session = null;
 
-            // 1. cwd 命中（罕见，但 hook 写入的 session 会有正确 cwd）
+            // 1. cwd 命中（罕见，但 hook 写入的 session 会有正确 cwd）—— 精确身份匹配，
+            //    是这个进程的真身。候选池 sessionsByRecency 已按启动 cutoff 收口过，命中
+            //    的必然是近 10 分钟活跃的会话。
             if (!string.IsNullOrEmpty(r.WorkingDirectory))
             {
                 session = sessionsByRecency.FirstOrDefault(s =>
@@ -740,23 +897,25 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                         StringComparison.OrdinalIgnoreCase));
             }
 
-            // 2. 没 cwd 时退回到"最近被改写过的 .jsonl 对应的 scan 会话"
+            // 2. 没 cwd 时退回到"最近被改写过的 .jsonl 对应的 scan 会话"。候选池已按启动
+            //    cutoff 收口，这里挑到的必然是近 10 分钟活跃的，不会再把陈年历史会话翻出来
+            //    凑够 Claude Desktop 那十几个 helper 进程的数。
             session ??= sessionsByRecency.FirstOrDefault(s => !assignedIds.Contains(s.Id));
 
-            if (session != null)
-            {
-                assignedIds.Add(session.Id);
-                if (IsHiddenByDismiss(session.Id, session.Phase,
-                        mtimeById.TryGetValue(session.Id, out var mt) ? mt : null)) continue;
-                if (!PassesSourceFilter(session)) continue; // 来源筛选（全部/终端/客户端）
-                desired.Add((session.Id, session, null));
-            }
-            else
-            {
-                if (IsHiddenByDismiss(r.SessionId, null, null)) continue;
-                if (!PassesSourceFilter(null)) continue;    // 占位卡按终端算
-                desired.Add((r.SessionId, null, r));
-            }
+            // 配不到近期真实会话的进程一律不产卡 —— 彻底去掉旧的"占位卡"分支。占位卡本意
+            // 是给"进程刚起、transcript 还没扫到"的新会话兜底，但真实新会话几乎立刻就写
+            // transcript、下一拍就成为真会话；而这个分支实际把 Claude Desktop 的一堆 helper
+            // claude.exe（cwd 是 C:\WINDOWS\system32 / C:\Users\ludiw / 项目根等，根本不是用户
+            // 对话）显示成了"WINDOWS/system32""Users/ludiw"这种根本没运行的幽灵卡（用户反复报的
+            // 根因）。灵动岛只显示**有真实 transcript 的对话**——正在跑的对话必然有正在写的
+            // transcript，不会被漏掉。
+            if (session == null) continue;
+
+            assignedIds.Add(session.Id);
+            if (IsHiddenByDismiss(session.Id, session.Phase,
+                    mtimeById.TryGetValue(session.Id, out var mt) ? mt : null)) continue;
+            if (!PassesSourceFilter(session)) continue; // 来源筛选（全部/终端/客户端）
+            desired.Add((session.Id, session, null));
         }
 
         var capped0 = desired.Count > 20 ? desired.GetRange(0, 20) : desired;
@@ -848,12 +1007,60 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         catch { return null; }
     }
 
+    /// <summary>
+    /// 会话活跃度的**固定**下限时刻，= 应用启动那一刻往前推 10 分钟，构造时算一次、之后不变。
+    /// 只有 transcript 最后写入时间 ≥ 这个 cutoff 的会话才准上灵动岛。
+    ///
+    /// 这是用户明确设计的语义："每次启动只显示 10 分钟以内进行的对话，之后不再遵守 10 分钟"——
+    /// 关键是 cutoff **锚定在启动时刻**、不随 now 滑动：
+    ///   · 启动时：只有近 10 分钟活跃过的会话 mtime ≥ cutoff，能显示；一堆早已结束的历史
+    ///     会话（vivado/journal/hello 等）mtime 远早于 cutoff，被挡在外面。
+    ///   · 启动之后：任何新活动会把该会话 mtime 推到 now，必然 ≥ 这个固定 cutoff，自动显示 ——
+    ///     等于"10 分钟规则只在启动那一下生效，之后新对话照常冒出来"。
+    /// Claude Desktop 常驻十几个 helper claude.exe，不这么卡就会把陈年会话翻出来填坑。
+    /// </summary>
+    private readonly DateTime _activityCutoffUtc = DateTime.UtcNow - TimeSpan.FromMinutes(10);
+
+    /// <summary>是否是 PlanUsageService 的 token 探针会话（`claude --print ping`）：标题（首条
+    /// user 消息）恰好是 "ping"，或 transcript 落在专用探针目录 openisland-token-probe 下。
+    /// 任一命中即排除——既滤掉未来隔离到专用目录的探针，也一并滤掉历史遗留在仓库目录里的
+    /// ping（旧版本没设专用 cwd，它们混在真实项目目录里）。</summary>
+    private static bool IsTokenProbeSession(AgentSession s)
+    {
+        if (string.Equals(s.Title?.Trim(), "ping", StringComparison.Ordinal)) return true;
+        var tp = s.ClaudeMetadata?.TranscriptPath;
+        return !string.IsNullOrEmpty(tp)
+            && tp.Contains("openisland-token-probe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>造一条"收起"记录。wasActive=true（收起那一刻会话真的在 Running/需关注）才走
+    /// 原来那套"水位追着写、停笔 DismissQuietGap 秒才算收尾"逻辑，避免中途误放行。
+    /// wasActive=false（收起时已经 Idle/Completed，或转录早已不新鲜）直接 SawQuiet=true，
+    /// baseline 用当下真实 mtime——之后转录只要再有一丁点新字节（哪怕几秒后）就立刻放回，
+    /// 不用再空等 120 秒。
+    ///
+    /// 这是修复"清理任务后紧接着又聊了几句，会话却一直不回到灵动岛"这个 bug 的关键：以前
+    /// 无论收起时是不是活跃，一律 Watermark=MinValue + SawQuiet=false，若用户在 120 秒安静期
+    /// 耗尽之前就发了新消息（日常对话里几乎总是这样——清理任务的场景本来就是"看着像结束了"
+    /// 才会去清，而清完立刻接着聊在活跃对话里是常态），新一轮的写入会被当成"上一轮还没写完"
+    /// 而持续吞掉，水位跟着一直追、SawQuiet 永远等不到 true，卡片就再也回不来了。</summary>
+    private DismissRecord MakeDismissRecord(bool wasActive, string? transcriptPath)
+    {
+        var mtimeNow = !string.IsNullOrEmpty(transcriptPath) ? TryGetMtime(transcriptPath!) : null;
+        return new DismissRecord
+        {
+            SawQuiet = !wasActive,
+            Watermark = wasActive ? DateTime.MinValue : (mtimeNow ?? DateTime.MinValue),
+        };
+    }
+
     /// <summary>用户点小叉号：记录收起，立刻刷新列表把卡片移出。</summary>
     private void DismissSession(string id)
     {
         if (string.IsNullOrEmpty(id)) return;
-        // Watermark 初值 MinValue：下一次 RefreshSessions 用真实 mtime 填水位并推进状态机
-        _dismissed[id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
+        var s = _sessionManager.GetAllSessions().FirstOrDefault(x => x.Id == id);
+        bool wasActive = s?.Phase is SessionPhase.Running or SessionPhase.WaitingForApproval or SessionPhase.WaitingForAnswer;
+        _dismissed[id] = MakeDismissRecord(wasActive, s?.ClaudeMetadata?.TranscriptPath);
         RefreshSessions();
     }
 
@@ -888,6 +1095,12 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     {
         if (Sessions.Count == 0) return;
 
+        // 按 id 建个索引，给第一个循环（Sessions 里是 IslandSessionItem 包装，拿不到
+        // ClaudeMetadata）查真实转录路径用，好算 MakeDismissRecord 的 mtime 基线。
+        var allById = _sessionManager.GetAllSessions()
+            .Where(s => !string.IsNullOrEmpty(s.Id))
+            .ToDictionary(s => s.Id, s => s, StringComparer.Ordinal);
+
         // 快照当前 id（直接遍历 Sessions 时 RefreshSessions 会改集合，先拷出来）
         foreach (var s in Sessions.ToList())
         {
@@ -905,7 +1118,12 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 continue;
             // 已在 _dismissed 里的不要覆盖其水位/进度（保持它在状态机里的既有状态）
             if (!_dismissed.ContainsKey(s.Id))
-                _dismissed[s.Id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
+            {
+                var tp = allById.TryGetValue(s.Id, out var full) ? full.ClaudeMetadata?.TranscriptPath : null;
+                // 走到这里已经确认不是 Running/需关注，wasActive 恒为 false——直接跳过
+                // 120 秒安静期，之后随便一点新内容就立刻放回。
+                _dismissed[s.Id] = MakeDismissRecord(wasActive: false, tp);
+            }
         }
 
         // 清理范围必须是**此刻所有已知的安静会话**，不只是可见列表：卡数 = 运行进程数，
@@ -924,7 +1142,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
                 && DateTime.UtcNow - m <= TimeSpan.FromMinutes(2))
                 continue;
             if (!_dismissed.ContainsKey(s.Id))
-                _dismissed[s.Id] = new DismissRecord { SawQuiet = false, Watermark = DateTime.MinValue };
+                _dismissed[s.Id] = MakeDismissRecord(wasActive: false, tp);
         }
 
         // 刷新：IsHiddenByDismiss 会把刚记下的统统隐藏，但阻塞性 prompt 那条会被
@@ -1217,6 +1435,10 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         Loc.Instance.LanguageChanged -= OnLanguageChanged;
         _greenStatusTimer.Stop();
         _greenStatusTimer.Dispose();
+        _nowPlaying.NowPlayingChanged -= OnNowPlayingChanged;
+        _nowPlaying.Dispose();
+        _audioReactor.Dispose();
+        _waveAmplitudeTimer.Stop();
     }
 }
 
@@ -1246,7 +1468,42 @@ public partial class IslandSessionItem : ObservableObject
     private readonly WorkspaceSettings? _settings;
 
     public string Id => _session?.Id ?? _runningInfo?.SessionId ?? "";
-    public string Title => _session?.Title ?? GetRunningInfoTitle() ?? "Claude";
+
+    /// <summary>自动标题（首条消息 / 运行目录），用户没手动改名时用它。</summary>
+    private string AutoTitle => _session?.Title ?? GetRunningInfoTitle() ?? "Claude";
+
+    /// <summary>卡片显示名：用户手动改过（settings 里按会话 id 存了）就用自定义名，否则回落自动标题。</summary>
+    public string Title => _settings?.GetSessionTitle(Id) ?? AutoTitle;
+
+    /// <summary>是否正处于"内联改名"编辑态（标题变成可编辑输入框）。</summary>
+    [ObservableProperty] private bool _isEditingTitle;
+
+    /// <summary>编辑态里输入框绑的文本。</summary>
+    [ObservableProperty] private string _editableTitle = "";
+
+    /// <summary>铅笔按钮：进入内联改名，预填当前显示名并全选。</summary>
+    [RelayCommand]
+    private void Rename()
+    {
+        EditableTitle = Title;
+        IsEditingTitle = true;
+    }
+
+    /// <summary>提交改名：与自动标题相同（或空）→ 清除自定义名回落自动标题；不同 → 按会话 id
+    /// 存进 settings.json 持久化（下次启动仍记得）。由 code-behind 在 Enter / 失焦时调用。</summary>
+    public void CommitRename()
+    {
+        if (!IsEditingTitle) return;
+        IsEditingTitle = false;
+        var id = Id;
+        if (string.IsNullOrEmpty(id)) return;
+        var t = EditableTitle?.Trim() ?? "";
+        _settings?.SetSessionTitle(id, (string.IsNullOrEmpty(t) || t == AutoTitle) ? null : t);
+        OnPropertyChanged(nameof(Title));
+    }
+
+    /// <summary>取消改名（Esc / 无变化失焦）：不改动，退出编辑态。</summary>
+    public void CancelRename() => IsEditingTitle = false;
     /// <summary>
     /// 暴露给 DynamicIslandViewModel.UpdateStatusColor —— 让灯只看用户能在卡片上看见的 phase，
     /// 不看后台几十条历史 session 任意一条卡 Running 就让灯永远蓝。
@@ -1498,6 +1755,12 @@ public partial class IslandSessionItem : ObservableObject
     /// <summary>
     /// AskUserQuestion 的结构化候选答案（questions[0].options[]）。
     /// 每项渲染成一个可点按钮，CommandParameter = Number。无 ToolInput / 解析失败 → 空。
+    ///
+    /// CLI 会话额外追加 Claude Code 终端**自己**加的两个固定项："N+1. Type something." 和
+    /// "N+2. Chat about this"（它们不在 tool_input 里，是终端 TUI 渲染时追加的）——用户要求
+    /// 岛上的选项跟终端**原原本本一致**，编号也必须对齐，否则岛上点 3 会选中终端的第 3 项
+    /// （而用户以为没有 3）。点这两项 = 注入对应数字，终端会进入"输入文字/聊天"态，用户去
+    /// 终端继续打字，行为与直接在终端选一致。桌面端（Claude Desktop）没有这两项，不追加。
     /// </summary>
     public System.Collections.Generic.IReadOnlyList<QuestionOption> QuestionOptions
     {
@@ -1505,7 +1768,18 @@ public partial class IslandSessionItem : ObservableObject
         {
             var input = _session?.PermissionRequest?.ToolInput;
             if (input == null || input.Count == 0) return System.Array.Empty<QuestionOption>();
-            return ParseAskUserQuestion(input)?.Options ?? System.Array.Empty<QuestionOption>();
+            var opts = ParseAskUserQuestion(input)?.Options;
+            if (opts == null || opts.Count == 0) return System.Array.Empty<QuestionOption>();
+
+            var isDesktop = string.Equals(_session?.ClaudeMetadata?.Entrypoint, "claude-desktop",
+                StringComparison.OrdinalIgnoreCase);
+            if (isDesktop) return opts;
+
+            var full = new System.Collections.Generic.List<QuestionOption>(opts.Count + 2);
+            full.AddRange(opts);
+            full.Add(new QuestionOption { Number = opts.Count + 1, Label = "Type something.", Description = "" });
+            full.Add(new QuestionOption { Number = opts.Count + 2, Label = "Chat about this", Description = "" });
+            return full;
         }
     }
 
@@ -1517,6 +1791,135 @@ public partial class IslandSessionItem : ObservableObject
             var input = _session?.PermissionRequest?.ToolInput;
             if (input == null || input.Count == 0) return "";
             return ParseAskUserQuestion(input)?.Title ?? "";
+        }
+    }
+
+    /// <summary>
+    /// 这条会话当前是不是 ExitPlanMode（计划审阅），而非普通工具权限 / AskUserQuestion。
+    /// 为 true 时 XAML 应显示完整的计划 Markdown 渲染 UI，而不是常规的 Allow once/Deny 单行详情。
+    /// </summary>
+    public bool IsPlanReview
+        => string.Equals(_session?.PermissionRequest?.ToolName, "ExitPlanMode",
+                          StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// ExitPlanMode 的 tool_input 通常长这样：{"plan": "完整的 markdown 文本..."}。
+    /// 走 JsonElement 解析（与 ParseAskUserQuestion 同一套思路）：先把 Dictionary 重新序列化成
+    /// JSON 再解析，取顶层 "plan" 字符串字段。解析失败或字段不存在一律返回空串，绝不抛异常
+    /// 导致卡片渲染崩溃。
+    /// </summary>
+    private static string ExtractPlanMarkdown(System.Collections.Generic.IDictionary<string, object> toolInput)
+    {
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(toolInput);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("plan", out var planElem)
+                && planElem.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return planElem.GetString() ?? "";
+            }
+            return "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// ExitPlanMode 请求携带的完整计划 Markdown 原文，供下一步的 Markdown 渲染 UI 使用。
+    /// 无 ToolInput / 解析失败 → 空字符串（不影响卡片其余部分照常渲染）。
+    /// </summary>
+    public string PlanMarkdown
+    {
+        get
+        {
+            var input = _session?.PermissionRequest?.ToolInput;
+            if (input == null || input.Count == 0) return "";
+            return ExtractPlanMarkdown(input);
+        }
+    }
+
+    /// <summary>
+    /// 这条会话当前是不是 Edit/MultiEdit/Write 的代码改动审阅（而非普通权限 / 问题 / 计划）。
+    /// 为 true 时 XAML 应显示完整的 diff 渲染，Allow once/Always/Deny 按钮组照常复用不变——
+    /// 这个功能只换"详情怎么展示"，批准通路跟普通工具权限完全同一套。
+    /// </summary>
+    public bool IsCodeReview
+    {
+        get
+        {
+            var tool = _session?.PermissionRequest?.ToolName;
+            return string.Equals(tool, "Edit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(tool, "MultiEdit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(tool, "Write", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// 由 <see cref="Services.DiffBuilder"/> 从 tool_input 构建的结构化 diff。IsCodeReview=false
+    /// 或构建失败（文件读不到/解析失败等）时为 null——XAML 据此可以退回显示原始 PermissionFullDetail
+    /// 文本块，代码审阅卡片不会因为一次解析失败就整体空白。
+    /// </summary>
+    // CodeReviewDiff 的缓存：按 PermissionRequest 实例缓存构建结果。XAML 里有 6 处绑定
+    // （HasCodeReviewDiff、CodeReviewHeaderText、CodeReviewDiff.Hunks、CodeReviewTruncatedText…）
+    // 每次刷新都会各读一次这个 getter，而 IslandSessionItem 每次 SessionsChanged 都
+    // OnPropertyChanged("")（transcript 每次写入 + 2 秒定时器持续触发）。不缓存的话：
+    //   (1) 每次刷新对同一份改动跑 6 遍 DiffBuilder.Build（6 次读盘 + 6 次 LCS），大文件时
+    //       是 UI 线程上的持续 GC 压力与掉帧；
+    //   (2) 6 次 Build 各自独立读盘，若文件在同一渲染趟里被外部改写（编辑器保存/终端先批准
+    //       后 Claude 落盘），头部 "+N −M" 与实际渲染的 hunks 可能来自不同快照，出现自相矛盾
+    //       的卡片。
+    // 按 PermissionRequest 引用缓存 → 同一个请求只构建一次、一个快照；请求变了（新的待批准）
+    // 引用就变，自动失效重建。
+    private PermissionRequest? _codeReviewDiffKey;
+    private Services.CodeReviewDiff? _codeReviewDiffCache;
+
+    public Services.CodeReviewDiff? CodeReviewDiff
+    {
+        get
+        {
+            if (!IsCodeReview) return null;
+            var req = _session?.PermissionRequest;
+            if (req?.ToolInput == null) return null;
+            if (!ReferenceEquals(req, _codeReviewDiffKey))
+            {
+                _codeReviewDiffKey = req;
+                _codeReviewDiffCache = Services.DiffBuilder.Build(req.ToolName, req.ToolInput);
+            }
+            return _codeReviewDiffCache;
+        }
+    }
+
+    /// <summary>
+    /// IsCodeReview=true 且 diff 真的构建成功时才为 true。XAML 的两个互斥详情块（原始文本 /
+    /// diff 渲染）都应该绑这个，而不是绑 IsCodeReview 本身——否则 tool_input 畸形、文件读不到
+    /// 等导致 DiffBuilder.Build 返回 null 时，两块都会因为 IsCodeReview 仍是 true 而判定
+    /// "该显示 diff"，但 diff 是空的，原始文本块又被同一个 IsCodeReview 挡住不显示，用户看到
+    /// 的就是一个没有任何信息的空卡片。
+    /// </summary>
+    public bool HasCodeReviewDiff => IsCodeReview && CodeReviewDiff != null;
+
+    /// <summary>diff 卡片头部："path  +12 −5"，新建文件时前面加"（新建）"。</summary>
+    public string CodeReviewHeaderText
+    {
+        get
+        {
+            var d = CodeReviewDiff;
+            if (d == null) return "";
+            var newFileTag = d.IsNewFile ? "（新建） " : "";
+            return $"{newFileTag}{d.FilePath}  +{d.Additions} −{d.Deletions}";
+        }
+    }
+
+    /// <summary>截断提示，如"…还有约 37 行改动未显示"；没有截断时为空串（XAML 按空串折叠）。</summary>
+    public string CodeReviewTruncatedText
+    {
+        get
+        {
+            var d = CodeReviewDiff;
+            return d is { TruncatedLineCount: > 0 } ? $"…还有约 {d.TruncatedLineCount} 行改动未显示" : "";
         }
     }
 
@@ -1707,6 +2110,8 @@ public partial class IslandSessionItem : ObservableObject
     [RelayCommand]
     private async Task JumpAsync()
     {
+        OpenIsland.App.Services.TerminalJumpService.JumpDiag(
+            $"[CLICK] JumpAsync fired: id={Id} title='{Title}' hasSession={_session != null} hasRunningInfo={_runningInfo != null} entrypoint={_session?.ClaudeMetadata?.Entrypoint ?? "(null)"}");
         // 优先通过 AgentSession 跳转 —— 不再要求 JumpTarget 非空：
         //   - desktop session 走 ActivateClaudeDesktopWindow（根本不需要 cwd）
         //   - CLI session 在 JumpToSessionAsync 里有 ResolveFallbackWorkingDirectory 兜底
@@ -1725,6 +2130,7 @@ public partial class IslandSessionItem : ObservableObject
             await _sessionManager.JumpToWorkingDirectoryAsync(_runningInfo.WorkingDirectory);
             return;
         }
+        OpenIsland.App.Services.TerminalJumpService.JumpDiag("[CLICK] JumpAsync: no session & no runningInfo cwd -> did nothing");
     }
 
     /// <summary>
@@ -1751,6 +2157,60 @@ public partial class IslandSessionItem : ObservableObject
     {
         if (_sessionManager != null && _session != null)
             await _sessionManager.RespondToPermissionAsync(_session.Id, '3');
+    }
+
+    // ── ExitPlanMode 计划审阅：选项按钮（按宿主动态生成）+ 反馈输入框 ──
+    [ObservableProperty] private string _planFeedbackText = "";
+
+    /// <summary>
+    /// 计划审阅的选项列表 —— 按 entrypoint 镜像宿主真实呈现的选项（用户明确要求"宿主呈现
+    /// 什么选项，岛上就给什么选项"，跟权限按钮/AskUserQuestion 同一条原则）：
+    ///   · CLI 终端：Claude Code 的编号菜单 "1. Yes, and auto-accept edits / 2. Yes, and
+    ///     manually approve edits / 3. No, keep planning"，Key = 注入的数字。
+    ///   · Claude Desktop：Electron 弹窗的真实按钮（用户实测截图确认的文案）：
+    ///     Accept / Accept and auto mode / Reject / Revise…，Key = UIA 匹配用的语义键
+    ///     （见 TerminalJumpService.ClickPlanButtonInClaudeDesktop 的匹配表）。
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<PlanOption> PlanOptions
+        => IsDesktopSession
+            ? new[]
+            {
+                new PlanOption("accept", "Accept"),
+                new PlanOption("accept-auto", "Accept and auto mode"),
+                new PlanOption("reject", "Reject"),
+                new PlanOption("revise", "Revise…"),
+            }
+            : new[]
+            {
+                new PlanOption("1", "1. Yes, and auto-accept edits"),
+                new PlanOption("2", "2. Yes, and manually approve edits"),
+                new PlanOption("3", "3. No, keep planning"),
+            };
+
+    /// <summary>计划审阅选项按钮：Key 直接透传给 SessionManager（CLI = 注入的数字，
+    /// desktop = UIA 按钮语义键），分流逻辑全在 RespondToPlanAsync 里。</summary>
+    [RelayCommand]
+    private async Task RespondPlanAsync(object? optionKey)
+    {
+        if (_sessionManager == null || _session == null) return;
+        var key = optionKey?.ToString();
+        if (string.IsNullOrEmpty(key)) return;
+        await _sessionManager.RespondToPlanAsync(_session.Id, key);
+    }
+
+    /// <summary>
+    /// 发送计划反馈：先在终端选 3 退出计划选项菜单，再把 PlanFeedbackText 当一条正常消息
+    /// 粘贴发出去（全部逻辑在 SessionManager.RespondToPlanFeedbackAsync 里）。成功后清空
+    /// 输入框；失败保留原文，让用户能重试而不用重新打字。
+    /// </summary>
+    [RelayCommand]
+    private async Task SendPlanFeedbackAsync()
+    {
+        if (_sessionManager == null || _session == null) return;
+        var text = PlanFeedbackText?.Trim() ?? "";
+        if (string.IsNullOrEmpty(text)) return;
+        var ok = await _sessionManager.RespondToPlanFeedbackAsync(_session.Id, text);
+        if (ok) PlanFeedbackText = "";
     }
 
     /// <summary>
@@ -1804,3 +2264,10 @@ public partial class IslandSessionItem : ObservableObject
         _sessionManager.ResolvePermission(_session.Id, true, rule);
     }
 }
+
+/// <summary>
+/// ExitPlanMode 计划审阅的单个选项按钮。Key 是行为语义键：CLI = 要注入终端的数字
+/// （"1"/"2"/"3"），Claude Desktop = UIA 按钮匹配键（"accept"/"accept-auto"/"reject"/"revise"）。
+/// Label 是按钮显示文案，严格镜像宿主真实呈现的文字。
+/// </summary>
+public sealed record PlanOption(string Key, string Label);

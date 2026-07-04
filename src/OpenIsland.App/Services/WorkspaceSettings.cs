@@ -34,6 +34,18 @@ public class WorkspaceSettings
     /// </summary>
     public bool LiquidGlassEnabled { get; private set; }
 
+    /// <summary>液态玻璃模糊强度（px，CSS backdrop-filter blur）。默认 17.2（用户实测调高后的新默认，
+    /// 原硬编码值是 7.2）。json key = "glassBlurPx"。控制中心「液态玻璃」区滑块可调，范围 0–20。</summary>
+    public double GlassBlurPx { get; private set; } = 17.2;
+
+    /// <summary>液态玻璃饱和度（百分比，CSS backdrop-filter saturate）。默认 130。
+    /// json key = "glassSaturationPercent"。范围 50–200。</summary>
+    public double GlassSaturationPercent { get; private set; } = 130;
+
+    /// <summary>液态玻璃折射/色散强度（百分比，缩放 SVG 位移贴图的 scale；100 = 原始强度）。默认 100。
+    /// json key = "glassRefractionPercent"。范围 0–200。</summary>
+    public double GlassRefractionPercent { get; private set; } = 100;
+
     /// <summary>用户在控制中心保存的第三方模型档案（含 API key）。内置 Claude 档不存这里。</summary>
     public List<ModelProfile> ModelProfiles { get; private set; } = new();
 
@@ -50,6 +62,21 @@ public class WorkspaceSettings
     /// <summary>余额行显示模式：false = 5h 余额（默认），true = 最近七天 token 柱状图。
     /// 点余额行切换并落盘，下次启动灵动岛恢复关闭时的状态。json key = "showUsageChart"。</summary>
     public bool ShowUsageChart { get; private set; }
+
+    /// <summary>
+    /// "正在播放·波浪律动"总开关：SMTC 曲名跑马灯 + 胶囊内按专辑主色/响度起伏的波浪叠加层。
+    /// 默认 true（开）——与 LiquidGlassEnabled 默认关闭不同，这是产品决定的默认体验。
+    /// 用户可在命令栏 chip 里关闭；关闭时 NowPlayingService/AudioLevelReactor 都停止运行省资源。
+    /// json key = "nowPlayingWaveEnabled"。
+    /// </summary>
+    public bool NowPlayingWaveEnabled { get; private set; } = true;
+
+    /// <summary>
+    /// 用户给会话手动起的自定义名字，key = 会话 id（transcript 文件的 UUID，重启不变）。
+    /// 卡片显示时优先用它盖过自动标题（首条消息）。持久化到 settings.json 的 "sessionTitles"，
+    /// 下次启动仍记得。空/清空则从字典移除、回落自动标题。
+    /// </summary>
+    public Dictionary<string, string> SessionTitles { get; private set; } = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 网页同步（WebSyncService）的访问令牌：32 个 hex 字符的随机串，扫码/复制地址时带在
@@ -150,6 +177,44 @@ public class WorkspaceSettings
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>设置液态玻璃模糊强度（px）+ 持久化 + 通知监听者。</summary>
+    public void SetGlassBlurPx(double v)
+    {
+        GlassBlurPx = Math.Clamp(v, 0, 40);
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置液态玻璃饱和度（%）+ 持久化 + 通知监听者。</summary>
+    public void SetGlassSaturationPercent(double v)
+    {
+        GlassSaturationPercent = Math.Clamp(v, 0, 300);
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置液态玻璃折射/色散强度（%）+ 持久化 + 通知监听者。</summary>
+    public void SetGlassRefractionPercent(double v)
+    {
+        GlassRefractionPercent = Math.Clamp(v, 0, 300);
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>取某会话的自定义名字；没有则返回 null（调用方回落自动标题）。</summary>
+    public string? GetSessionTitle(string id)
+        => !string.IsNullOrEmpty(id) && SessionTitles.TryGetValue(id, out var t) ? t : null;
+
+    /// <summary>设置/清空某会话的自定义名字 + 持久化 + 通知。空白 = 清除（回落自动标题）。</summary>
+    public void SetSessionTitle(string id, string? title)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        if (string.IsNullOrWhiteSpace(title)) SessionTitles.Remove(id);
+        else SessionTitles[id] = title.Trim();
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <summary>设置界面语言（"auto"/"zh"/"en"）+ 持久化 + 通知监听者。</summary>
     public void SetLanguage(string lang)
     {
@@ -170,6 +235,14 @@ public class WorkspaceSettings
     public void SetShowUsageChart(bool v)
     {
         ShowUsageChart = v;
+        Save();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>设置"正在播放·波浪律动"总开关 + 持久化 + 通知监听者。</summary>
+    public void SetNowPlayingWaveEnabled(bool v)
+    {
+        NowPlayingWaveEnabled = v;
         Save();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -254,6 +327,34 @@ public class WorkspaceSettings
             {
                 LiquidGlassEnabled = lge.GetBoolean();
             }
+            // 三个玻璃调参缺失 / 解析失败 → 保持默认值（旧 settings.json 没这些 key 时用原硬编码观感）
+            if (doc.RootElement.TryGetProperty("glassBlurPx", out var gb)
+                && gb.ValueKind == JsonValueKind.Number && gb.TryGetDouble(out var gbv))
+            {
+                GlassBlurPx = gbv;
+            }
+            if (doc.RootElement.TryGetProperty("glassSaturationPercent", out var gs)
+                && gs.ValueKind == JsonValueKind.Number && gs.TryGetDouble(out var gsv))
+            {
+                GlassSaturationPercent = gsv;
+            }
+            if (doc.RootElement.TryGetProperty("glassRefractionPercent", out var gr)
+                && gr.ValueKind == JsonValueKind.Number && gr.TryGetDouble(out var grv))
+            {
+                GlassRefractionPercent = grv;
+            }
+            // 会话自定义名字（缺失 → 空字典）
+            if (doc.RootElement.TryGetProperty("sessionTitles", out var st)
+                && st.ValueKind == JsonValueKind.Object)
+            {
+                var map = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var kv in st.EnumerateObject())
+                {
+                    var v = kv.Value.ValueKind == JsonValueKind.String ? kv.Value.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(v)) map[kv.Name] = v!;
+                }
+                SessionTitles = map;
+            }
             if (doc.RootElement.TryGetProperty("modelProfiles", out var mp)
                 && mp.ValueKind == JsonValueKind.Array)
             {
@@ -290,6 +391,12 @@ public class WorkspaceSettings
                 && (suc.ValueKind == JsonValueKind.True || suc.ValueKind == JsonValueKind.False))
             {
                 ShowUsageChart = suc.GetBoolean();
+            }
+            // nowPlayingWaveEnabled 缺失 → 保持默认 true（旧 settings.json 没这个 key 时默认开启）
+            if (doc.RootElement.TryGetProperty("nowPlayingWaveEnabled", out var npw)
+                && (npw.ValueKind == JsonValueKind.True || npw.ValueKind == JsonValueKind.False))
+            {
+                NowPlayingWaveEnabled = npw.GetBoolean();
             }
             // webSyncToken 缺失 / 空 / 非法 → 保持空串，由构造函数 EnsureWebSyncToken 生成并落盘
             if (doc.RootElement.TryGetProperty("webSyncToken", out var wst)
@@ -329,12 +436,17 @@ public class WorkspaceSettings
                     plan5hTokenBudget = Plan5hTokenBudget,
                     soundEnabled = SoundEnabled,
                     liquidGlassEnabled = LiquidGlassEnabled,
+                    sessionTitles = SessionTitles,
+                    glassBlurPx = GlassBlurPx,
+                    glassSaturationPercent = GlassSaturationPercent,
+                    glassRefractionPercent = GlassRefractionPercent,
                     modelProfiles = profilesForDisk,
                     activeModelProfileId = ActiveModelProfileId,
                     language = Language,
                     screenshotHotkey = ScreenshotHotkey,
                     showUsageChart = ShowUsageChart,
-                    webSyncToken = WebSyncToken
+                    webSyncToken = WebSyncToken,
+                    nowPlayingWaveEnabled = NowPlayingWaveEnabled
                 },
                 new JsonSerializerOptions { WriteIndented = true });
             // 原子写：先写 tmp 再替换，避免写到一半崩溃/断电截断文件、丢失全部模型配置（含 API key）。

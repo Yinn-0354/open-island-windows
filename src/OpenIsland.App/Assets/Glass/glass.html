@@ -49,21 +49,21 @@
 
       <feOffset in="SourceGraphic" dx="0" dy="0" result="CENTER_ORIGINAL"/>
 
-      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-64" xChannelSelector="R" yChannelSelector="B" result="RED_DISPLACED"/>
+      <feDisplacementMap id="dispR" in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-64" xChannelSelector="R" yChannelSelector="B" result="RED_DISPLACED"/>
       <feColorMatrix in="RED_DISPLACED" type="matrix"
         values="1 0 0 0 0
                 0 0 0 0 0
                 0 0 0 0 0
                 0 0 0 1 0" result="RED_CHANNEL"/>
 
-      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-70.4" xChannelSelector="R" yChannelSelector="B" result="GREEN_DISPLACED"/>
+      <feDisplacementMap id="dispG" in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-70.4" xChannelSelector="R" yChannelSelector="B" result="GREEN_DISPLACED"/>
       <feColorMatrix in="GREEN_DISPLACED" type="matrix"
         values="0 0 0 0 0
                 0 1 0 0 0
                 0 0 0 0 0
                 0 0 0 1 0" result="GREEN_CHANNEL"/>
 
-      <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-76.8" xChannelSelector="R" yChannelSelector="B" result="BLUE_DISPLACED"/>
+      <feDisplacementMap id="dispB" in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="-76.8" xChannelSelector="R" yChannelSelector="B" result="BLUE_DISPLACED"/>
       <feColorMatrix in="BLUE_DISPLACED" type="matrix"
         values="0 0 0 0 0
                 0 0 0 0 0
@@ -101,20 +101,58 @@
   var border1 = document.getElementById('border1');
   var border2 = document.getElementById('border2');
   var svg = document.getElementById('filterSvg');
+  var dispR = document.getElementById('dispR');
+  var dispG = document.getElementById('dispG');
+  var dispB = document.getElementById('dispB');
+  // 位移贴图 scale 的原始基准值（"折射强度" = 100% 对应的强度），来自各自的 SVG 初值。
+  var DISP_BASE = { r: -64, g: -70.4, b: -76.8 };
 
   // backdrop-filter 公式抄 index.tsx："Button" 预设 blur((overLight?12:4) + blurAmount*32) = 4+0.1*32 = 7.2px
+  // 模糊/饱和度是控制中心可调的两个滑块，默认值跟原硬编码一致，setGlass 每帧按最新值重算。
   warp.style.filter = 'url(#glassFilter)';
   warp.style.backdropFilter = 'blur(7.2px) saturate(130%)';
   warp.style.webkitBackdropFilter = 'blur(7.2px) saturate(130%)';
 
-  /// C# 每帧调一次：塞入最新桌面背景 + 当前胶囊圆角（px，与 MainBorder.CornerRadius 对齐）。
-  window.setGlass = function (dataUri, radiusPx) {
-    document.getElementById('bg').src = dataUri;
-    if (typeof radiusPx === 'number') {
+  /// C# 每帧调一次：塞入最新桌面背景 + 当前胶囊四角圆角（[TL,TR,BR,BL] px，跟 CSS
+  /// border-radius 简写顺序一致，也跟 WPF CornerRadius 结构体字段顺序一致，不用映射）+
+  /// 模糊(px)/饱和度(%)/折射强度(%)——后三个是控制中心「液态玻璃」区的可调滑块，省略时
+  /// 保留上一次（或初始）值不变。四角圆角故意不用单个数字：Notch 模式下胶囊顶边贴屏幕、
+  /// 顶两角是 0、底两角有圆角，只传一个统一值没法表达这种非对称形状（之前的单值版本就是
+  /// 这样，才会在 Notch 模式下把顶角也画圆，露出黑色背景，即"多了一圈黑框"那个 bug）。
+  /// 返回一个 Promise——ExecuteScriptAsync 会等它 resolve 才返回，C# 侧据此再去
+  /// CapturePreviewAsync。以前是"设完 src 立刻截"，图片解码/合成都是异步的，截到的
+  /// 常是上一帧的旧内容，看起来像倒映画面一直慢半拍。img.decode() 等解码完成，
+  /// 之后再等两个 requestAnimationFrame 确保合成器真正提交了这一帧，才 resolve。
+  window.setGlass = function (dataUri, radiusPx, blurPx, saturationPct, refractionPct) {
+    var bg = document.getElementById('bg');
+    bg.src = dataUri;
+    if (Array.isArray(radiusPx) && radiusPx.length === 4) {
+      var r = radiusPx.map(function (v) { return v + 'px'; }).join(' ');
+      pill.style.borderRadius = r;
+      border1.style.borderRadius = border2.style.borderRadius = r;
+    } else if (typeof radiusPx === 'number') {
+      // 兼容旧的单值调用方式（理论上不会再走到，留个后路）
       pill.style.borderRadius = radiusPx + 'px';
       border1.style.borderRadius = border2.style.borderRadius = radiusPx + 'px';
     }
+    if (typeof blurPx === 'number' && typeof saturationPct === 'number') {
+      var f = 'blur(' + blurPx + 'px) saturate(' + saturationPct + '%)';
+      warp.style.backdropFilter = f;
+      warp.style.webkitBackdropFilter = f;
+    }
+    if (typeof refractionPct === 'number') {
+      var k = refractionPct / 100;
+      dispR.setAttribute('scale', DISP_BASE.r * k);
+      dispG.setAttribute('scale', DISP_BASE.g * k);
+      dispB.setAttribute('scale', DISP_BASE.b * k);
+    }
     syncSize();
+    var decoded = bg.decode ? bg.decode().catch(function () {}) : Promise.resolve();
+    return decoded.then(function () {
+      return new Promise(function (resolve) {
+        requestAnimationFrame(function () { requestAnimationFrame(resolve); });
+      });
+    });
   };
 
   // SVG 滤镜定义区 + 两层高光边框，尺寸跟 pill 实际渲染尺寸对齐

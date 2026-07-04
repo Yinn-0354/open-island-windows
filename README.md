@@ -27,6 +27,9 @@ Open Island is a Windows tray companion that surfaces the live state of AI codin
 - 🔔 **Sound notifications** — a chime when a task finishes and when a session needs your attention; mute toggle in the stats bar
 - 🎵 **Media controls** — prev / play-pause / next + a system volume slider, works with any player (Spotify, browser, music apps…)
 - 📡 **Permission mirror** — Claude Code's `PreToolUse` prompts mirror to the island so you can decide `1/2/3` without alt-tabbing back to the terminal
+- 📝 **Plan review on the island** — when Claude asks to exit plan mode, the full plan renders as **Markdown** (headings / lists / code blocks) right on the island, with approve / keep-planning buttons and a feedback box
+- 🔍 **Code review on the island** — Edit / Write / MultiEdit permission prompts render a real **red/green line-level diff** (like a GitHub PR) instead of just a file path, so you see exactly what changes before approving
+- 🎨 **Music Clauding (album-reactive liquid glass)** — the liquid-glass capsule skin and its wave visual recolor in real time to the current track's album art, with the wave riding the live audio level
 - ⚡ **Per-session mode buttons** — quick icon buttons on each session card to switch that session's permission mode (accept edits / auto / plan)
 - 📊 **Stats dashboard** — sessions / tokens / model breakdown / activity heatmap, with All / 30d / 7d filters
 - 🚀 **One-click resume** — clicking a session card runs `claude --resume {sessionId}` for CLI sessions, or brings the Claude Desktop app window to the front for desktop sessions
@@ -43,10 +46,21 @@ Stays out of the way — sits in collapsed mode at the top of the screen while y
 |---|---|
 | **🏝 The Island** | Pixel pet status sprite · system stats bar (CPU / RAM / GPU / net) · media controls + volume slider · done / needs-attention chimes · region screenshot (global hotkey) · 5-hour balance ↔ 7-day usage chart · top-edge notch snap · bilingual UI |
 | **🗂 Session management** | Permission-prompt mirror (one-click 1/2/3) · AskUserQuestion option buttons · per-session permission-mode switch · quick reply · one-click jump back to terminal / desktop app · pin sessions · clear tasks (cards return only on new activity) · source filter (all / CLI / desktop) · one-click skill install |
+| **📝 Plan & code review** | ExitPlanMode plans rendered as full Markdown (headings / lists / code blocks) · Edit/Write/MultiEdit shown as a red/green line-level diff with real line numbers · host-mirrored option buttons (CLI 1/2/3 · Desktop Accept / Reject / Revise) · feedback box to steer Claude · approve/deny via the existing channel |
+| **🎨 Music Clauding** | Liquid-glass capsule skin (offscreen-WebView2 refraction + frosted backdrop + gradient highlight edge) · album-art palette recolors the glass and the wave visual live · three-layer wave riding the real-time audio level (WASAPI loopback) |
 | **📱 Web Sync** | Phone / tablet access over LAN · SSE live push · chat-style replies + `/` command autocomplete · one-tap permission approval · answer questions by tapping options · switch model / permission mode · sound + title alerts · light/dark theme · add-to-home-screen |
 | **🤖 Models & stats** | One-click model switch (all official profiles + third-party presets, DPAPI-encrypted keys) · Control Center (Sessions / Overview / Models) · 84-day activity heatmap · workspace filter |
 
 ## ✨ Features
+
+- **📝 Plan review, right on the island** — when Claude calls `ExitPlanMode` to get your sign-off, the island renders the full plan as **Markdown** (heading levels, bullet lists, code blocks, bold — dark-theme tuned) instead of raw JSON. The option buttons mirror whatever the host actually shows: a CLI session gets the `1. Yes … / 2. … / 3. No, keep planning` numbered menu; a Claude Desktop session gets its real **Accept / Accept and auto mode / Reject / Revise…** buttons. A feedback box lets you type guidance straight back to Claude without leaving the island
+- **🔍 Code review, right on the island** — Edit / Write / MultiEdit permission prompts stop being a bare file path and become a real **red/green line-level diff** (deletions on red, additions on green, unchanged context in gray, with real line numbers) — like a mini GitHub PR. It reads the on-disk file to align lines with ±3 lines of context; Write overwrites extract change-centered hunks so even a one-line change deep in a large file is always visible. Approve / deny still flows through the existing Allow once / Always / Deny channel — only the *presentation* changed
+
+  <video src="https://github.com/ludiwangfpga/open-island-windows/raw/main/docs/videos/plan-and-code-review-demo.mp4" width="320"></video>
+
+  *(If the video doesn't play inline, see [`docs/videos/plan-and-code-review-demo.mp4`](docs/videos/plan-and-code-review-demo.mp4).)*
+
+- **🎨 Music Clauding — the capsule vibes with your music** — the liquid-glass capsule skin is rendered by an offscreen WebView2 (`glass.html`: SVG `feDisplacementMap` chromatic refraction + `backdrop-filter` frost + gradient highlight edge). When something is playing, the now-playing module (SMTC) reads the track's album-art thumbnail, `AlbumPaletteExtractor` pulls its top-3 palette, and both the glass tint and a three-layer Bézier **wave visual** at the bottom recolor to the album in real time. The wave's amplitude follows the live loudness envelope from a NAudio WASAPI loopback capture, so it rides the actual audio
 
 - **📱 Web Sync (a remote workbench on your phone / tablet)** — the globe button in the header starts a tiny zero-dependency HTTP server on port 18686 (manual toggle; the URL is copied to your clipboard). Any phone or tablet on the same LAN gets a full mobile workbench:
   - **Live** — SSE push (the page updates within a second of any session change), with automatic fallback to polling when the connection drops and back again when it recovers

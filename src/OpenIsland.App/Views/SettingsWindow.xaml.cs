@@ -33,7 +33,32 @@ public partial class SettingsWindow : Window
         // 语言下拉对齐当前设置（auto=0 / zh=1 / en=2）
         LanguageCombo.SelectedIndex = _settings.Language switch { "zh" => 1, "en" => 2, _ => 0 };
         HotkeyBox.Content = _settings.ScreenshotHotkey;
+
+        // 液态玻璃三个滑块对齐当前设置（_initializing 挡住这几行赋值触发的 ValueChanged）
+        GlassBlurSlider.Value = _settings.GlassBlurPx;
+        GlassSaturationSlider.Value = _settings.GlassSaturationPercent;
+        GlassRefractionSlider.Value = _settings.GlassRefractionPercent;
+
         _initializing = false;
+    }
+
+    // ── 液态玻璃：拖动即持久化 + 通知（灵动岛下一次 RenderGlassNowAsync 就读到新值，近乎实时）──
+    private void GlassBlur_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _settings.SetGlassBlurPx(e.NewValue);
+    }
+
+    private void GlassSaturation_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _settings.SetGlassSaturationPercent(e.NewValue);
+    }
+
+    private void GlassRefraction_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _settings.SetGlassRefractionPercent(e.NewValue);
     }
 
     // ── 区域截图快捷键录制 ──

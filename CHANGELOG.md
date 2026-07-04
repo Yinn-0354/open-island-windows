@@ -4,6 +4,24 @@ All notable changes to Open Island will be documented here.
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.0] - 2026-07-04
+
+### Added
+
+- **音乐 Clauding —— 液态玻璃胶囊随专辑封面实时变色** —— 现在播放模块（SMTC）读取当前曲目的封面缩略图，用 `AlbumPaletteExtractor` 提取主色三元组；胶囊皮肤的液态玻璃折射（离屏 WebView2 渲染 `glass.html`，SVG feDisplacementMap 色散 + backdrop-filter 磨砂 + 渐变高光边框）与底部 `WaveVisual` 三层贝塞尔波浪跟着当前专辑配色走。波浪振幅来自 NAudio WASAPI loopback 的实时响度包络（`AudioLevelReactor`），随音乐起伏。
+- **代码审阅卡片（Edit / Write / MultiEdit）** —— Claude 要改文件时，权限卡不再只显示一个文件路径，而是在岛上直接渲染**行级红绿 diff**（红底删除 / 绿底新增 / 灰色上下文 + 真实行号），像 GitHub PR 一样一目了然。`DiffBuilder` 读磁盘旧内容做行级对齐：Edit/MultiEdit 定位改动区间只对附近做 LCS + 前后 3 行上下文，Write 整篇覆写抽取「改动附近 hunk」（长段未变行折叠，改动一定可见）。批准/拒绝走既有 Allow once / Always / Deny 通路不变。超大改动截断保护、CRLF 兼容、新建文件整块绿显示。
+- **Plan 审阅卡片（ExitPlanMode）** —— Claude 退出计划模式请求批准时，岛上完整渲染计划的 **Markdown**（标题分级 / 列表 / 代码块 / 粗体，深色主题适配），而不是原始 JSON。选项按钮按宿主镜像：终端会话给 `1/2/3` 编号菜单，Claude Desktop 会话给 Accept / Accept and auto mode / Reject / Revise… 真实按钮；反馈输入框可直接写想法回给 Claude 继续规划。
+
+### Changed
+
+- **液态玻璃改用离屏 WebView2 渲染** —— 折射效果从原生 CPU 折射算法换成一个常驻屏幕外的 WebView2 渲染 `glass.html`，每帧把桌面截图喂进去、`CapturePreviewAsync` 读回当胶囊背景。关掉 Chromium 的屏幕外节流、PNG 编解码挪线程池，避免拖动时掉帧。
+
+### Fixed
+
+- **代码审阅 diff 的一批边界修复** —— Write 覆写大文件、改动在后半段时不再错显 `+0 −0`（改成「改动附近抽 hunk」渲染 + 全量统计，改动一定可见）；CRLF 文件上下文行不再因残留 `\r` 被 WPF 渲染成双倍行高；`CodeReviewDiff` 按请求缓存，避免每次刷新重复读盘 + LCS 以及头部统计与内容取自不同文件快照的矛盾。
+- **`WaveVisual` 常驻满帧空转** —— 渲染循环挂钩从「随控件加载」改为「随可见性」，波形隐藏 / 关闭时退订，不再从启动到关机每帧空转。
+- **`deploy.ps1` 目标框架目录** —— 对齐 csproj 改动后的 `net8.0-windows10.0.19041.0`，避免脚本把 hooks 塞进旧目录并启动上一版。
+
 ## [0.5.1] - 2026-06-18
 
 ### Added

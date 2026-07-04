@@ -94,7 +94,10 @@ public partial class TerminalJumpService
 
         EnumWindows((hWnd, _) =>
         {
-            if (!IsWindowVisible(hWnd)) return true;
+            // 最小化的终端窗口在部分环境（尤其 Windows Terminal）会报 IsWindowVisible=false，
+            // 直接跳过就会导致"终端最小化后点灵动岛卡片唤不出来"（用户报的 bug）—— iconic
+            // 窗口也纳入，ActivateWindow 里的 IsIconic→SW_RESTORE 会把它还原出来。
+            if (!IsWindowVisible(hWnd) && !IsIconic(hWnd)) return true;
 
             var sb = new StringBuilder(512);
             if (GetWindowText(hWnd, sb, 512) <= 0) return true;
@@ -640,6 +643,147 @@ public partial class TerminalJumpService
     }
 
     /// <summary>
+    /// 桌面端 ExitPlanMode 计划审阅：点击 Claude Desktop 计划批准弹窗里的对应按钮。
+    /// 按钮文案已由用户实测截图确认：<c>Reject</c> / <c>Revise...</c> / <c>Accept</c> /
+    /// <c>Accept and auto mode</c>（主按钮可能带 "Ctrl+Enter" 快捷键后缀，同当年
+    /// "Allow once Ctrl+Enter" 的坑，所以用前缀匹配）。
+    ///
+    /// optionKey（语义键，来自岛上 PlanOptions）：
+    ///   "accept"      → 精确 "accept"（严格等值优先 —— 前缀 accept 会误命中
+    ///                    acceptandautomode，所以 accept 只认等值 + "acceptctrl…" 前缀）
+    ///   "accept-auto" → 前缀 "acceptandautomode"
+    ///   "reject"      → 等值/前缀 "reject"
+    ///   "revise"      → 前缀 "revise"（屏上是 "Revise..."）
+    ///
+    /// 结构复用 <see cref="RespondInClaudeDesktop"/> 已验证的全套：ActivateClaudeDesktopWindow(null)
+    /// → 收窄到主窗口子树 FindAll(Button) → 归一化匹配 → strict(可用+非离屏)优先/loose 软回退
+    /// → SetFocus+Invoke → 8 次重试 → 全量诊断写 %TEMP%\openisland-uia.log（前缀 planreview:）。
+    /// </summary>
+    public bool ClickPlanButtonInClaudeDesktop(string optionKey)
+    {
+        var diagPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-uia.log");
+        void Diag(string msg) { try { System.IO.File.AppendAllText(diagPath, $"[{DateTime.Now:HH:mm:ss.fff}] planreview: {msg}\n"); } catch { } }
+
+        Diag($"begin: optionKey='{optionKey}'");
+
+        // 归一化：去空白 + 小写（同权限/AskUserQuestion 路径）
+        static string Norm(string s) => new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+
+        // 每个语义键的匹配谓词。accept 特别小心：不能裸前缀（会吞掉 accept and auto mode）。
+        Func<string, bool>? match = optionKey switch
+        {
+            "accept" => n => n == "accept" || (n.StartsWith("accept", StringComparison.Ordinal)
+                                               && !n.StartsWith("acceptand", StringComparison.Ordinal)),
+            "accept-auto" => n => n.StartsWith("acceptandautomode", StringComparison.Ordinal),
+            "reject" => n => n.StartsWith("reject", StringComparison.Ordinal),
+            "revise" => n => n.StartsWith("revise", StringComparison.Ordinal),
+            _ => null,
+        };
+        if (match == null) { Diag($"unknown optionKey '{optionKey}' -> abort"); return false; }
+
+        // 弹窗就在当前打开的对话里，绝不做侧边栏导航（传 null；导航那套全桌面 UIA 重扫描
+        // 正是之前"点接受客户端卡死"的根因）。
+        if (!ActivateClaudeDesktopWindow(null))
+        {
+            Diag("ActivateClaudeDesktopWindow failed");
+            return false;
+        }
+
+        var winHwnd = FindClaudeDesktopMainHwnd();
+        Diag($"window hwnd=0x{winHwnd.ToInt64():X} (scoped UIA search)");
+
+        try
+        {
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                System.Threading.Thread.Sleep(250);
+
+                AutomationElementCollection buttons;
+                try
+                {
+                    var searchRoot = winHwnd != IntPtr.Zero
+                        ? AutomationElement.FromHandle(winHwnd)
+                        : AutomationElement.RootElement;
+                    var typeCond = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
+                    buttons = searchRoot.FindAll(TreeScope.Descendants, typeCond);
+                }
+                catch (Exception findEx)
+                {
+                    Diag($"  attempt {attempt}: FindAll threw {findEx.GetType().Name}: {findEx.Message}");
+                    continue;
+                }
+
+                AutomationElement? strict = null;
+                AutomationElement? loose = null;
+                var allNames = new List<string>();
+                foreach (AutomationElement btn in buttons)
+                {
+                    string name; bool offscreen = false, enabled = true;
+                    try
+                    {
+                        name = btn.Current.Name;
+                        try { offscreen = btn.Current.IsOffscreen; } catch { }
+                        try { enabled = btn.Current.IsEnabled; } catch { }
+                    }
+                    catch { continue; }
+                    if (string.IsNullOrEmpty(name)) continue;
+                    if (attempt == 7) allNames.Add(name);
+
+                    if (!match(Norm(name))) continue;
+                    loose ??= btn;
+                    if (!offscreen && enabled) strict ??= btn;
+                }
+
+                var target = strict ?? loose;
+                if (target == null)
+                {
+                    Diag($"  attempt {attempt}: {buttons.Count} buttons, no match for '{optionKey}'");
+                    if (attempt == 7 && allNames.Count > 0)
+                        Diag("  all button names: " + string.Join(" | ", allNames));
+                    continue;
+                }
+                if (strict == null)
+                    Diag($"  soft match (button reported offscreen/disabled) for '{optionKey}'");
+
+                var matchedName = "?";
+                try { matchedName = target.Current.Name; } catch { }
+
+                try
+                {
+                    var scrollPattern = target.GetCurrentPattern(ScrollItemPattern.Pattern) as ScrollItemPattern;
+                    scrollPattern?.ScrollIntoView();
+                }
+                catch (Exception scrollEx) { Diag($"  scroll failed: {scrollEx.Message}"); }
+
+                // SetFocus 后再 Invoke —— Claude Desktop 的 React UI 单纯 Invoke 无效（既有实测结论）
+                try { target.SetFocus(); } catch (Exception fe) { Diag($"  SetFocus failed: {fe.Message}"); }
+                System.Threading.Thread.Sleep(80);
+                try
+                {
+                    if (target.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
+                    {
+                        ((InvokePattern)ip).Invoke();
+                        Diag($"  clicked '{matchedName}' for '{optionKey}' after {attempt + 1} attempt(s)");
+                        return true;
+                    }
+                    Diag($"  '{matchedName}' has no InvokePattern; retrying");
+                }
+                catch (Exception invEx)
+                {
+                    Diag($"  invoke failed on '{matchedName}': {invEx.GetType().Name}: {invEx.Message}");
+                }
+            }
+
+            Diag($"all 8 attempts exhausted, no clickable button for '{optionKey}'");
+        }
+        catch (Exception ex)
+        {
+            Diag($"unexpected exception: {ex.GetType().Name}: {ex.Message}");
+        }
+        return false;
+    }
+
+    /// <summary>
     /// 桌面端 AskUserQuestion 回答：Claude Desktop（Electron）里 AskUserQuestion 弹窗
     /// 渲染为 —— 标题(问题) + 每个选项一行(label 粗体 + description + 右侧数字徽章
     /// 1/2/3) + Other 行(4，自由文本) + Skip 按钮 + Submit 按钮(带 Enter 提示)。
@@ -1022,10 +1166,17 @@ public partial class TerminalJumpService
     /// "1" 就被注入到 Claude Desktop 的聊天框里。校验失败就 abort（return false），
     /// 用户看到"没生效"远比"被静默错打到错的窗口"好。
     /// </summary>
-    public async Task<bool> SendKeysToTerminalAsync(int claudePid, string keys)
+    public async Task<bool> SendKeysToTerminalAsync(int claudePid, string keys, string? projectDirName = null)
     {
-        // 1) 找承载终端的窗口（沿父进程链）
+        // 1) 找承载终端的窗口（沿父进程链；ConPTY 0×0 伪窗口已被 TryGetConsoleHostWindow 拒掉）
         var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+        // 1.5) 父链断（cmd 由 explorer 启动等）→ 跟跳转路径同款启发式兜底找真终端窗口。
+        //      没有这层兜底时，这类终端里岛上点权限/问题选项会静默没反应（注入直接 abort）。
+        if (targetHwnd == IntPtr.Zero)
+        {
+            targetHwnd = FindTerminalHwndByHeuristic(projectDirName);
+            JumpDiag($"SendKeys: pid-chain miss for pid={claudePid}, heuristic fallback hwnd=0x{targetHwnd.ToInt64():X}");
+        }
         if (targetHwnd == IntPtr.Zero)
         {
             _logger?.LogWarning(
@@ -1071,10 +1222,12 @@ public partial class TerminalJumpService
     /// 前台*，所以必须先把目标终端激活并校验前台 HWND 一致，否则 abort —— 绝不能把
     /// Shift+Tab 打到错误的应用（典型：用户点击时 Claude Desktop 在前台）。
     /// </summary>
-    public async Task<bool> SendShiftTabToTerminalAsync(int claudePid, int count = 1)
+    public async Task<bool> SendShiftTabToTerminalAsync(int claudePid, int count = 1, string? projectDirName = null)
     {
         if (count < 1) return true;
         var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+        if (targetHwnd == IntPtr.Zero)
+            targetHwnd = FindTerminalHwndByHeuristic(projectDirName); // 同 SendKeys 的兜底
         if (targetHwnd == IntPtr.Zero)
         {
             _logger?.LogWarning(
@@ -1240,12 +1393,28 @@ public partial class TerminalJumpService
     /// </summary>
     public bool ActivateTerminalByWindowHeuristic(string? projectDirName)
     {
+        var best = FindTerminalHwndByHeuristic(projectDirName);
+        if (best == IntPtr.Zero) { JumpDiag("heuristic: no terminal-host candidate window found"); return false; }
+        ActivateWindow(best);
+        return true;
+    }
+
+    /// <summary>
+    /// 启发式挑窗口的"只找不激活"版：给按键注入路径当兜底用（SendKeysToTerminalAsync 需要
+    /// 先拿到 HWND 做前台校验，不能直接调激活版）。评分同 ActivateTerminalByWindowHeuristic。
+    /// </summary>
+    public IntPtr FindTerminalHwndByHeuristic(string? projectDirName)
+    {
         IntPtr best = IntPtr.Zero;
-        int bestScore = 0;
+        int bestScore = -1;
+        long bestArea = -1;
 
         EnumWindows((hWnd, _) =>
         {
-            if (!IsWindowVisible(hWnd)) return true;
+            // 最小化窗口也纳入（见 BringTerminalToFront 里同款注释）——否则终端最小化后
+            // 启发式找不到它，点卡片唤不出。
+            bool iconic = IsIconic(hWnd);
+            if (!IsWindowVisible(hWnd) && !iconic) return true;
             GetWindowThreadProcessId(hWnd, out var pid);
             if (pid == 0) return true;
             string procName;
@@ -1258,8 +1427,18 @@ public partial class TerminalJumpService
             if (!TerminalProcessNames.Contains(procName)) return true;
 
             var ttl = new StringBuilder(512);
-            if (GetWindowText(hWnd, ttl, 512) <= 0) return true;
+            if (GetWindowText(hWnd, ttl, 512) <= 0) return true; // 无标题（含 0×0 伪控制台）跳过
             var title = ttl.ToString();
+
+            // 尺寸：非最小化的必须有实际大小，挡掉 ConPTY 的 0×0 隐藏伪控制台窗口；
+            // 最小化窗口 rect 在屏外/负值，不按尺寸筛（有标题即算候选）。
+            long area = 1;
+            if (!iconic)
+            {
+                if (!GetWindowRect(hWnd, out var r) || r.Right - r.Left < 40 || r.Bottom - r.Top < 40)
+                    return true;
+                area = (long)(r.Right - r.Left) * (r.Bottom - r.Top);
+            }
 
             int score = 0;
             if (!string.IsNullOrEmpty(projectDirName) &&
@@ -1270,21 +1449,20 @@ public partial class TerminalJumpService
             if (title.IndexOf('✳') >= 0)
                 score += 5;
 
-            if (score > bestScore)
+            // 分数高者优先；同分取面积大者（主终端通常最大）。**分数为 0 也算候选**——
+            // Windows Terminal 的标题常是会话摘要（不含项目名/claude），匹配不到就退回按
+            // "最像主终端的候选"兜底激活，而不是放弃（放弃会退化到 AttachConsole 拿 0×0 伪窗口
+            // 或开新终端，都不是用户点卡片想要的）。单终端场景下这就是那唯一一个候选，稳。
+            if (score > bestScore || (score == bestScore && area > bestArea))
             {
-                bestScore = score;
-                best = hWnd;
+                bestScore = score; bestArea = area; best = hWnd;
             }
             return true;
         }, IntPtr.Zero);
 
-        if (best == IntPtr.Zero || bestScore == 0) return false;
-
-        _logger?.LogInformation(
-            "Activating terminal by window heuristic: hwnd=0x{Hwnd:X} score={Score} project={Project}",
-            best.ToInt64(), bestScore, projectDirName ?? "(none)");
-        ActivateWindow(best);
-        return true;
+        if (best != IntPtr.Zero)
+            JumpDiag($"heuristic pick: hwnd=0x{best.ToInt64():X} score={bestScore} area={bestArea} proj='{projectDirName}'");
+        return best;
     }
 
     /// <summary>
@@ -1384,6 +1562,14 @@ public partial class TerminalJumpService
             var hwnd = GetConsoleWindow();
             if (hwnd == IntPtr.Zero) return IntPtr.Zero;
             if (!IsWindowVisible(hwnd)) return IntPtr.Zero;
+            // ConPTY（Windows Terminal 默认终端）下 GetConsoleWindow 返回的是一个 WS_VISIBLE
+            // 但 0×0 的隐藏伪控制台窗口 —— IsWindowVisible 返回 true 骗过上面那道过滤，激活它
+            // 用户什么都看不到（诊断实锤：0x60750 = cmd 的 (0,0)-(0,0) 空标题窗口，正是"终端
+            // 最小化后点卡片唤不出"的直接根因）。真终端窗口必有实际大小，0×0 一律拒掉，让上层
+            // 回落到"按标题找 Windows Terminal 窗口"的启发式。
+            if (!GetWindowRect(hwnd, out var rc)
+                || rc.Right - rc.Left < 40 || rc.Bottom - rc.Top < 40)
+                return IntPtr.Zero;
             return hwnd;
         }
         finally
@@ -1430,7 +1616,9 @@ public partial class TerminalJumpService
         IntPtr found = IntPtr.Zero;
         EnumWindows((hWnd, _) =>
         {
-            if (!IsWindowVisible(hWnd)) return true;
+            // 最小化窗口也纳入（见 BringTerminalToFront 里同款注释）——终端最小化后它常报
+            // IsWindowVisible=false，漏掉它就唤不出；有标题 + iconic 仍是有效的目标窗口。
+            if (!IsWindowVisible(hWnd) && !IsIconic(hWnd)) return true;
             GetWindowThreadProcessId(hWnd, out var pid);
             if (pid == (uint)targetPid)
             {
@@ -1554,6 +1742,11 @@ public partial class TerminalJumpService
 
     [DllImport("user32.dll")]
     private static extern bool IsIconic(IntPtr hWnd);
+
+    // ALT 脉冲解前台锁用。keybd_event 已废弃但对合成 ALT 键最简、最可靠（无需构造 INPUT 数组）。
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    private const byte VK_MENU = 0x12;       // ALT 键（KEYEVENTF_KEYUP 已在文件别处定义，复用）
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
@@ -1681,9 +1874,23 @@ public partial class TerminalJumpService
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    /// <summary>TEMP 诊断：把窗口激活的每一步写 %TEMP%\openisland-jump.log，定位"终端最小化后
+    /// 点卡片唤不出"到底卡在哪一步（找不到窗口 / 找到了但没拉到前台）。查清后可删。</summary>
+    internal static void JumpDiag(string msg)
+    {
+        try { System.IO.File.AppendAllText(
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "openisland-jump.log"),
+            $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+    }
+
     private void ActivateWindow(IntPtr hWnd)
     {
-        if (hWnd == IntPtr.Zero) return;
+        if (hWnd == IntPtr.Zero) { JumpDiag("ActivateWindow: hWnd=Zero (nothing to activate)"); return; }
+
+        var _t = new StringBuilder(256); GetWindowText(hWnd, _t, 256);
+        bool wasIconic = IsIconic(hWnd);
+        var fgBefore = GetForegroundWindow();
+        JumpDiag($"ActivateWindow: hwnd=0x{hWnd.ToInt64():X} iconic={wasIconic} title='{_t}' fgBefore=0x{fgBefore.ToInt64():X}");
 
         // 1) 还原 / 显示。同步 ShowWindow 比异步 ShowWindowAsync 对 UWP / Electron 包装窗口
         // 更可靠（异步偶尔被消息循环 dropped）。
@@ -1705,6 +1912,13 @@ public partial class TerminalJumpService
         bool attachedFg = fgThread != 0 && fgThread != currentThread && fgThread != windowThread
             && AttachThreadInput(currentThread, fgThread, true);
 
+        // 2.5) ALT 脉冲解前台锁 —— 后台点灵动岛时本进程"没收到用户输入"，SetForegroundWindow
+        //      会被 Windows 静默拒（尤其把最小化窗口 SW_RESTORE 还原后，要弹到最前必须有前台
+        //      权限；非最小化时靠 BringWindowToTop/置顶改 z 轴层级就够、不需要前台权限，所以
+        //      "不最小化能唤出、最小化不行"）。合成一次 ALT 轻按让系统认为本进程刚有输入，解锁。
+        keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
         BringWindowToTop(hWnd);
         SetForegroundWindow(hWnd);
         // SwitchToThisWindow(true) 模拟 Alt+Tab 切换 —— 对 UWP / 受保护窗口比 SetForegroundWindow 更激进
@@ -1718,6 +1932,9 @@ public partial class TerminalJumpService
             AttachThreadInput(currentThread, windowThread, false);
         if (attachedFg)
             AttachThreadInput(currentThread, fgThread, false);
+
+        var fgAfter = GetForegroundWindow();
+        JumpDiag($"ActivateWindow done: fgAfter=0x{fgAfter.ToInt64():X} success={(fgAfter == hWnd)}");
     }
 
     #endregion

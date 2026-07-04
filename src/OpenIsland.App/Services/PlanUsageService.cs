@@ -328,6 +328,16 @@ public sealed class PlanUsageService : IDisposable
         }
         _lastAutoRefreshAttemptUtc = now;
 
+        // `claude --print ping` 会在 ~/.claude/projects/<cwd-slug>/ 下生成一个 transcript
+        // 文件（首条 user 消息就是 "ping"）。以前没设 WorkingDirectory，探针继承本进程的
+        // cwd（开发时是 bin\Debug，或仓库根），于是这些 ping transcript 落进跟用户真实
+        // 会话同一个项目目录，被会话监听器当成"名叫 ping 的会话"显示到灵动岛上（用户报的
+        // "一堆 ping 对话条"根因）。这里固定到一个专用探针目录，让它的 transcript 落进一个
+        // 独立、可辨识的项目槽（<temp>\openisland-token-probe），会话层据此 + 标题="ping"
+        // 双重过滤掉，绝不再污染真实会话列表。
+        var probeDir = Path.Combine(Path.GetTempPath(), "openisland-token-probe");
+        try { Directory.CreateDirectory(probeDir); } catch { /* 创建失败就退回默认 cwd，靠标题过滤兜底 */ }
+
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "claude",
@@ -336,6 +346,7 @@ public sealed class PlanUsageService : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            WorkingDirectory = Directory.Exists(probeDir) ? probeDir : Environment.CurrentDirectory,
         };
         psi.ArgumentList.Add("--print");
         psi.ArgumentList.Add("ping");
