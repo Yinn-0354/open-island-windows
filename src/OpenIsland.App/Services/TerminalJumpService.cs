@@ -1816,12 +1816,14 @@ public partial class TerminalJumpService
 
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
     private const int SW_SHOWNORMAL = 1;
     private const int SW_RESTORE = 9;
     private const int SW_SHOW = 5;
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_SHOWWINDOW = 0x0040;
+    private const uint SWP_NOACTIVATE = 0x0010;
 
     // SendInput 用的常量 + 结构（标准 union 布局以兼容 x64 上 MOUSEINPUT/KEYBDINPUT 大小差异）
     private const uint INPUT_KEYBOARD = 1;
@@ -1891,6 +1893,30 @@ public partial class TerminalJumpService
         bool wasIconic = IsIconic(hWnd);
         var fgBefore = GetForegroundWindow();
         JumpDiag($"ActivateWindow: hwnd=0x{hWnd.ToInt64():X} iconic={wasIconic} title='{_t}' fgBefore=0x{fgBefore.ToInt64():X}");
+
+        // 0) 前台是自己（OpenIsland 灵动岛）时，先让出前台。
+        //    用户点灵动岛按钮的瞬间，WPF 窗口成为前台。Topmost=True 的灵动岛持有前台时，
+        //    SetForegroundWindow(终端) 会被 Windows 反窃焦机制静默拒绝（即便下方 AttachThreadInput
+        //    + ALT 脉冲也常常撬不开），随后 SendKeysToTerminalAsync 的前台校验失败 → abort，
+        //    表现为"点了岛按钮但 Claude 终端没收到 1/2/3"。临时撤掉自己的 Topmost（不降 z 序、
+        //    不 Hide，用户视觉无感），前台权随即释放给系统，目标终端的 SetForegroundWindow 才能
+        //    真正生效。WPF 的 Topmost=True 属性会在下一次布局循环时自动重新置顶，无需手动恢复。
+        uint myPid = (uint)Environment.ProcessId;
+        bool fgIsSelf = false;
+        if (fgBefore != IntPtr.Zero)
+        {
+            GetWindowThreadProcessId(fgBefore, out var fgPidSelf);
+            fgIsSelf = fgPidSelf == myPid;
+        }
+        if (fgIsSelf)
+        {
+            try
+            {
+                SetWindowPos(fgBefore, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                JumpDiag($"ActivateWindow: foreground was self (0x{fgBefore.ToInt64():X}), yielded topmost");
+            }
+            catch { /* 撤 Topmost 失败不阻断主流程，下方 AttachThreadInput 仍会尝试 */ }
+        }
 
         // 1) 还原 / 显示。同步 ShowWindow 比异步 ShowWindowAsync 对 UWP / Electron 包装窗口
         // 更可靠（异步偶尔被消息循环 dropped）。
