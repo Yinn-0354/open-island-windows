@@ -39,9 +39,12 @@ public sealed class NowPlayingService : IDisposable
     public event EventHandler<NowPlayingInfo?>? NowPlayingChanged;
 
     /// <summary>订阅 SMTC 会话变化，开始工作。SMTC 服务不可用（部分机器/精简系统）时静默失败，
-    /// 表现为"一直没有正在播放"而不是让 App 崩。</summary>
+    /// 表现为"一直没有正在播放"而不是让 App 崩。幂等：重复调用直接返回，不会重复订阅 SessionsChanged。
+    /// （媒体按钮图标也要看播放状态，所以 NowPlayingService 跟波浪开关解耦了 —— 开关重新打开时
+    /// VM 会再 Start 一次，这里必须幂等避免重复订阅导致回调被调多次。）</summary>
     public async void Start()
     {
+        if (_manager != null) return;
         try
         {
             _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();

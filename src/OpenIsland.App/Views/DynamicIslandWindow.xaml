@@ -628,7 +628,7 @@
                                         Content="&#xE892;" ToolTip="{Binding [Island_Prev], Source={x:Static svc:Loc.Instance}}"/>
                                 <Button Grid.Column="1" Style="{StaticResource MediaBtn}"
                                         Command="{Binding MediaPlayPauseCommand}"
-                                        Content="&#xE768;" FontSize="15" ToolTip="{Binding [Island_PlayPause], Source={x:Static svc:Loc.Instance}}"/>
+                                        Content="{Binding PlayPauseGlyph}" FontSize="15" ToolTip="{Binding [Island_PlayPause], Source={x:Static svc:Loc.Instance}}"/>
                                 <Button Grid.Column="2" Style="{StaticResource MediaBtn}"
                                         Command="{Binding MediaNextCommand}"
                                         Content="&#xE893;" ToolTip="{Binding [Island_Next], Source={x:Static svc:Loc.Instance}}"/>

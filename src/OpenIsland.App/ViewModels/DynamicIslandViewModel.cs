@@ -280,6 +280,11 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     /// <summary>是否"真的在播放"：开关打开 && 有活动会话 && IsPlaying==true。驱动波浪显隐与头部标题。</summary>
     [ObservableProperty] private bool _isNowPlayingActive;
 
+    /// <summary>音乐是否正在播放（仅看 SMTC 的 IsPlaying，不看波浪开关）。
+    /// 驱动媒体按钮图标 PlayPauseGlyph：播放中显❙❙、暂停显▶。波浪开关关掉时仍要工作，
+    /// 所以不能复用 IsNowPlayingActive（它被波浪开关联动）。OnNowPlayingChanged 写值。</summary>
+    [ObservableProperty] private bool _isMusicPlaying;
+
     /// <summary>波浪三层配色（从前到后），来自专辑封面主色提取（AlbumPaletteExtractor.ExtractTop3），
     /// 换歌才重新算一次，不逐帧算。</summary>
     [ObservableProperty] private System.Windows.Media.Color _waveColor1 = System.Windows.Media.Color.FromRgb(0x6a, 0x5a, 0xcd);
@@ -301,14 +306,17 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         }
         else
         {
-            // 关闭：两个服务都停掉省资源，波浪相关属性一并清零、不再更新。
-            _nowPlaying.Dispose();
+            // 关闭波浪：停音频采集 + 振幅定时器省资源，波浪相关属性清零。
+            // 注意：不再 Dispose _nowPlaying —— 媒体按钮图标（PlayPauseGlyph）也要看播放状态，
+            // 完全停掉 NowPlayingService 会让图标在波浪关时永远显示播放▶。Service 留着继续报
+            // IsMusicPlaying，只停 AudioLevelReactor（音频采集本身是为波浪服务的）。
             _audioReactor.Dispose();
             _waveAmplitudeTimer.Stop();
             _lastThumbnailFingerprint = null;
-            NowPlayingTitle = "";
-            IsNowPlayingActive = false;
             WaveAmplitude = 0;
+            // 不动 IsNowPlayingActive / IsMusicPlaying —— 让 OnNowPlayingChanged 在下次状态变化时自己更新；
+            // 但当前正在播放的波浪该立即消失，所以这里主动把波浪显隐关掉（标题保持曲名也合理）。
+            IsNowPlayingActive = false;
         }
     }
 
@@ -320,6 +328,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HeaderTitleText));
         OnPropertyChanged(nameof(ShowNowPlayingWave));
     }
+    partial void OnIsMusicPlayingChanged(bool value) => OnPropertyChanged(nameof(PlayPauseGlyph));
     partial void OnNowPlayingTitleChanged(string value) => OnPropertyChanged(nameof(HeaderTitleText));
     partial void OnIsExpandedChanged(bool value) => OnPropertyChanged(nameof(ShowNowPlayingWave));
 
@@ -327,6 +336,12 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     public string HeaderTitleText => IsNowPlayingActive && !string.IsNullOrEmpty(NowPlayingTitle)
         ? NowPlayingTitle
         : "Open Island";
+
+    /// <summary>播放/暂停按钮的图标字形（Segoe MDL2 Assets）。
+    /// 智能切换：正在播放时显示暂停图标 U+E769（点击即暂停），暂停时显示播放图标 U+E768（点击即播放）。
+    /// 之前 XAML 写死 E768，导致不管什么状态都显示播放 U+E768。看 IsMusicPlaying（不看波浪开关），
+    /// 这样波浪律动关掉时图标也能正常切换。</summary>
+    public string PlayPauseGlyph => IsMusicPlaying ? "" : "";
 
     /// <summary>波浪是否真的要画出来：正在播放 && 岛处于收起（胶囊）态。展开时波浪不显示，
     /// 岛回到原来的样子——波浪只属于胶囊，不属于展开后的会话列表视图。</summary>
@@ -341,11 +356,13 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             if (info == null)
             {
                 NowPlayingTitle = "";
+                IsMusicPlaying = false;
                 IsNowPlayingActive = false;
                 return;
             }
 
             NowPlayingTitle = info.Title ?? "";
+            IsMusicPlaying = info.IsPlaying;
             IsNowPlayingActive = NowPlayingWaveEnabled && info.IsPlaying;
 
             if (info.ThumbnailBytes != null)
@@ -511,10 +528,12 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             Interval = TimeSpan.FromMilliseconds(50)
         };
         _waveAmplitudeTimer.Tick += (_, _) => WaveAmplitude = IsNowPlayingActive ? _audioReactor.Level : 0;
-        // 只在开关打开时才启动这两个服务 + 定时器，关闭时不占用系统资源。
+        // NowPlayingService 无条件启动：媒体按钮图标 PlayPauseGlyph 也要它报 IsMusicPlaying，
+        // 不能只在波浪开关打开时才 Start（开关关时图标就永远卡在播放▶）。AudioLevelReactor
+        // 和振幅定时器仍只在波浪开时跑 —— 它们只为波浪服务，没波浪就别浪费 CPU/音频采集。
+        _nowPlaying.Start();
         if (_nowPlayingWaveEnabled)
         {
-            _nowPlaying.Start();
             _audioReactor.Start();
             _waveAmplitudeTimer.Start();
         }
