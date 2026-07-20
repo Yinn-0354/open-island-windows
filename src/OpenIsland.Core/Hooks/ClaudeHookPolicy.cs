@@ -18,15 +18,21 @@ public static class ClaudeHookPolicy
     /// 缺失/空 → true：旧版 Claude Code 不带此字段，那时只可能是 default，保持原有行为（向后兼容）。
     /// 比较大小写不敏感，避免大小写差异把 bypass 误判成 default 而重新触发恶性 bug。
     ///
-    /// 特例：toolName 为 "ExitPlanMode" 时无条件返回 true，不看 permissionMode。
+    /// 特例：toolName 为 "ExitPlanMode" 或 "AskUserQuestion" 时无条件返回 true，不看 permissionMode。
     /// 原因：ExitPlanMode 本身就是"请求用户批准计划"这个交互动作，不是一次可以被自动放行模式
     /// 跳过的普通工具调用——如果照常规逻辑在 plan/auto/bypassPermissions 等模式下被丢弃，就等于
     /// 计划完全没人审阅就自动通过，直接违背这个工具存在的意义。所以它必须永远强制走 ask，
     /// 让灵动岛镜像 + 用户确认这一步不可被任何权限模式绕过。
+    /// AskUserQuestion 同理：Claude 协议（见 Agent SDK 文档 user-input）明确要求"即使允许规则匹配时
+    /// 也会到达用户回调"——auto/bypass 模式下普通工具自动放行，但 AskUserQuestion 必须停下来等用户
+    /// 回答。若照常规逻辑在非 default 模式丢弃，灵动岛就不会拉橙卡提醒，用户在 auto 模式下被提问时
+    /// 完全不知道该看终端——正是这个 bug 的根因。两个工具都必须在任何模式下镜像到岛 + 弹终端询问。
     /// </summary>
     public static bool ShouldForceAsk(string? permissionMode, string? toolName = null)
     {
-        if (string.Equals(toolName?.Trim(), "ExitPlanMode", System.StringComparison.OrdinalIgnoreCase))
+        var name = toolName?.Trim();
+        if (string.Equals(name, "ExitPlanMode", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "AskUserQuestion", System.StringComparison.OrdinalIgnoreCase))
             return true;
 
         if (string.IsNullOrWhiteSpace(permissionMode)) return true;

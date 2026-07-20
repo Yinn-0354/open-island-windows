@@ -148,10 +148,13 @@ public record ClaudeHookPayload
                 Timestamp = timestamp
             },
 
-            // PreToolUse 只在 default（普通）模式拉起"等待审批"橙卡；bypass/auto/acceptEdits/
-            // dontAsk/plan 等非交互模式下 Claude 自动放行、无人工审批，也就没有可靠的解决事件回来，
-            // 若仍拉起橙卡会永久卡住（感叹号下不去）。这些模式直接丢弃 PreToolUse（返回 null），
-            // 会话的 Running/Idle 全交给 transcript watcher 驱动。与 hook 端的 ask 抑制同一策略。
+            // 普通工具（Bash/Write/Edit 等）只在 default（普通）模式拉起"等待审批"橙卡；
+            // bypass/auto/acceptEdits/dontAsk/plan 等非交互模式下 Claude 自动放行、无人工审批，
+            // 也就没有可靠的解决事件回来，若仍拉起橙卡会永久卡住（感叹号下不去）。这些模式直接丢弃
+            // PreToolUse（返回 null），会话的 Running/Idle 全交给 transcript watcher 驱动。
+            // 例外：AskUserQuestion / ExitPlanMode 在任何权限模式下都必须拉橙卡 —— 见 ClaudeHookPolicy
+            // 的特例逻辑（协议要求即使 auto/bypass 也必须到达用户）。此时 ShouldForceAsk 返回 true，
+            // 下面的 when 条件不成立，会落到第 157 行的 pretooluse 分支产生 PermissionRequested。
             "pretooluse" when !ClaudeHookPolicy.ShouldForceAsk(PermissionMode, ToolName) => null,
 
             "pretooluse" => new PermissionRequested
