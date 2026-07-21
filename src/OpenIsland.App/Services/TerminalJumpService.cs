@@ -80,7 +80,10 @@ public partial class TerminalJumpService
     private static readonly HashSet<string> TerminalProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "WindowsTerminal", "wt", "conhost", "cmd", "powershell", "pwsh",
-        "alacritty", "wezterm-gui", "wezterm", "tabby", "fluent-terminal"
+        "alacritty", "wezterm-gui", "wezterm", "tabby", "fluent-terminal",
+        // Warp 终端 (Windows 版进程名是 warp-oss)。父链 claude → powershell → warp-oss
+        // 走父链查找必须命中 warp-oss，否则 SendKeys/激活/跳转全部退化到 0×0 假窗口。
+        "warp-oss"
     };
 
     /// <summary>
