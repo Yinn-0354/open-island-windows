@@ -13,6 +13,16 @@ public record PermissionRequest
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 
     /// <summary>
+    /// AskUserQuestion 一次调用包含的问题总数（从 tool_input.questions 数组长度解析）。
+    /// 非 AskUserQuestion 工具 / 解析失败 → 1（单问题场景，保持原有行为）。
+    /// &gt; 1 时灵动岛走"多问题逐个显示"分支（模型 C）：用户在灵动岛上依次点选项，
+    /// VM 自己切问题（不等 Claude 信号——协议层无中间状态暴露，见文档），注入格式
+    /// 为无回车数字直到最后一问才回车。SessionState watcher 推进检测也据此区分：
+    /// 多问题场景不清 PendingPermissions（中途推进只代表答完一问，不是整个请求完成）。
+    /// </summary>
+    public int TotalQuestions { get; init; } = 1;
+
+    /// <summary>
     /// 建议的"一直允许"规则（hook 端按 tool_name + tool_input 推断）：
     /// - WebFetch + url=https://linux.do/... → AllowRule { ToolName="WebFetch", Pattern="domain:linux.do" }
     /// - Bash / Read / Edit / 其它 tool → AllowRule { ToolName="Bash", Pattern=null }（一律允许此 tool）

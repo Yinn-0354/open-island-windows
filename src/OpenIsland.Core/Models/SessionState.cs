@@ -113,13 +113,34 @@ public class SessionState
         {
             var anchor = session.PermissionRequest?.Timestamp
                          ?? session.QuestionPrompt?.Timestamp;
-            if (anchor.HasValue
-                && updated.LastTranscriptTimestamp.HasValue
-                && updated.LastTranscriptTimestamp.Value > anchor.Value.AddSeconds(1))
+            // R2 兜底：AskUserQuestion 工具完成（PostToolUse）= 用户已答完所有问题。这是 Claude
+            // 亲自发的权威信号，比 transcript 推进检测可靠得多。无论单/多问题，看到就清卡。
+            // 覆盖用户在终端手动答（没点灵动岛按钮，AnswerQuestionAsync 没被调）的场景。
+            if (updated.CompletedAskUserQuestion && session.PermissionRequest != null)
             {
                 newPhase = updated.Phase;
-                clearPermission = session.Phase == SessionPhase.WaitingForApproval;
-                clearQuestion = session.Phase == SessionPhase.WaitingForAnswer;
+                clearPermission = true;
+            }
+            else if (anchor.HasValue
+                     && updated.LastTranscriptTimestamp.HasValue
+                     && updated.LastTranscriptTimestamp.Value > anchor.Value.AddSeconds(1))
+            {
+                // W2 修复：多问题场景（TotalQuestions > 1）watcher 推进只代表答完当前一问，
+                // 不是整个请求答完。中途清 PendingPermissions 会让剩下的 N-1 问卡片消失。
+                // 多问题场景不清，留给 AnswerQuestionAsync 在最后一问答完时主动 ResolvePermission，
+                // 或留给自己面 PostToolUse CompletedAskUserQuestion=true 兜底（上方分支）。
+                // 单问题场景保持原有清卡行为 —— 用户在终端答完，watcher 推进 = 该清。
+                if (session.PermissionRequest is { TotalQuestions: > 1 })
+                {
+                    newPhase = updated.Phase; // 允许 phase 更新（推进后 Claude 切到下一问）
+                    // clearPermission 保持 false
+                }
+                else
+                {
+                    newPhase = updated.Phase;
+                    clearPermission = session.Phase == SessionPhase.WaitingForApproval;
+                    clearQuestion = session.Phase == SessionPhase.WaitingForAnswer;
+                }
             }
         }
         else

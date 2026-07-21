@@ -1724,6 +1724,15 @@
 
                                 <!-- AskUserQuestion 选项按钮组（IsQuestion=true 时显示） -->
                                 <StackPanel Visibility="{Binding IsQuestion, Converter={StaticResource BoolToVis}}">
+                                    <!-- 多问题进度指示（IsMultiQuestion=true 时显示，如"问题 2/4"）。
+                                         单问题场景为空字符串 + 隐藏，不占布局空间。 -->
+                                    <TextBlock Text="{Binding QuestionProgressText}"
+                                               FontSize="11"
+                                               Foreground="#9AA0A6"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,8"
+                                               TextAlignment="Left"
+                                               Visibility="{Binding IsMultiQuestion, Converter={StaticResource BoolToVis}}"/>
                                     <!-- 选项可能较多 —— 限高滚动（复用全局扁平 ScrollBar 样式） -->
                                     <ScrollViewer VerticalScrollBarVisibility="Auto"
                                                   HorizontalScrollBarVisibility="Disabled"

@@ -64,6 +64,17 @@ public class SessionManager : IDisposable
     public event EventHandler<AgentSession>? TaskCompleted;
     public event EventHandler<AgentSession>? AttentionRequired;
 
+    /// <summary>
+    /// 多问题 AskUserQuestion 场景（模型 C）：用户在灵动岛点完当前问题的选项后，
+    /// AnswerQuestionAsync 注入数字到终端 + 把当前问题推进到下一问时 raise 此 event。
+    /// DynamicIslandViewModel 订阅，找到对应 IslandSessionItem 调 AdvanceToNextQuestion()，
+    /// 让 QuestionTitle/QuestionOptions 重读 questions[新 index]，UI 切到下一问。
+    /// 注意：Claude 协议层无"答完一问"的中间信号暴露（hook 文档确认），灵动岛只能靠
+    /// 自己的状态机推进——用户点灵动岛按钮是唯一触发源；用户在终端手动答时此 event 不触发，
+    /// 灵动岛不同步（协议限制，见 IslandSessionItem.CurrentQuestionIndex 注释）。
+    /// </summary>
+    public event EventHandler<string>? QuestionAdvanced;
+
     public SessionManager(BridgeServer bridgeServer, SessionRegistry registry, TerminalJumpService terminalJumpService,
         ProcessMonitorService processMonitor, ClaudeTranscriptDiscovery claudeDiscovery, ClaudeTranscriptWatcher claudeWatcher)
     {
@@ -810,7 +821,42 @@ public class SessionManager : IDisposable
             });
         }
 
+        // 多问题 AskUserQuestion 计数器归零：一个权限/AskUserQuestion 请求结束（无论 approve/deny），
+        // 下一个请求必须从 Q1 重新计数，不能继承。
+        ClearQuestionsAnswered(sessionId);
+
         NotifySessionsChanged();
+    }
+
+    // ── 多问题 AskUserQuestion 已答计数（P5-simple）──
+    // 协议层 Claude 无"答完一问"信号暴露（见 hook 文档），灵动岛靠这个 per-session 计数
+    // 自己维护"当前答到第几问"，用于 AnswerQuestionAsync 判断"是不是最后一问"：
+    //   answeredSoFar >= TotalQuestions - 1 → 最后一问，注入回车收齐 + ResolvePermission 清卡
+    //   否则 → 非最后一问，注入无回车数字 + raise QuestionAdvanced 让 VM 切下一问
+    // ResolvePermission / PostToolUse CompletedAskUserQuestion 兜底路径都会清零计数。
+    private int GetQuestionsAnsweredSoFar(string sessionId)
+    {
+        lock (_questionsAnsweredInCurrentRequest)
+        {
+            return _questionsAnsweredInCurrentRequest.TryGetValue(sessionId, out var n) ? n : 0;
+        }
+    }
+
+    private void IncrementQuestionsAnswered(string sessionId)
+    {
+        lock (_questionsAnsweredInCurrentRequest)
+        {
+            _questionsAnsweredInCurrentRequest[sessionId] =
+                (_questionsAnsweredInCurrentRequest.TryGetValue(sessionId, out var n) ? n : 0) + 1;
+        }
+    }
+
+    private void ClearQuestionsAnswered(string sessionId)
+    {
+        lock (_questionsAnsweredInCurrentRequest)
+        {
+            _questionsAnsweredInCurrentRequest.Remove(sessionId);
+        }
     }
 
     /// <summary>
@@ -1009,10 +1055,12 @@ public class SessionManager : IDisposable
     /// 镜像 <see cref="RespondToPermissionAsync"/> 的结构：
     ///   - claude-desktop → UIA 点 Claude Desktop AskUserQuestion 弹窗里对应的选项行
     ///     （+ 必要时点 Submit）；Skip → 点 Skip 按钮。
-    ///   - cli / 缺失     → 复用终端注入：聚焦该会话终端发 "{optionNumber}\r"
-    ///     （Claude Code 的 AskUserQuestion 是编号列表，输入数字 + Enter 即选中）；
-    ///     Skip → best-effort 发 Esc（Claude Code 无专门"跳过键"，Esc 取消当前 prompt）。
-    /// 成功后 ResolvePermission(approved:true) 清岛上卡片，与权限路径一致。
+    ///   - cli / 缺失     → 复用终端注入。**单问题**场景注入 "{N}\r"（数字 + 回车）；
+    ///     **多问题**场景（TotalQuestions > 1，P5-simple）：非最后一问注入 "{N}"（无回车，
+    ///     Claude TUI 收到数字后自动切下一问），最后一问注入 "{N}\r"（回车确认收齐所有答案）。
+    ///     Skip 多问题中间问注入 "\r"（默认当前问 + 移下一问），Skip 最后一问注入 "\r"（默认 + 收齐）。
+    /// 成功后：单问题 / 多问题最后一问 → ResolvePermission(approved:true) 清卡；
+    /// 多问题非最后一问 → 不清卡，raise QuestionAdvanced event 让 VM 切到下一问。
     /// </summary>
     public async Task<bool> AnswerQuestionAsync(string sessionId, int optionNumber, bool skip = false)
     {
@@ -1051,19 +1099,79 @@ public class SessionManager : IDisposable
         var claudePid = ResolveClaudeProcessId(session);
         if (claudePid is not int pid) return false;
 
-        // Skip：Claude Code 没有专门的"跳过 AskUserQuestion"按键。Esc 取消当前
-        // 交互 prompt 是最接近的 best-effort（SendKeysToTerminalAsync 目前只认
-        // 数字 / 回车，所以 Skip 这里发回车兜底——等价于"不选直接确认"，实测
-        // Claude Code 多会落到第一个选项；真正的 Esc 注入是已知后续项，
-        // 与桌面端 Skip 一样标注 best-effort）。
-        var keys = skip ? "\r" : $"{optionNumber}\r";
+        // 多问题场景判定（P5-simple）：TotalQuestions > 1 走无回车逐数字注入路径。
+        // 单问题场景(TotalQuestions=1)保持原有 "{N}\r" / Skip="\r" 注入语义不变。
+        int totalQuestions = session.PermissionRequest?.TotalQuestions ?? 1;
+        bool isMultiQuestion = totalQuestions > 1;
+
+        // 当前答到第几问（0-based）—— 从 VM 同步过来（QuestionAdvanced 触发过 AdvanceToNextQuestion）。
+        // SessionManager 自己不持有这个 UI 状态，向 VM 索要。但这里走的是 SessionManager→VM 的反向，
+        // 不方便；改由调用方传入更干净。但现有签名只有 (sessionId, optionNumber, skip)，
+        // XAML 绑定不动，所以这里从 IslandSessionItem 通过事件挂接的方式拿不到。
+        // 简化：多问题场景下，AnswerQuestionAsync 不靠"当前 index"判断是否最后一问，
+        // 而是靠"是否已经答完最后一问"——用 VM 的 QuestionAdvanced 事件计数。
+        // 这里直接用一个简单办法：每次 AnswerQuestionAsync 被调，都视为答当前显示的那一问
+        // （VM 已经把 CurrentQuestionIndex 推到正确位置）。判断"是否最后一问"靠
+        // _questionAdvancedCount（本类维护的 per-session 计数）。
+        // 但这样仍要状态。最简：从调用方多传一个 currentQuestionIndex 参数（XAML 绑定扩展），
+        // 或从 VM 反查。先从 VM 反查：Sessions.FirstOrDefault(...).CurrentQuestionIndex。
+        // 由于 SessionManager 不持有 VM 引用（解耦），改为 raise QuestionAdvanced 前
+        // 由 VM 自己 AdvanceToNextQuestion 维护 index，AnswerQuestionAsync 靠"isLastQuestion"
+        // 这个判定注入回车——而 isLastQuestion = (已答次数 == TotalQuestions - 1)。
+        // 用一个 per-session 计数 _questionsAnsweredInCurrentRequest 维护已答次数。
+        int answeredSoFar = GetQuestionsAnsweredSoFar(sessionId);
+        bool isLastQuestion = isMultiQuestion ? (answeredSoFar >= totalQuestions - 1) : true;
+
+        // 注入格式：
+        // - 单问题："{N}\r"（数字+回车）/ Skip: "\r"
+        // - 多问题非最后一问："{N}"（无回车，Claude TUI 自动切下一问）/ Skip: "\r"（默认当前+切下一问）
+        // - 多问题最后一问："{N}\r"（回车收齐）/ Skip: "\r"（默认+收齐）
+        string keys;
+        if (skip)
+        {
+            keys = "\r"; // Skip 任何场景都是回车（默认当前问题，多问题时还顺带切下一问/收齐）
+        }
+        else if (isMultiQuestion && !isLastQuestion)
+        {
+            keys = $"{optionNumber}"; // 多问题非最后一问：无回车
+        }
+        else
+        {
+            keys = $"{optionNumber}\r"; // 单问题 或 多问题最后一问：数字+回车
+        }
+
         var sent = await _terminalJumpService.SendKeysToTerminalAsync(pid, keys, GetProjectDirName(session));
         if (!sent) return false;
 
-        // 立刻清岛上卡片（已回答）。不持久化任何规则 —— AskUserQuestion 不是权限。
-        ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+        // 时序保护：多问题场景注入后给 Claude TUI 切换光标一点时间，避免下一问注入太快错位。
+        // 单问题不需要（没有下一问）。150ms 是粗估，慢机可能不够，但 watcher 推进检测会兜底纠正。
+        if (isMultiQuestion && !isLastQuestion)
+        {
+            await Task.Delay(150);
+        }
+
+        if (!isLastQuestion)
+        {
+            // 多问题非最后一问：不清卡，记录已答次数 +1，raise QuestionAdvanced 让 VM 切下一问。
+            IncrementQuestionsAnswered(sessionId);
+            QuestionAdvanced?.Invoke(this, sessionId);
+        }
+        else
+        {
+            // 单问题 或 多问题最后一问：清卡。不持久化规则 —— AskUserQuestion 不是权限。
+            ClearQuestionsAnswered(sessionId);
+            ResolvePermission(sessionId, approved: true, alwaysAllowRule: null);
+        }
         return true;
     }
+
+    /// <summary>
+    /// 多问题 AskUserQuestion 场景下，本会话已经答完的问题计数（0-based：0=还没答，1=答完 Q1，…）。
+    /// 用于 AnswerQuestionAsync 判断"是不是最后一问"。收到 PostToolUse CompletedAskUserQuestion
+    /// 或 ResolvePermission 清卡时清零（一个 AskUserQuestion 调用结束）。
+    /// 协议层 Claude 无"答完一问"信号（hook 文档确认），灵动岛靠这个计数自己维护进度。
+    /// </summary>
+    private readonly System.Collections.Generic.Dictionary<string, int> _questionsAnsweredInCurrentRequest = new();
 
     /// <summary>
     /// 岛上 ExitPlanMode 计划审阅三按钮（1. Yes auto-accept / 2. Yes manually approve /

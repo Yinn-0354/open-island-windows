@@ -41,6 +41,16 @@ public record SessionActivityUpdated : AgentEvent
     /// 在终端答完了 tool/question，可以解锁岛上的 WaitingForApproval/WaitingForAnswer。
     /// </summary>
     public DateTime? LastTranscriptTimestamp { get; init; }
+
+    /// <summary>
+    /// 是否是 AskUserQuestion 工具完成事件（PostToolUse + tool_name=="AskUserQuestion"）。
+    /// R2 兜底：用户在终端手动答完所有问题时（没点灵动岛按钮），AnswerQuestionAsync 不会被调，
+    /// 灵动岛无法主动 ResolvePermission 清卡；这时 Claude 会发 PostToolUse AskUserQuestion，
+    /// 在 SessionActivityUpdated 上带这个标志，SessionState 看到就清 PendingPermissions。
+    /// 多问题场景下 W2 已经关掉了 watcher 推进检测的清卡路径，这里补上权威清卡：
+    /// "AskUserQuestion 工具完成 = 用户已答完所有问题"是 Claude 亲自发的信号，最可靠。
+    /// </summary>
+    public bool CompletedAskUserQuestion { get; init; }
 }
 
 public record PermissionRequested : AgentEvent

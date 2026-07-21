@@ -143,6 +143,7 @@ public record ClaudeHookPayload
                     ToolInput = ToolInput?.Deserialize<Dictionary<string, object>>(),
                     Suggestions = PermissionSuggestions,
                     SuggestedAlwaysAllow = BuildAllowRule(ToolName, ToolInput),
+                    TotalQuestions = ParseTotalQuestions(ToolName, ToolInput),
                     Timestamp = timestamp
                 },
                 Timestamp = timestamp
@@ -167,6 +168,7 @@ public record ClaudeHookPayload
                     Description = $"{ToolName}: {SummarizeToolInput(ToolName, ToolInput)}",
                     ToolInput = ToolInput?.Deserialize<Dictionary<string, object>>(),
                     SuggestedAlwaysAllow = BuildAllowRule(ToolName, ToolInput),
+                    TotalQuestions = ParseTotalQuestions(ToolName, ToolInput),
                     Timestamp = timestamp
                 },
                 Timestamp = timestamp
@@ -177,7 +179,11 @@ public record ClaudeHookPayload
                 SessionId = sessionId,
                 Summary = $"{ToolName} completed",
                 Phase = SessionPhase.Running,
-                Timestamp = timestamp
+                Timestamp = timestamp,
+                // R2 兜底：AskUserQuestion 工具完成 = 用户已答完所有问题（可能在终端手动答的，
+                // AnswerQuestionAsync 没被调，岛没主动 ResolvePermission）。SessionState 看到这个
+                // 标志就清 PendingPermissions。多问题场景下 W2 已关掉 watcher 推进检测清卡，这里补上。
+                CompletedAskUserQuestion = string.Equals(ToolName, "AskUserQuestion", StringComparison.OrdinalIgnoreCase)
             },
 
             "stop" => new SessionActivityUpdated
@@ -256,6 +262,25 @@ public record ClaudeHookPayload
         if (ti.TryGetProperty("path", out var p))
             return p.GetString() ?? "";
         return ti.GetRawText().Length > 100 ? ti.GetRawText()[..100] + "…" : ti.GetRawText();
+    }
+
+    /// <summary>
+    /// 解析 AskUserQuestion 的 tool_input.questions 数组长度（一次调用包含几个问题）。
+    /// AskUserQuestion 协议支持 1-4 个问题（见 Agent SDK 文档 user-input）。
+    /// 非 AskUserQuestion 工具 / tool_input 无 questions / 解析失败 → 1（单问题场景，保持原有行为）。
+    /// 灵动岛用 TotalQuestions 区分"单问题"和"多问题"分支：多问题走逐个显示 + 无回车注入（P5-simple），
+    /// 单问题保持原 {N}\r 注入。SessionState watcher 也据此决定是否在中途推进时清 PendingPermissions。
+    /// </summary>
+    private static int ParseTotalQuestions(string? toolName, JsonElement? toolInput)
+    {
+        if (!string.Equals(toolName, "AskUserQuestion", StringComparison.OrdinalIgnoreCase))
+            return 1;
+        if (toolInput is not JsonElement ti || ti.ValueKind != JsonValueKind.Object)
+            return 1;
+        if (!ti.TryGetProperty("questions", out var qs) || qs.ValueKind != JsonValueKind.Array)
+            return 1;
+        int count = qs.GetArrayLength();
+        return count > 0 ? count : 1;
     }
 
     private static AgentTool MapSourceToTool(string source)

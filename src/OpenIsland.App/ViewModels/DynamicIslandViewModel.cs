@@ -540,6 +540,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
 
         _sessionManager.SessionsChanged += OnSessionsChanged;
         _sessionManager.TaskCompleted += OnTaskCompleted;
+        _sessionManager.QuestionAdvanced += OnQuestionAdvanced;
         _systemStats.StatsUpdated += OnSystemStatsUpdated;
         _planUsage.UsageUpdated += OnPlanUsageUpdated;
         // 在线升级：订阅"发现新版"事件（来自后台线程，marshal 到 UI 线程，仿 OnSystemStatsUpdated），
@@ -769,6 +770,22 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
             RefreshSessions();
             _greenStatusTimer.Stop();
             _greenStatusTimer.Start();
+        });
+    }
+
+    /// <summary>
+    /// SessionManager.QuestionAdvanced 回调：用户在灵动岛点完多问题 AskUserQuestion 的当前问题选项后，
+    /// AnswerQuestionAsync 注入数字 + raise 此 event。这里切到 UI 线程找到对应 IslandSessionItem，
+    /// 调 AdvanceToNextQuestion() 让 CurrentQuestionIndex +1，UI 切到下一问。
+    /// 协议层 Claude 无"答完一问"信号（见 hook 文档），灵动岛靠自己的状态机推进——本 event 是
+    /// 用户点灵动岛按钮触发的，用户在终端手动答时不会触发，灵动岛不同步（已知限制）。
+    /// </summary>
+    private void OnQuestionAdvanced(object? sender, string sessionId)
+    {
+        System.Windows.Application.Current?.Dispatcher?.BeginInvoke(() =>
+        {
+            var item = Sessions.FirstOrDefault(s => s.Id == sessionId);
+            item?.AdvanceToNextQuestion();
         });
     }
 
@@ -1447,6 +1464,7 @@ public partial class DynamicIslandViewModel : ObservableObject, IDisposable
     {
         _sessionManager.SessionsChanged -= OnSessionsChanged;
         _sessionManager.TaskCompleted -= OnTaskCompleted;
+        _sessionManager.QuestionAdvanced -= OnQuestionAdvanced;
         _systemStats.StatsUpdated -= OnSystemStatsUpdated;
         _planUsage.UsageUpdated -= OnPlanUsageUpdated;
         _update.UpdateAvailable -= OnUpdateAvailable;
@@ -1701,10 +1719,12 @@ public partial class IslandSessionItem : ObservableObject
     /// AskUserQuestion 的 tool_input 通常长这样（Claude Code 实际格式）：
     /// {"questions":[{"question":"...","header":"...","options":[{"label":"...","description":"..."},...],"multiSelect":false}]}
     /// 走 JsonElement 解析比 Dictionary&lt;string,object&gt; 强壮（嵌套数组/对象）。
-    /// 解析 questions[0]：拿 question 文本 + options[] → QuestionOption{Number,Label,Description}。
+    /// 解析 questions[questionIndex]：拿 question 文本 + options[] → QuestionOption{Number,Label,Description}。
+    /// 单问题场景 questionIndex=0（保持原有行为）；多问题场景（模型 C）VM 自己按 CurrentQuestionIndex 切问题。
     /// 单一解析入口，FormatAskUserQuestion（文本块）与 VM 结构化属性共用，避免重复。
     /// </summary>
-    private static ParsedAskQuestion? ParseAskUserQuestion(System.Collections.Generic.IDictionary<string, object> toolInput)
+    private static ParsedAskQuestion? ParseAskUserQuestion(
+        System.Collections.Generic.IDictionary<string, object> toolInput, int questionIndex = 0)
     {
         try
         {
@@ -1715,9 +1735,11 @@ public partial class IslandSessionItem : ObservableObject
                 || qs.GetArrayLength() == 0)
                 return null;
 
-            // 只取第一条 question（Claude Code 的 AskUserQuestion 实际就发一条；
-            // 多条时岛上聚焦第一条，其余仍可在终端/桌面端原生 UI 处理）。
-            var q = qs[0];
+            // 越界保护：index < 0 取 0，>= 长度取最后一项（防御，正常不该走到）
+            int idx = questionIndex < 0 ? 0
+                    : questionIndex >= qs.GetArrayLength() ? qs.GetArrayLength() - 1
+                    : questionIndex;
+            var q = qs[idx];
             var title = q.TryGetProperty("question", out var question)
                 ? (question.GetString() ?? "")
                 : "";
@@ -1740,6 +1762,28 @@ public partial class IslandSessionItem : ObservableObject
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 解析 tool_input.questions 数组长度（AskUserQuestion 一次调用包含几个问题）。
+    /// 1-4 个（Agent SDK 文档 user-input 第 855 行：每个 AskUserQuestion 调用支持 1-4 个问题）。
+    /// 非 AskUserQuestion / 无 questions / 解析失败 → 1（单问题场景，保持原有行为）。
+    /// 用于 IsMultiQuestion 派生属性 + VM 多问题分支切换。
+    /// </summary>
+    private static int ParseQuestionCount(System.Collections.Generic.IDictionary<string, object>? toolInput)
+    {
+        if (toolInput == null || toolInput.Count == 0) return 1;
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(toolInput);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("questions", out var qs)
+                || qs.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return 1;
+            int count = qs.GetArrayLength();
+            return count > 0 ? count : 1;
+        }
+        catch { return 1; }
     }
 
     /// <summary>
@@ -1772,14 +1816,62 @@ public partial class IslandSessionItem : ObservableObject
                           StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// AskUserQuestion 的结构化候选答案（questions[0].options[]）。
+    /// 当前 AskUserQuestion 是否多问题场景（TotalQuestions > 1）。
+    /// 为 true 时 XAML 顶部显示"问题 N/总"进度指示（模型 C）；为 false 时单问题保持原有 UI。
+    /// 多问题场景也不追加 Claude Code 终端的 "Type something"/"Chat about" 两项（见 QuestionOptions）。
+    /// </summary>
+    public bool IsMultiQuestion
+        => IsQuestion && TotalQuestions > 1;
+
+    /// <summary>
+    /// 本次 AskUserQuestion 包含的问题总数（从 PermissionRequest.TotalQuestions 读，
+    /// 由 ClaudeHooks.ParseTotalQuestions 在 hook 端解析 tool_input.questions 数组长度写入）。
+    /// 单问题场景 = 1。AskUserQuestion 协议支持 1-4 个问题（Agent SDK 文档第 855 行）。
+    /// </summary>
+    public int TotalQuestions => _session?.PermissionRequest?.TotalQuestions ?? 1;
+
+    /// <summary>
+    /// 当前答到第几个问题（0-based）。多问题场景（模型 C）灵动岛主导切换：
+    /// 用户在灵动岛点 Q[N] 的选项 → AnswerQuestionAsync 注入无回车数字 → 触发
+    /// SessionManager.QuestionAdvanced event → VM 调 AdvanceToNextQuestion 把本字段 +1 →
+    /// QuestionTitle/QuestionOptions 重新读 questions[N+1] → UI 切到下一问。
+    /// 单问题场景此字段始终 0，无副作用。Reset 在 Update(session) 里检测到新 PermissionRequest
+    /// 时归零（不同 AskUserQuestion 调用是独立请求，不该继承上一个的进度）。
+    /// </summary>
+    [ObservableProperty] private int _currentQuestionIndex;
+
+    /// <summary>
+    /// VM 在收到 SessionManager.QuestionAdvanced event 时调：把 CurrentQuestionIndex +1，
+    /// 触发 QuestionTitle/QuestionOptions/QuestionProgressText 重读。越界保护：已经到最后
+    /// 一问时不再 +1（正常不该走到，AnswerQuestionAsync 最后一问走 ResolvePermission 路径）。
+    /// </summary>
+    public void AdvanceToNextQuestion()
+    {
+        if (!IsMultiQuestion) return;
+        if (CurrentQuestionIndex >= TotalQuestions - 1) return;
+        CurrentQuestionIndex++;
+        OnPropertyChanged(nameof(QuestionTitle));
+        OnPropertyChanged(nameof(QuestionOptions));
+        OnPropertyChanged(nameof(QuestionProgressText));
+    }
+
+    /// <summary>
+    /// 多问题进度文案："问题 N/总"，单问题场景为空字符串（XAML 隐藏进度指示）。
+    /// </summary>
+    public string QuestionProgressText => IsMultiQuestion
+        ? $"问题 {CurrentQuestionIndex + 1}/{TotalQuestions}"
+        : "";
+
+    /// <summary>
+    /// AskUserQuestion 的结构化候选答案（questions[CurrentQuestionIndex].options[]）。
     /// 每项渲染成一个可点按钮，CommandParameter = Number。无 ToolInput / 解析失败 → 空。
     ///
-    /// CLI 会话额外追加 Claude Code 终端**自己**加的两个固定项："N+1. Type something." 和
-    /// "N+2. Chat about this"（它们不在 tool_input 里，是终端 TUI 渲染时追加的）——用户要求
-    /// 岛上的选项跟终端**原原本本一致**，编号也必须对齐，否则岛上点 3 会选中终端的第 3 项
-    /// （而用户以为没有 3）。点这两项 = 注入对应数字，终端会进入"输入文字/聊天"态，用户去
-    /// 终端继续打字，行为与直接在终端选一致。桌面端（Claude Desktop）没有这两项，不追加。
+    /// 单问题场景（IsMultiQuestion=false）：CLI 会话额外追加 Claude Code 终端**自己**加的两个固定项
+    /// "N+1. Type something." 和 "N+2. Chat about this"（终端 TUI 渲染时追加）——岛上点这两项 = 注入
+    /// 对应数字，终端进入"输入文字/聊天"态。桌面端没有这两项，不追加。
+    ///
+    /// 多问题场景（IsMultiQuestion=true）：不追加 Type/Chat。理由：多问题逐个显示已经足够复杂，
+    /// 追加 Type/Chat 会让每问选项数膨胀、编号错位风险高；用户要自由文字可直接去终端答。
     /// </summary>
     public System.Collections.Generic.IReadOnlyList<QuestionOption> QuestionOptions
     {
@@ -1787,13 +1879,18 @@ public partial class IslandSessionItem : ObservableObject
         {
             var input = _session?.PermissionRequest?.ToolInput;
             if (input == null || input.Count == 0) return System.Array.Empty<QuestionOption>();
-            var opts = ParseAskUserQuestion(input)?.Options;
+            var opts = ParseAskUserQuestion(input, CurrentQuestionIndex)?.Options;
             if (opts == null || opts.Count == 0) return System.Array.Empty<QuestionOption>();
 
+            // 多问题场景：原始选项，不追加 Type/Chat
+            if (IsMultiQuestion) return opts;
+
+            // 单问题场景 + 桌面端：原始选项（桌面端无 Type/Chat）
             var isDesktop = string.Equals(_session?.ClaudeMetadata?.Entrypoint, "claude-desktop",
                 StringComparison.OrdinalIgnoreCase);
             if (isDesktop) return opts;
 
+            // 单问题场景 + CLI：追加 Type something / Chat about
             var full = new System.Collections.Generic.List<QuestionOption>(opts.Count + 2);
             full.AddRange(opts);
             full.Add(new QuestionOption { Number = opts.Count + 1, Label = "Type something.", Description = "" });
@@ -1802,14 +1899,14 @@ public partial class IslandSessionItem : ObservableObject
         }
     }
 
-    /// <summary>questions[0].question 文本（问题标题，给问题模式的小标题用）。</summary>
+    /// <summary>questions[CurrentQuestionIndex].question 文本（问题标题，给问题模式的小标题用）。</summary>
     public string QuestionTitle
     {
         get
         {
             var input = _session?.PermissionRequest?.ToolInput;
             if (input == null || input.Count == 0) return "";
-            return ParseAskUserQuestion(input)?.Title ?? "";
+            return ParseAskUserQuestion(input, CurrentQuestionIndex)?.Title ?? "";
         }
     }
 
@@ -2012,6 +2109,16 @@ public partial class IslandSessionItem : ObservableObject
     /// <summary>就地更新为新的 AgentSession 并刷新所有派生属性（卡片复用，动画只在真状态变化时触发）。</summary>
     public void Update(AgentSession session)
     {
+        // 检测"换了一个新的 AskUserQuestion 请求"：PermissionRequest.Id 变了 → 归零 CurrentQuestionIndex。
+        // 同一个请求中途 phase 变化（比如答完一问）不会换 Id，CurrentQuestionIndex 不该重置。
+        // 不同 AskUserQuestion 调用是独立请求，必须从 Q1 开始显示，不能继承上一个调用的进度。
+        var oldPermId = _session?.PermissionRequest?.Id;
+        var newPermId = session.PermissionRequest?.Id;
+        if (!string.Equals(oldPermId, newPermId, StringComparison.Ordinal)
+            && oldPermId != newPermId) // 一个 null 一个非 null 也算变化
+        {
+            CurrentQuestionIndex = 0;
+        }
         _session = session;
         OnPropertyChanged(string.Empty); // 通知所有绑定重读（Title/Phase/StatusColorValue/IsRunningPhase…）
     }
