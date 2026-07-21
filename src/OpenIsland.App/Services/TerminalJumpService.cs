@@ -1171,48 +1171,71 @@ public partial class TerminalJumpService
     /// </summary>
     public async Task<bool> SendKeysToTerminalAsync(int claudePid, string keys, string? projectDirName = null)
     {
-        // 1) 找承载终端的窗口（沿父进程链；ConPTY 0×0 伪窗口已被 TryGetConsoleHostWindow 拒掉）
-        var targetHwnd = FindTerminalHwndByPidChain(claudePid);
-        // 1.5) 父链断（cmd 由 explorer 启动等）→ 跟跳转路径同款启发式兜底找真终端窗口。
-        //      没有这层兜底时，这类终端里岛上点权限/问题选项会静默没反应（注入直接 abort）。
-        if (targetHwnd == IntPtr.Zero)
-        {
-            targetHwnd = FindTerminalHwndByHeuristic(projectDirName);
-            JumpDiag($"SendKeys: pid-chain miss for pid={claudePid}, heuristic fallback hwnd=0x{targetHwnd.ToInt64():X}");
-        }
-        if (targetHwnd == IntPtr.Zero)
-        {
-            _logger?.LogWarning(
-                "SendKeysToTerminalAsync: no terminal window found for claude pid {Pid}; aborting", claudePid);
-            return false;
-        }
+        // 灵动岛自己的 MainWindowHandle —— ActivateWindow 内部若发现前台是灵动岛,会临时撤掉它的
+        // Topmost 让出前台权给目标终端（见 ActivateWindow 注释）。但 WPF 的 Topmost=True 属性不会
+        // 自动重新置顶（注释里"下一次布局循环自动恢复"是错的，实测撤掉后不再置顶，灵动岛从此
+        // 不再显示在所有窗口最顶层）。本方法所有 return 路径都要在 finally 里把灵动岛的 Topmost
+        // 重新设回 HWND_TOPMOST，保证注入流程结束后灵动岛回到永远置顶状态。
+        var myHwnd = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
 
-        // 2) 激活到前台
-        ActivateWindow(targetHwnd);
-        // AttachThreadInput + topmost flicker 链通常 < 200ms 生效，留 350ms 给慢机也有机会
-        await Task.Delay(350);
-
-        // 3) 验前台。失败就 abort，绝不能让 SendInput 把 "1\r" 打到错误的前台应用。
-        //    See xmldoc above for full rationale.
-        var fg = GetForegroundWindow();
-        if (fg != targetHwnd)
+        try
         {
-            GetWindowThreadProcessId(fg, out var fgPid);
-            var fgTitle = new StringBuilder(256);
-            GetWindowText(fg, fgTitle, 256);
-            _logger?.LogWarning(
-                "SendKeysToTerminalAsync: foreground switch failed. target hwnd=0x{Tgt:X} claudePid={Pid} | actual foreground hwnd=0x{Fg:X} pid={FgPid} title='{Title}'. Aborting SendInput to avoid typing into wrong window.",
-                targetHwnd.ToInt64(), claudePid, fg.ToInt64(), fgPid, fgTitle.ToString());
-            return false;
-        }
+            // 1) 找承载终端的窗口（沿父进程链；ConPTY 0×0 伪窗口已被 TryGetConsoleHostWindow 拒掉）
+            var targetHwnd = FindTerminalHwndByPidChain(claudePid);
+            // 1.5) 父链断（cmd 由 explorer 启动等）→ 跟跳转路径同款启发式兜底找真终端窗口。
+            //      没有这层兜底时，这类终端里岛上点权限/问题选项会静默没反应（注入直接 abort）。
+            if (targetHwnd == IntPtr.Zero)
+            {
+                targetHwnd = FindTerminalHwndByHeuristic(projectDirName);
+                JumpDiag($"SendKeys: pid-chain miss for pid={claudePid}, heuristic fallback hwnd=0x{targetHwnd.ToInt64():X}");
+            }
+            if (targetHwnd == IntPtr.Zero)
+            {
+                _logger?.LogWarning(
+                    "SendKeysToTerminalAsync: no terminal window found for claude pid {Pid}; aborting", claudePid);
+                return false;
+            }
 
-        // 4) 焦点 OK，发键
-        foreach (var c in keys)
-        {
-            SendVk(CharToVk(c));
-            await Task.Delay(20);
+            // 2) 激活到前台
+            ActivateWindow(targetHwnd);
+            // AttachThreadInput + topmost flicker 链通常 < 200ms 生效，留 350ms 给慢机也有机会
+            await Task.Delay(350);
+
+            // 3) 验前台。失败就 abort，绝不能让 SendInput 把 "1\r" 打到错误的前台应用。
+            //    See xmldoc above for full rationale.
+            var fg = GetForegroundWindow();
+            if (fg != targetHwnd)
+            {
+                GetWindowThreadProcessId(fg, out var fgPid);
+                var fgTitle = new StringBuilder(256);
+                GetWindowText(fg, fgTitle, 256);
+                _logger?.LogWarning(
+                    "SendKeysToTerminalAsync: foreground switch failed. target hwnd=0x{Tgt:X} claudePid={Pid} | actual foreground hwnd=0x{Fg:X} pid={FgPid} title='{Title}'. Aborting SendInput to avoid typing into wrong window.",
+                    targetHwnd.ToInt64(), claudePid, fg.ToInt64(), fgPid, fgTitle.ToString());
+                return false;
+            }
+
+            // 4) 焦点 OK，发键
+            foreach (var c in keys)
+            {
+                SendVk(CharToVk(c));
+                await Task.Delay(20);
+            }
+            return true;
         }
-        return true;
+        finally
+        {
+            // 恢复灵动岛 Topmost：ActivateWindow 内部若撤了（前台是灵动岛时），这里重新置顶；
+            // 没撤也无所谓（重复 SetWindowPos HWND_TOPMOST 是幂等的）。无 HWND（启动早期）跳过。
+            if (myHwnd != IntPtr.Zero)
+            {
+                try
+                {
+                    SetWindowPos(myHwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+                catch { /* 恢复失败不影响主流程，下次注入会再试 */ }
+            }
+        }
     }
 
     /// <summary>
