@@ -38,6 +38,49 @@ public partial class DynamicIslandWindow : Window
     private bool _glassRendering;
     [DllImport("user32.dll")] private static extern uint SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
     [DllImport("user32.dll")] private static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+
+    // ── 多屏支持：拿"当前窗口所在显示器"的工作区，替换 SystemParameters.WorkArea（只主屏）──
+    // 旧代码用 SystemParameters.WorkArea 拿屏顶 Y / 屏中心 X / 屏工作区，多屏机器上它只返回主屏：
+    //   - 把灵动岛拖到副屏顶端，CheckNotchSnap 用主屏 Top 做参照 → 吸附把窗口拉回主屏顶端
+    //   - 副屏比主屏高 200px 时，多出的 200px 不在主屏 WorkArea 里 → 灵动岛"看不到"那块区域
+    //   - 拖不到 / 吸错位的根因全在此。MonitorFromWindow + GetMonitorInfo 拿窗口当前所在屏的
+    //   rcWork（工作区，已扣任务栏），多屏机器正确反映每个屏的实际可用区。
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+    [StructLayout(LayoutKind.Sequential)] private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor; // 全屏 rect（含任务栏）
+        public RECT rcWork;     // 工作区 rect（已扣任务栏）
+        public uint dwFlags;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    /// <summary>
+    /// 拿当前窗口所在显示器的工作区（DIP 单位，已扣任务栏）。失败 / 启动早期无 HWND 时
+    /// 回退 SystemParameters.WorkArea（主屏）。rcWork 是物理像素，需按 _dpi 转 DIP 跟 WPF
+    /// 的 Left/Top/Width/Height 对齐（_dpi 在 Loaded 后才有值，调用点都在 Loaded 之后）。
+    /// </summary>
+    private Rect GetCurrentScreenWorkArea()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || _dpi <= 0)
+            return SystemParameters.WorkArea; // 启动早期 / 无窗口句柄 → 主屏兜底
+
+        var hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (hMon == IntPtr.Zero) return SystemParameters.WorkArea;
+
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(hMon, ref mi)) return SystemParameters.WorkArea;
+
+        // rcWork 是物理像素，WPF 的 Left/Top 是 DIP，按 _dpi 转换
+        return new Rect(
+            mi.rcWork.Left / _dpi,
+            mi.rcWork.Top / _dpi,
+            (mi.rcWork.Right - mi.rcWork.Left) / _dpi,
+            (mi.rcWork.Bottom - mi.rcWork.Top) / _dpi);
+    }
     private const uint WDA_NONE = 0x00;
     private const uint WDA_EXCLUDEFROMCAPTURE = 0x11; // 排除出屏幕抓取：抓玻璃背景时抓不到灵动岛自己
     // 远程桌面/RDP 等环境下 WDA_EXCLUDEFROMCAPTURE 会静默失败（SetWindowDisplayAffinity 返回值
@@ -340,7 +383,9 @@ public partial class DynamicIslandWindow : Window
     /// </summary>
     private void CheckNotchSnap()
     {
-        var screenTop = SystemParameters.WorkArea.Top;
+        // 用当前窗口所在屏的 Top（多屏支持），不是 SystemParameters.WorkArea.Top（只主屏）。
+        // 否则拖到副屏顶端 → 吸附用主屏 Top 当目标 → 窗口被拉回主屏顶端。
+        var screenTop = GetCurrentScreenWorkArea().Top;
         var distFromTop = Top - screenTop;
 
         if (!_viewModel.IsNotchMode && distFromTop < NotchSnapThreshold)
@@ -353,7 +398,7 @@ public partial class DynamicIslandWindow : Window
         }
         else if (_viewModel.IsNotchMode)
         {
-            Top = screenTop; // 紧贴顶
+            Top = screenTop; // 紧贴当前屏顶
         }
     }
 
@@ -365,11 +410,13 @@ public partial class DynamicIslandWindow : Window
 
         // Notch 形态 = 默认岛粘到屏顶居中，不改 Width（让原 384/权限 768 都能保留所有
         // 内部功能：展开箭头、会话列表、状态灯、权限三键）。只动 Top → 0、Left → 居中。
-        var screenCenter = SystemParameters.WorkArea.Left + SystemParameters.WorkArea.Width / 2;
+        // 用当前屏的工作区（多屏支持），不是 SystemParameters.WorkArea（只主屏）。
+        var screen = GetCurrentScreenWorkArea();
+        var screenCenter = screen.Left + screen.Width / 2;
         var currentWidth = ActualWidth > 0 ? ActualWidth : Width;
 
         AnimateWindowProp(LeftProperty, screenCenter - currentWidth / 2, dur, ease);
-        AnimateWindowProp(TopProperty, SystemParameters.WorkArea.Top, dur, ease);
+        AnimateWindowProp(TopProperty, screen.Top, dur, ease);
     }
 
     private void ExitNotchMode()
